@@ -320,6 +320,53 @@ async def test_compile_routine_media_empty_steps_error(tmp_path: Path):
         )
 
 
+@pytest.mark.asyncio
+async def test_compile_routine_media_creates_nonexistent_output_dir(tmp_path: Path):
+    """Test that compilation creates output_dir if it does not yet exist."""
+    hass = MagicMock()
+    routine_config = {
+        "visuals": True,
+        "steps": [
+            {"name": "greeting", "visual": True, "voice": "Pulcherrima"},
+        ],
+    }
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    nonexistent_dir = tmp_path / "deep" / "nested" / "automations"
+    assert not nonexistent_dir.exists()
+
+    with (
+        patch(
+            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.automation_generator.generator.async_generate_step_content",
+            new=AsyncMock(
+                return_value={"visual_card": {"title": "T"}, "narration_script": "S"}
+            ),
+        ),
+        patch(
+            "custom_components.automation_generator.generator.async_synthesize_speech",
+            new=AsyncMock(return_value="audio.wav"),
+        ),
+        patch(
+            "custom_components.automation_generator.generator.render_slide",
+            return_value="slide.jpg",
+        ),
+        patch(
+            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        result = await async_compile_routine_media(
+            hass, "morning", routine_config, recipient, str(nonexistent_dir)
+        )
+        assert nonexistent_dir.exists()
+        assert nonexistent_dir.is_dir()
+        assert result["video_path"] == str(nonexistent_dir / "morning.mp4")
+        assert (nonexistent_dir / "morning.metadata.json").exists()
+
+
 def test_get_audio_duration_with_real_wav(tmp_path: Path):
     """Test get_audio_duration computes accurate duration from WAV file."""
     wav_path = tmp_path / "test.wav"

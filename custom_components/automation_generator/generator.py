@@ -146,6 +146,11 @@ async def _async_run_in_executor(
     return func(*args, **kwargs)
 
 
+def _ensure_directory(directory: Path) -> None:
+    """Ensure directory and parents exist synchronously."""
+    directory.mkdir(parents=True, exist_ok=True)
+
+
 def _write_json_file(file_path: Path, data: dict[str, Any]) -> None:
     """Write dictionary to JSON file synchronously."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -294,6 +299,7 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
 
         total_duration = round(current_offset, 2)
         out_path = Path(output_dir)
+        await _async_run_in_executor(hass, _ensure_directory, out_path)
 
         if is_visual:
             # 10a. Concatenate clips into final MP4
