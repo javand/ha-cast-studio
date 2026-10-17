@@ -1,0 +1,200 @@
+blueprint:
+  name: Automation Generator - Morning Briefing
+  description: >-
+    Silently pre-compiles multimedia briefing assets overnight and delivers an instant
+    wake-up briefing with synchronized display visuals, dual-voice TTS narration, and concurrent
+    smart home actions.
+  domain: automation
+  input:
+    pregenerate_time:
+      name: Pre-generation Time
+      description: Time to silently pre-compile the briefing video overnight.
+      default: "04:30:00"
+      selector:
+        time: {}
+    wake_trigger:
+      name: Wake-up Trigger
+      description: Trigger that initiates the morning briefing (e.g. alarm dismiss, bedroom motion, or morning button).
+      selector:
+        trigger: {}
+    recipient_name:
+      name: Recipient Name
+      description: Real name to display visually on slides and cards.
+      default: Javan
+      selector:
+        text: {}
+    phonetic_name:
+      name: Phonetic Name
+      description: Phonetic pronunciation spelling strictly for spoken TTS narration.
+      default: Jay-ven
+      selector:
+        text: {}
+    target_player:
+      name: Target Media Player
+      description: Smart display or Google Cast media player entity for multimedia playback.
+      selector:
+        entity:
+          domain: media_player
+    weather_entity:
+      name: Weather Entity
+      description: Weather entity to summarize in the forecast slide.
+      selector:
+        entity:
+          domain: weather
+    calendar_entities:
+      name: Calendar Entities
+      description: Calendar entities to query and summarize in the agenda slide.
+      selector:
+        entity:
+          domain: calendar
+          multiple: true
+    todo_entity:
+      name: Todo Entity (Optional)
+      description: Task or to-do list entity to summarize in the morning briefing.
+      default: ""
+      selector:
+        entity:
+          domain: todo
+    scripture_sensor:
+      name: Scripture Sensor (Optional)
+      description: Sensor entity providing daily scripture or morning inspirational thought.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    host_voice:
+      name: Host Voice
+      description: High-fidelity voice for news, weather, and calendar slides.
+      default: Pulcherrima
+      selector:
+        select:
+          options:
+            - Pulcherrima
+            - Enceladus
+    host_personality:
+      name: Host Personality
+      description: Speaking persona and cadence for the host speaker.
+      default: news_anchor
+      selector:
+        select:
+          options:
+            - news_anchor
+            - upbeat_energetic
+            - conversational
+          custom_value: true
+    scripture_voice:
+      name: Scripture Voice
+      description: High-fidelity voice for daily text and closing thoughts.
+      default: Enceladus
+      selector:
+        select:
+          options:
+            - Enceladus
+            - Pulcherrima
+    scripture_personality:
+      name: Scripture Personality
+      description: Speaking persona and tone for daily scripture and reflection.
+      default: life_coach
+      selector:
+        select:
+          options:
+            - life_coach
+            - reverent
+            - warm_uplifting
+          custom_value: true
+    conversation_agent:
+      name: Conversation Agent (Optional)
+      description: Specific Home Assistant conversation agent entity for AI script generation.
+      default: ""
+      selector:
+        conversation_agent: {}
+    background_actions:
+      name: Background Actions
+      description: Smart home actions executed concurrently on wake-up (e.g. coffee machine, kitchen lights).
+      default: []
+      selector:
+        action: {}
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - trigger: time
+    at: !input pregenerate_time
+    id: pregenerate
+  - triggers: !input wake_trigger
+    id: wakeup
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: pregenerate
+        sequence:
+          - action: automation_generator.pregenerate_routine
+            data:
+              routine_name: morning_briefing
+              target_player: !input target_player
+              recipient:
+                name: !input recipient_name
+                phonetic_name: !input phonetic_name
+              routine_config:
+                visuals: true
+                conversation_agent: !input conversation_agent
+                steps:
+                  - name: weather
+                    visual: true
+                    entity_id: !input weather_entity
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
+                  - name: calendar
+                    visual: true
+                    entity_ids: !input calendar_entities
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
+                  - name: todo
+                    visual: true
+                    entity_id: !input todo_entity
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
+                  - name: scripture
+                    visual: true
+                    entity_id: !input scripture_sensor
+                    voice: !input scripture_voice
+                    voice_personality: !input scripture_personality
+      - conditions:
+          - condition: trigger
+            id: wakeup
+        sequence:
+          - action: automation_generator.run_routine
+            data:
+              routine_name: morning_briefing
+              target_player: !input target_player
+              recipient:
+                name: !input recipient_name
+                phonetic_name: !input phonetic_name
+              routine_config:
+                visuals: true
+                conversation_agent: !input conversation_agent
+                background_actions: !input background_actions
+                steps:
+                  - name: weather
+                    visual: true
+                    entity_id: !input weather_entity
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
+                  - name: calendar
+                    visual: true
+                    entity_ids: !input calendar_entities
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
+                  - name: todo
+                    visual: true
+                    entity_id: !input todo_entity
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
+                  - name: scripture
+                    visual: true
+                    entity_id: !input scripture_sensor
+                    voice: !input scripture_voice
+                    voice_personality: !input scripture_personality
