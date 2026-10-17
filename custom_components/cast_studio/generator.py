@@ -641,6 +641,10 @@ async def async_compile_static_clip(
         )
         clip_ok = await async_run_ffmpeg(hass, clip_cmd)
         if not clip_ok:
+            try:
+                Path(final_video_path).unlink(missing_ok=True)
+            except OSError:
+                pass
             msg = f"FFmpeg clip compilation failed for static clip '{clean_clip_name}'"
             raise GeneratorError(msg)
 

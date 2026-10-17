@@ -94,8 +94,6 @@ def prune_stale_files(
     now = time.time()
     for file_path in target_dir.rglob("*"):
         if file_path.is_file():
-            if "static" in file_path.parts:
-                continue
             try:
                 if file_path.is_relative_to(target_dir / "static"):
                     continue
