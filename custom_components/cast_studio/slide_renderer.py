@@ -246,6 +246,14 @@ def _resolve_image_path(raw_path: Any) -> Path | None:
     if not p_str:
         return None
 
+    # Handle Home Assistant /local/ path mapped to /config/www or ./www
+    if p_str.startswith("/local/"):
+        rel = p_str.removeprefix("/local/")
+        for base_dir in (Path("/config/www"), Path("www"), Path("./www")):
+            candidate = base_dir / rel
+            if candidate.is_file():
+                return candidate
+
     # Check direct name, filename, and .png stem inside bundled assets
     candidates = (
         BUNDLED_ASSETS_DIR / p_str,
@@ -280,9 +288,19 @@ def _load_image(card_data: dict[str, Any]) -> tuple[Image.Image | None, bool]:
 
     try:
         with Image.open(resolved_path) as raw_img:
-            has_alpha = ("A" in raw_img.getbands()) or (
-                raw_img.info.get("transparency") is not None
-            )
+            if raw_img.width <= 0 or raw_img.height <= 0:
+                _LOGGER.warning("Image '%s' has zero dimensions", resolved_path)
+                return None, False
+
+            has_alpha = False
+            if "A" in raw_img.getbands():
+                # Check if image actually has any non-opaque pixels
+                alpha_extrema = raw_img.getextrema()[-1]
+                if isinstance(alpha_extrema, tuple) and alpha_extrema[0] < 255:
+                    has_alpha = True
+            elif raw_img.info.get("transparency") is not None:
+                has_alpha = True
+
             img = raw_img.convert("RGBA")
             return img, has_alpha
     except (OSError, ValueError) as err:
@@ -323,7 +341,7 @@ def _determine_layout_mode(
     is_icon_key = (
         "icon" in card_data or "icon_path" in card_data
     ) and "image_path" not in card_data
-    aspect = img.width / img.height
+    aspect = (img.width / img.height) if img.height > 0 else 1.0
     if is_icon_key or has_alpha or aspect < ASPECT_RATIO_WIDESCREEN_THRESHOLD:
         return "icon"
 
@@ -333,6 +351,9 @@ def _determine_layout_mode(
 def _render_photo_background(img: Image.Image) -> Image.Image:
     """Render 1024x600 photo background with aspect-fill crop and dark vignette."""
     orig_w, orig_h = img.size
+    if orig_w <= 0 or orig_h <= 0:
+        return _render_gradient_background()
+
     scale = max(CANVAS_WIDTH / orig_w, CANVAS_HEIGHT / orig_h)
     new_w = max(CANVAS_WIDTH, round(orig_w * scale))
     new_h = max(CANVAS_HEIGHT, round(orig_h * scale))
@@ -344,17 +365,18 @@ def _render_photo_background(img: Image.Image) -> Image.Image:
         (crop_left, crop_top, crop_left + CANVAS_WIDTH, crop_top + CANVAS_HEIGHT)
     ).convert("RGBA")
 
-    # Dark vignette overlay to guarantee contrast
+    # Dark vignette overlay to guarantee contrast across the entire frame
     vignette = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     v_draw = ImageDraw.Draw(vignette)
-    v_draw.rectangle([(0, 0), (CANVAS_WIDTH, CANVAS_HEIGHT)], fill=(15, 23, 42, 130))
 
     center_y = CANVAS_HEIGHT / 2
     for y in range(CANVAS_HEIGHT):
         dist = abs(y - center_y) / center_y
+        # Base tint (alpha 130) + subtle edge gradient deepening to 220
+        line_alpha = min(255, int(130 + 90 * (dist**2)))
         v_draw.line(
             [(0, y), (CANVAS_WIDTH, y)],
-            fill=(2, 6, 23, int(90 * (dist**2))),
+            fill=(2, 6, 23, line_alpha),
         )
 
     return Image.alpha_composite(base, vignette).convert("RGB")
@@ -372,6 +394,9 @@ def _composite_icon(
     Returns updated text content boundaries (content_left, content_right).
     """
     img_w, img_h = img.size
+    if img_w <= 0 or img_h <= 0:
+        return CONTENT_LEFT, CONTENT_RIGHT
+
     scale = min(ICON_BOX_MAX_W / img_w, ICON_BOX_MAX_H / img_h)
     fit_w = max(1, round(img_w * scale))
     fit_h = max(1, round(img_h * scale))
