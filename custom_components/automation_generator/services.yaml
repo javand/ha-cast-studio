@@ -1,0 +1,88 @@
+pregenerate_routine:
+  name: Pregenerate Routine
+  description: Silently pre-compiles media assets for a multimedia routine ahead of time without waking the house or triggering smart home devices.
+  fields:
+    routine_name:
+      name: Routine Name
+      description: Name identifier of the routine to pregenerate (e.g., 'morning', 'bedtime').
+      required: true
+      example: morning
+      selector:
+        text:
+    target_player:
+      name: Target Media Player
+      description: Target media player entity ID for playback.
+      required: false
+      example: media_player.living_room_display
+      selector:
+        entity:
+          domain: media_player
+    routine_config:
+      name: Routine Configuration
+      description: Optional configuration dictionary defining routine steps and visual settings.
+      required: false
+      selector:
+        object:
+    output_dir:
+      name: Output Directory
+      description: Destination directory path for generated media and companion metadata JSON.
+      required: false
+      example: /config/www/automations
+      selector:
+        text:
+    recipient:
+      name: Recipient Profile
+      description: Recipient profile containing 'name' for visual slides and 'phonetic_name' for speech synthesis.
+      required: false
+      example:
+        name: Javan
+        phonetic_name: Jay-ven
+      selector:
+        object:
+
+run_routine:
+  name: Run Routine
+  description: Executes a multimedia routine with instant playback (or on-demand generation fallback), concurrently triggering background actions and syncing slide display actions.
+  fields:
+    routine_name:
+      name: Routine Name
+      description: Name identifier of the routine to run (e.g., 'morning', 'bedtime').
+      required: true
+      example: morning
+      selector:
+        text:
+    target_player:
+      name: Target Media Player
+      description: Target media player entity ID for playback.
+      required: false
+      example: media_player.living_room_display
+      selector:
+        entity:
+          domain: media_player
+    routine_config:
+      name: Routine Configuration
+      description: Optional configuration dictionary defining routine steps and visual settings.
+      required: false
+      selector:
+        object:
+    recipient:
+      name: Recipient Profile
+      description: Recipient profile containing 'name' for visual slides and 'phonetic_name' for speech synthesis.
+      required: false
+      example:
+        name: Javan
+        phonetic_name: Jay-ven
+      selector:
+        object:
+    output_dir:
+      name: Output Directory
+      description: Destination directory path where compiled media and metadata reside.
+      required: false
+      example: /config/www/automations
+      selector:
+        text:
+
+reload:
+  name: Reload
+  description: Reloads the Automation Generator integration configuration and resets routine sensors.
+  fields: {}
