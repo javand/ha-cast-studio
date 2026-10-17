@@ -95,6 +95,7 @@ def _is_media_ready_and_fresh(
     output_dir: str,
     routine_name: str,
     max_age_seconds: int = 86400,
+    is_static: bool = False,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Check if media or companion metadata exists and is not stale."""
     out_path = Path(output_dir)
@@ -107,7 +108,10 @@ def _is_media_ready_and_fresh(
         try:
             meta = json.loads(static_meta_file.read_text(encoding="utf-8"))
             vpath = meta.get("video_path")
-            if (vpath and Path(vpath).is_file()) or static_video_file.is_file():
+            if vpath and Path(vpath).is_file():
+                return True, meta
+            if static_video_file.is_file():
+                meta["video_path"] = str(static_video_file)
                 return True, meta
         except Exception as err:  # noqa: BLE001
             LOGGER.warning(
@@ -127,6 +131,9 @@ def _is_media_ready_and_fresh(
             "static": True,
         }
         return True, meta
+
+    if is_static:
+        return False, None
 
     # 2. Check regular routine files
     metadata_file = out_path / f"{routine_name}.metadata.json"
@@ -305,11 +312,14 @@ async def async_run_routine(  # noqa: PLR0913
     sensor = async_get_or_create_sensor(hass, routine_name)
 
     # 1. Check if media exists and is not stale (<24h) via executor
+    is_static_routine = bool(routine_config.get("static", False))
     is_ready, metadata = await _async_run_in_executor(
         hass,
         _is_media_ready_and_fresh,
         output_dir,
         routine_name,
+        86400,
+        is_static_routine,
     )
 
     # 2. If not ready/missing or stale, compile on-demand
