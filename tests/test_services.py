@@ -1,4 +1,4 @@
-"""Tests for Automation Generator service handlers, sensor entities, and setup."""
+"""Tests for CastStudio service handlers, sensor entities, and setup."""
 
 from __future__ import annotations
 
@@ -13,15 +13,15 @@ import pytest
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import ServiceCall
 
-from custom_components.automation_generator import (
+from custom_components.cast_studio import (
     async_pregenerate_routine,
     async_reload,
     async_run_routine,
     async_setup,
 )
-from custom_components.automation_generator.const import DOMAIN
-from custom_components.automation_generator.sensor import (
-    AutomationGeneratorRoutineSensor,
+from custom_components.cast_studio.const import DOMAIN
+from custom_components.cast_studio.sensor import (
+    CastStudioRoutineSensor,
     async_get_or_create_sensor,
     async_update_routine_sensor,
 )
@@ -125,8 +125,8 @@ async def test_services_registered(
     sensors = mock_hass.data[DOMAIN]["sensors"]
     assert "morning" in sensors
     sensor = sensors["morning"]
-    assert isinstance(sensor, AutomationGeneratorRoutineSensor)
-    assert sensor.entity_id == "sensor.automation_generator_morning"
+    assert isinstance(sensor, CastStudioRoutineSensor)
+    assert sensor.entity_id == "sensor.cast_studio_morning"
     assert sensor.native_value == "idle"
 
 
@@ -149,7 +149,7 @@ async def test_pregenerate_routine_service_success(
     }
 
     with patch(
-        "custom_components.automation_generator.async_compile_routine_media",
+        "custom_components.cast_studio.async_compile_routine_media",
         new=AsyncMock(return_value=mock_metadata),
     ) as mock_compile:
         call = ServiceCall(
@@ -179,7 +179,7 @@ async def test_pregenerate_routine_service_failure(
     pregen_handler = next(c.args[2] for c in calls if c.args[1] == "pregenerate_routine")
 
     with patch(
-        "custom_components.automation_generator.async_compile_routine_media",
+        "custom_components.cast_studio.async_compile_routine_media",
         new=AsyncMock(side_effect=RuntimeError("FFmpeg error")),
     ):
         call = ServiceCall(
@@ -218,15 +218,15 @@ async def test_run_routine_with_preexisting_media(
 
     with (
         patch(
-            "custom_components.automation_generator.async_compile_routine_media",
+            "custom_components.cast_studio.async_compile_routine_media",
             new=AsyncMock(),
         ) as mock_compile,
         patch(
-            "custom_components.automation_generator.async_execute_background_actions",
+            "custom_components.cast_studio.async_execute_background_actions",
             new=AsyncMock(),
         ) as mock_bg,
         patch(
-            "custom_components.automation_generator.async_play_and_sync_routine",
+            "custom_components.cast_studio.async_play_and_sync_routine",
             new=AsyncMock(return_value=dummy_play_task),
         ) as mock_play,
     ):
@@ -269,15 +269,15 @@ async def test_run_routine_on_demand_fallback(
 
     with (
         patch(
-            "custom_components.automation_generator.async_compile_routine_media",
+            "custom_components.cast_studio.async_compile_routine_media",
             new=AsyncMock(return_value=mock_metadata),
         ) as mock_compile,
         patch(
-            "custom_components.automation_generator.async_execute_background_actions",
+            "custom_components.cast_studio.async_execute_background_actions",
             new=AsyncMock(),
         ) as mock_bg,
         patch(
-            "custom_components.automation_generator.async_play_and_sync_routine",
+            "custom_components.cast_studio.async_play_and_sync_routine",
             new=AsyncMock(return_value=dummy_play_task),
         ) as mock_play,
     ):
@@ -324,15 +324,15 @@ async def test_run_routine_stale_media_recompiles(
 
     with (
         patch(
-            "custom_components.automation_generator.async_compile_routine_media",
+            "custom_components.cast_studio.async_compile_routine_media",
             new=AsyncMock(return_value=mock_metadata),
         ) as mock_compile,
         patch(
-            "custom_components.automation_generator.async_execute_background_actions",
+            "custom_components.cast_studio.async_execute_background_actions",
             new=AsyncMock(),
         ),
         patch(
-            "custom_components.automation_generator.async_play_and_sync_routine",
+            "custom_components.cast_studio.async_play_and_sync_routine",
             new=AsyncMock(return_value=dummy_play_task),
         ),
     ):
@@ -357,7 +357,7 @@ async def test_programmatic_api_calls(
     }
 
     with patch(
-        "custom_components.automation_generator.async_compile_routine_media",
+        "custom_components.cast_studio.async_compile_routine_media",
         new=AsyncMock(return_value=mock_metadata),
     ):
         meta = await async_pregenerate_routine(mock_hass, "morning")
@@ -365,11 +365,11 @@ async def test_programmatic_api_calls(
 
         with (
             patch(
-                "custom_components.automation_generator.async_execute_background_actions",
+                "custom_components.cast_studio.async_execute_background_actions",
                 new=AsyncMock(),
             ),
             patch(
-                "custom_components.automation_generator.async_play_and_sync_routine",
+                "custom_components.cast_studio.async_play_and_sync_routine",
                 new=AsyncMock(),
             ),
         ):
@@ -425,15 +425,15 @@ async def test_sensor_playback_lifecycle_holding_state(
 
     with (
         patch(
-            "custom_components.automation_generator.async_compile_routine_media",
+            "custom_components.cast_studio.async_compile_routine_media",
             new=AsyncMock(return_value={"video_path": "/fake.mp4", "duration": 10.0}),
         ),
         patch(
-            "custom_components.automation_generator.async_execute_background_actions",
+            "custom_components.cast_studio.async_execute_background_actions",
             new=AsyncMock(),
         ),
         patch(
-            "custom_components.automation_generator.async_play_and_sync_routine",
+            "custom_components.cast_studio.async_play_and_sync_routine",
             new=AsyncMock(return_value=playback_task),
         ),
     ):
@@ -458,9 +458,9 @@ async def test_sensor_playback_lifecycle_holding_state(
 
 
 def test_sensor_entity_state_transitions(mock_hass: MagicMock) -> None:
-    """Test AutomationGeneratorRoutineSensor states, attributes, and options."""
-    sensor = AutomationGeneratorRoutineSensor("evening", hass=mock_hass)
-    assert sensor.entity_id == "sensor.automation_generator_evening"
+    """Test CastStudioRoutineSensor states, attributes, and options."""
+    sensor = CastStudioRoutineSensor("evening", hass=mock_hass)
+    assert sensor.entity_id == "sensor.cast_studio_evening"
     assert sensor.native_value == "idle"
     assert sensor.device_class == SensorDeviceClass.ENUM
     assert sensor.options == ["idle", "generating", "ready", "playing", "error"]
@@ -478,7 +478,7 @@ def test_sensor_entity_state_transitions(mock_hass: MagicMock) -> None:
         "ready",
         duration=DURATION_25_0,
         last_pregenerated="2026-10-17T05:00:00Z",
-        video_path="/config/www/automations/evening.mp4",
+        video_path="/config/www/cast_studio/evening.mp4",
         slide_count=SLIDE_COUNT_THREE,
         active_task=None,
     )
@@ -487,7 +487,7 @@ def test_sensor_entity_state_transitions(mock_hass: MagicMock) -> None:
     assert sensor.extra_state_attributes["last_pregenerated"] == "2026-10-17T05:00:00Z"
     assert (
         sensor.extra_state_attributes["video_path"]
-        == "/config/www/automations/evening.mp4"
+        == "/config/www/cast_studio/evening.mp4"
     )
     assert sensor.extra_state_attributes["slide_count"] == SLIDE_COUNT_THREE
     assert sensor.extra_state_attributes["active_task"] is None

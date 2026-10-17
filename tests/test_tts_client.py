@@ -11,7 +11,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.automation_generator.tts_client import (
+from custom_components.cast_studio.tts_client import (
     TTSClientError,
     _synthesize_gemini_tts,
     _synthesize_ha_tts,
@@ -32,7 +32,7 @@ async def test_synthesize_speech_gemini_voices(tmp_path: Path) -> None:
     creds = {"platform": "gemini", "api_key": "test_key"}
 
     with patch(
-        "custom_components.automation_generator.tts_client._synthesize_gemini_tts",
+        "custom_components.cast_studio.tts_client._synthesize_gemini_tts",
         new=AsyncMock(return_value=output_wav),
     ) as mock_tts:
         result = await async_synthesize_speech(
@@ -62,7 +62,7 @@ async def test_synthesize_speech_gemini_enceladus_voice(tmp_path: Path) -> None:
     creds = {"platform": "gemini", "api_key": "test_gemini_key"}
 
     with patch(
-        "custom_components.automation_generator.tts_client._synthesize_gemini_tts",
+        "custom_components.cast_studio.tts_client._synthesize_gemini_tts",
         new=AsyncMock(return_value=output_wav),
     ) as mock_tts:
         result = await async_synthesize_speech(
@@ -299,11 +299,11 @@ async def test_synthesize_speech_gemini_error_falls_back_to_ha(tmp_path: Path) -
 
     with (
         patch(
-            "custom_components.automation_generator.tts_client._synthesize_gemini_tts",
+            "custom_components.cast_studio.tts_client._synthesize_gemini_tts",
             side_effect=TTSClientError("Network error"),
         ),
         patch(
-            "custom_components.automation_generator.tts_client._synthesize_ha_tts",
+            "custom_components.cast_studio.tts_client._synthesize_ha_tts",
             new=AsyncMock(return_value=output_wav),
         ) as mock_ha,
     ):
@@ -334,7 +334,7 @@ async def test_openai_voice_mapping_dispatch(tmp_path: Path) -> None:
     creds = {"platform": "openai", "api_key": "sk-test123"}
 
     with patch(
-        "custom_components.automation_generator.tts_client._synthesize_openai_tts",
+        "custom_components.cast_studio.tts_client._synthesize_openai_tts",
         new=AsyncMock(return_value=output_wav),
     ) as mock_openai:
         # Pulcherrima -> nova
@@ -458,7 +458,7 @@ async def test_synthesize_speech_conversation_agent_fallback_to_ha(
     creds = {"platform": "conversation_agent", "api_key": None}
 
     with patch(
-        "custom_components.automation_generator.tts_client._synthesize_ha_tts",
+        "custom_components.cast_studio.tts_client._synthesize_ha_tts",
         new=AsyncMock(return_value=output_wav),
     ) as mock_ha:
         result = await async_synthesize_speech(
@@ -545,7 +545,7 @@ async def test_async_synthesize_speech_handles_none_creds(tmp_path: Path) -> Non
     output_wav = str(tmp_path / "none_creds.wav")
 
     with patch(
-        "custom_components.automation_generator.tts_client._synthesize_ha_tts",
+        "custom_components.cast_studio.tts_client._synthesize_ha_tts",
         new=AsyncMock(return_value=output_wav),
     ) as mock_ha:
         result = await async_synthesize_speech(
@@ -575,7 +575,7 @@ async def test_synthesize_speech_defaults(tmp_path: Path) -> None:
     creds = {"platform": "gemini", "api_key": "k"}
 
     with patch(
-        "custom_components.automation_generator.tts_client._synthesize_gemini_tts",
+        "custom_components.cast_studio.tts_client._synthesize_gemini_tts",
         new=AsyncMock(return_value=output_wav),
     ) as mock_tts:
         result = await async_synthesize_speech(
@@ -607,11 +607,11 @@ async def test_synthesize_speech_reuses_clientsession(tmp_path: Path) -> None:
 
     with (
         patch(
-            "custom_components.automation_generator.tts_client.async_get_clientsession",
+            "custom_components.cast_studio.tts_client.async_get_clientsession",
             return_value=mock_session,
         ) as mock_get_session,
         patch(
-            "custom_components.automation_generator.tts_client._synthesize_gemini_tts",
+            "custom_components.cast_studio.tts_client._synthesize_gemini_tts",
             new=AsyncMock(return_value=output_wav),
         ) as mock_gemini,
     ):

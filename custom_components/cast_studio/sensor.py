@@ -1,4 +1,4 @@
-"""Sensor platform for automation_generator."""
+"""Sensor platform for cast_studio."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 
-class AutomationGeneratorRoutineSensor(SensorEntity):
+class CastStudioRoutineSensor(SensorEntity):
     """Sensor tracking routine compilation and playback lifecycle."""
 
     _attr_has_entity_name = True
@@ -28,9 +28,9 @@ class AutomationGeneratorRoutineSensor(SensorEntity):
     ) -> None:
         """Initialize the routine status sensor."""
         self.routine_name = routine_name
-        self._attr_unique_id = f"automation_generator_{routine_name}"
+        self._attr_unique_id = f"cast_studio_{routine_name}"
         self._attr_name = routine_name.replace("_", " ").title()
-        self.entity_id = f"sensor.automation_generator_{routine_name}"
+        self.entity_id = f"sensor.cast_studio_{routine_name}"
         self._attr_icon = "mdi:play-circle-outline"
         self._state: str = "idle"
         self._attr_duration: float | None = None
@@ -123,15 +123,19 @@ class AutomationGeneratorRoutineSensor(SensorEntity):
             super().async_write_ha_state()
 
 
+# Backward-compatible alias
+AutomationGeneratorRoutineSensor = CastStudioRoutineSensor
+
+
 def async_get_or_create_sensor(
     hass: HomeAssistant,
     routine_name: str,
-) -> AutomationGeneratorRoutineSensor:
+) -> CastStudioRoutineSensor:
     """Get existing or create and register a new routine sensor."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     sensors = domain_data.setdefault("sensors", {})
     if routine_name not in sensors:
-        sensor = AutomationGeneratorRoutineSensor(routine_name, hass=hass)
+        sensor = CastStudioRoutineSensor(routine_name, hass=hass)
         sensors[routine_name] = sensor
         cb = domain_data.get("async_add_entities")
         if cb is not None and callable(cb):
@@ -150,7 +154,7 @@ def async_update_routine_sensor(
     state: str,
     attributes: dict[str, Any] | None = None,
     **kwargs: Any,
-) -> AutomationGeneratorRoutineSensor:
+) -> CastStudioRoutineSensor:
     """Update state and attributes of a routine sensor."""
     sensor = async_get_or_create_sensor(hass, routine_name)
     sensor.update_state(state, attributes=attributes, **kwargs)
@@ -162,7 +166,7 @@ async def async_setup_entry(
     entry: Any,  # noqa: ARG001 Unused function argument
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Automation Generator sensors from a config entry."""
+    """Set up CastStudio sensors from a config entry."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     domain_data["async_add_entities"] = async_add_entities
     sensors = domain_data.setdefault("sensors", {})
@@ -170,7 +174,7 @@ async def async_setup_entry(
     routines = domain_data.get("routines", {})
     for routine_name in routines:
         if routine_name not in sensors:
-            sensors[routine_name] = AutomationGeneratorRoutineSensor(
+            sensors[routine_name] = CastStudioRoutineSensor(
                 routine_name, hass=hass
             )
 
@@ -184,7 +188,7 @@ async def async_setup_platform(
     async_add_entities: AddEntitiesCallback,
     discovery_info: dict[str, Any] | None = None,  # noqa: ARG001
 ) -> None:
-    """Set up Automation Generator sensors from platform configuration."""
+    """Set up CastStudio sensors from platform configuration."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     domain_data["async_add_entities"] = async_add_entities
     sensors = domain_data.setdefault("sensors", {})
@@ -192,7 +196,7 @@ async def async_setup_platform(
     routines = domain_data.get("routines", {})
     for routine_name in routines:
         if routine_name not in sensors:
-            sensors[routine_name] = AutomationGeneratorRoutineSensor(
+            sensors[routine_name] = CastStudioRoutineSensor(
                 routine_name, hass=hass
             )
 

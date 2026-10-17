@@ -1,5 +1,5 @@
 """
-Home Assistant Custom Integration for Automation Generator.
+Home Assistant Custom Integration for CastStudio.
 
 Provides pregeneration and playback services for multi-sensory briefing routines,
 integrating slide visuals, dual-voice TTS, synchronized display actions, and concurrent
@@ -34,7 +34,7 @@ from .orchestrator import (
     async_play_and_sync_routine,
 )
 from .sensor import (
-    AutomationGeneratorRoutineSensor,
+    CastStudioRoutineSensor,
     async_get_or_create_sensor,
     async_update_routine_sensor,
 )
@@ -297,7 +297,7 @@ async def async_run_routine(  # noqa: PLR0913
     # 6. Monitor playback completion and restore sensor state to ready
     async def _monitor_playback_completion(
         task: asyncio.Task[Any] | None,
-        sens: AutomationGeneratorRoutineSensor,
+        sens: CastStudioRoutineSensor,
     ) -> None:
         try:
             if task is not None:
@@ -333,7 +333,7 @@ async def async_setup(
     hass: HomeAssistant,
     config: dict,
 ) -> bool:
-    """Set up the automation_generator component."""
+    """Set up the cast_studio component."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     domain_config = config.get(DOMAIN, {})
 
@@ -404,7 +404,7 @@ async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
 ) -> bool:
-    """Set up Automation Generator from a config entry."""
+    """Set up CastStudio from a config entry."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     recipient_name = entry.options.get(
         CONF_RECIPIENT_NAME, entry.data.get(CONF_RECIPIENT_NAME, DEFAULT_RECIPIENT_NAME)

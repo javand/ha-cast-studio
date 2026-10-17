@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from custom_components.automation_generator.ai_client import (
+from custom_components.cast_studio.ai_client import (
     AIClientError,
     _enforce_recipient_separation,
     _query_conversation_agent_structured,
@@ -16,7 +16,7 @@ from custom_components.automation_generator.ai_client import (
     async_discover_ai_credentials,
     async_generate_step_content,
 )
-from custom_components.automation_generator.const import DOMAIN
+from custom_components.cast_studio.const import DOMAIN
 
 
 @pytest.mark.asyncio
@@ -60,7 +60,7 @@ async def test_content_generation_separates_real_name_and_phonetic() -> None:
     }
 
     with patch(
-        "custom_components.automation_generator.ai_client._query_gemini_structured",
+        "custom_components.cast_studio.ai_client._query_gemini_structured",
         new=AsyncMock(return_value=mock_response),
     ):
         content = await async_generate_step_content(
@@ -129,7 +129,7 @@ async def test_content_generation_sanitizes_phonetic_leak_in_visual_card() -> No
     }
 
     with patch(
-        "custom_components.automation_generator.ai_client._query_gemini_structured",
+        "custom_components.cast_studio.ai_client._query_gemini_structured",
         new=AsyncMock(return_value=leaked_response),
     ):
         content = await async_generate_step_content(
@@ -159,7 +159,7 @@ async def test_content_generation_enforces_phonetic_in_narration() -> None:
     }
 
     with patch(
-        "custom_components.automation_generator.ai_client._query_gemini_structured",
+        "custom_components.cast_studio.ai_client._query_gemini_structured",
         new=AsyncMock(return_value=missed_phonetic_response),
     ):
         content = await async_generate_step_content(
@@ -187,7 +187,7 @@ async def test_content_generation_routes_to_conversation_agent() -> None:
     }
 
     with patch(
-        "custom_components.automation_generator.ai_client._query_conversation_agent_structured",
+        "custom_components.cast_studio.ai_client._query_conversation_agent_structured",
         new=AsyncMock(return_value=mock_response),
     ) as mock_agent:
         content = await async_generate_step_content(
@@ -239,7 +239,7 @@ async def test_query_gemini_structured_api_call() -> None:
     mock_session.post.return_value.__aenter__.return_value = mock_resp
 
     with patch(
-        "custom_components.automation_generator.ai_client.async_get_clientsession",
+        "custom_components.cast_studio.ai_client.async_get_clientsession",
         return_value=mock_session,
     ):
         result = await _query_gemini_structured(hass, "Test Prompt", "api_key_123")
@@ -287,7 +287,7 @@ async def test_query_conversation_agent_structured_service_call() -> None:
 
 def test_clean_json_text_with_conversational_preamble_and_postamble() -> None:
     """Test _clean_json_text extracts JSON even with surrounding conversational text."""
-    from custom_components.automation_generator.ai_client import _clean_json_text
+    from custom_components.cast_studio.ai_client import _clean_json_text
 
     raw_response = (
         "Here is your routine content in JSON format:\n"
@@ -307,7 +307,7 @@ async def test_query_gemini_structured_aiohttp_client_error() -> None:
     """Test _query_gemini_structured wraps aiohttp.ClientError into AIClientError."""
     import aiohttp
 
-    from custom_components.automation_generator.ai_client import AIClientError
+    from custom_components.cast_studio.ai_client import AIClientError
 
     hass = MagicMock()
     mock_session = MagicMock()
@@ -315,7 +315,7 @@ async def test_query_gemini_structured_aiohttp_client_error() -> None:
 
     with (
         patch(
-            "custom_components.automation_generator.ai_client.async_get_clientsession",
+            "custom_components.cast_studio.ai_client.async_get_clientsession",
             return_value=mock_session,
         ),
         pytest.raises(
@@ -355,11 +355,11 @@ async def test_generate_step_content_fallback_to_conversation_on_gemini_error() 
 
     with (
         patch(
-            "custom_components.automation_generator.ai_client._query_gemini_structured",
+            "custom_components.cast_studio.ai_client._query_gemini_structured",
             side_effect=AIClientError("API quota exceeded"),
         ) as mock_gemini,
         patch(
-            "custom_components.automation_generator.ai_client._query_conversation_agent_structured",
+            "custom_components.cast_studio.ai_client._query_conversation_agent_structured",
             new=AsyncMock(return_value=fallback_response),
         ) as mock_conv,
     ):
@@ -387,11 +387,11 @@ async def test_generate_step_content_fallback_to_conversation_on_network_error()
 
     with (
         patch(
-            "custom_components.automation_generator.ai_client._query_gemini_structured",
+            "custom_components.cast_studio.ai_client._query_gemini_structured",
             side_effect=aiohttp.ClientError("Connection refused"),
         ),
         patch(
-            "custom_components.automation_generator.ai_client._query_conversation_agent_structured",
+            "custom_components.cast_studio.ai_client._query_conversation_agent_structured",
             new=AsyncMock(return_value=fallback_response),
         ),
     ):

@@ -1,5 +1,5 @@
 """
-Routine Orchestrator for ha-automation-generator.
+Routine Orchestrator for CastStudio.
 
 Handles action partitioning, concurrent background action execution via asyncio.gather,
 Google Cast / media player playback triggering, and playback state tracking to fire

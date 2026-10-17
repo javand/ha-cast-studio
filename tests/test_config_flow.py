@@ -1,4 +1,4 @@
-"""Tests for the Automation Generator config and options flow."""
+"""Tests for the CastStudio config and options flow."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from unittest.mock import MagicMock
 import pytest
 from homeassistant import config_entries, data_entry_flow
 
-from custom_components.automation_generator.config_flow import (
-    AutomationGeneratorFlowHandler,
-    AutomationGeneratorOptionsFlowHandler,
+from custom_components.cast_studio.config_flow import (
+    CastStudioFlowHandler,
+    CastStudioOptionsFlowHandler,
 )
-from custom_components.automation_generator.const import (
+from custom_components.cast_studio.const import (
     CONF_API_KEY,
     CONF_OUTPUT_DIR,
     CONF_PHONETIC_NAME,
@@ -26,7 +26,7 @@ from custom_components.automation_generator.const import (
 @pytest.mark.asyncio
 async def test_config_flow_user_step_shows_form():
     """Test initial user step presents form with expected fields."""
-    flow = AutomationGeneratorFlowHandler()
+    flow = CastStudioFlowHandler()
     flow.hass = MagicMock()
 
     result = await flow.async_step_user(user_input=None)
@@ -39,7 +39,7 @@ async def test_config_flow_user_step_shows_form():
 @pytest.mark.asyncio
 async def test_config_flow_user_step_creates_entry():
     """Test successful user flow submission creates entry with title and data."""
-    flow = AutomationGeneratorFlowHandler()
+    flow = CastStudioFlowHandler()
     flow.hass = MagicMock()
     flow.hass.config_entries.async_entry_for_domain_unique_id.return_value = None
     flow.context = {}
@@ -54,14 +54,14 @@ async def test_config_flow_user_step_creates_entry():
     result = await flow.async_step_user(user_input=user_input)
 
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-    assert result["title"] == "Automation Generator"
+    assert result["title"] == "CastStudio"
     assert result["data"] == user_input
 
 
 @pytest.mark.asyncio
 async def test_config_flow_aborts_if_already_configured():
     """Test that configuring a second instance aborts with already_configured."""
-    flow = AutomationGeneratorFlowHandler()
+    flow = CastStudioFlowHandler()
     flow.hass = MagicMock()
     existing_entry = MagicMock()
     existing_entry.source = config_entries.SOURCE_USER
@@ -90,11 +90,11 @@ async def test_options_flow_init_step_shows_form():
         CONF_API_KEY: "original_key",
         CONF_RECIPIENT_NAME: "Javan",
         CONF_PHONETIC_NAME: "Jay-ven",
-        CONF_OUTPUT_DIR: "/config/www/automations",
+        CONF_OUTPUT_DIR: "/config/www/cast_studio",
     }
     mock_entry.options = {}
 
-    options_flow = AutomationGeneratorOptionsFlowHandler(mock_entry)
+    options_flow = CastStudioOptionsFlowHandler(mock_entry)
     mock_hass = MagicMock()
     mock_hass.config_entries.async_get_known_entry = MagicMock(return_value=mock_entry)
     options_flow.hass = mock_hass
@@ -113,11 +113,11 @@ async def test_options_flow_updates_options():
     mock_entry.data = {
         CONF_RECIPIENT_NAME: "Javan",
         CONF_PHONETIC_NAME: "Jay-ven",
-        CONF_OUTPUT_DIR: "/config/www/automations",
+        CONF_OUTPUT_DIR: "/config/www/cast_studio",
     }
     mock_entry.options = {}
 
-    options_flow = AutomationGeneratorOptionsFlowHandler(mock_entry)
+    options_flow = CastStudioOptionsFlowHandler(mock_entry)
     mock_hass = MagicMock()
     mock_hass.config_entries.async_get_known_entry = MagicMock(return_value=mock_entry)
     options_flow.hass = mock_hass
@@ -138,5 +138,5 @@ async def test_options_flow_updates_options():
 def test_async_get_options_flow():
     """Verify flow handler returns an OptionsFlow instance."""
     mock_entry = MagicMock()
-    handler = AutomationGeneratorFlowHandler.async_get_options_flow(mock_entry)
+    handler = CastStudioFlowHandler.async_get_options_flow(mock_entry)
     assert isinstance(handler, config_entries.OptionsFlow)

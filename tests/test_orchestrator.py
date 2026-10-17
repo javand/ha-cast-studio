@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.automation_generator.orchestrator import (
+from custom_components.cast_studio.orchestrator import (
     OrchestratorError,
     _async_sync_slides,
     _create_task,
@@ -66,7 +66,7 @@ async def test_play_and_sync_waits_for_playing_state():
 
     # Mock media_player state listener
     with patch(
-        "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+        "custom_components.cast_studio.orchestrator.async_track_state_change_event"
     ) as mock_track:
         metadata = {"video_path": "/local/morning.mp4", "slide_timestamps": []}
         await async_play_and_sync_routine(
@@ -225,7 +225,7 @@ async def test_play_and_sync_triggers_actions_on_playing():
 
     with (
         patch(
-            "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
         ) as mock_track,
         patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
     ):
@@ -261,7 +261,7 @@ async def test_play_and_sync_audio_only():
     hass.services.async_call = AsyncMock()
 
     with patch(
-        "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+        "custom_components.cast_studio.orchestrator.async_track_state_change_event"
     ):
         metadata_mp3 = {
             "video_path": None,
@@ -325,7 +325,7 @@ async def test_play_and_sync_already_playing():
     }
 
     with patch(
-        "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+        "custom_components.cast_studio.orchestrator.async_track_state_change_event"
     ) as mock_track:
         sync_task = await async_play_and_sync_routine(
             hass, "morning", "media_player.display", metadata, []
@@ -365,10 +365,10 @@ async def test_play_and_sync_safety_timeout():
 
     with (
         patch(
-            "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
         ) as mock_track,
         patch(
-            "custom_components.automation_generator.orchestrator.async_call_later"
+            "custom_components.cast_studio.orchestrator.async_call_later"
         ) as mock_call_later,
     ):
         mock_unsub = MagicMock()
@@ -433,7 +433,7 @@ async def test_get_routine_sync_task_and_reentry():
     }
 
     with patch(
-        "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+        "custom_components.cast_studio.orchestrator.async_track_state_change_event"
     ) as mock_track:
         await async_play_and_sync_routine(
             hass, "test_routine", "media_player.display", metadata, []
@@ -531,7 +531,7 @@ async def test_slide_actions_fallback_to_steps():
     ]
 
     with patch(
-        "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+        "custom_components.cast_studio.orchestrator.async_track_state_change_event"
     ) as mock_track:
         await async_play_and_sync_routine(
             hass, "morning", "media_player.display", metadata, steps
@@ -564,7 +564,7 @@ async def test_slide_actions_fallback_to_steps():
         }
     ]
     with patch(
-        "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+        "custom_components.cast_studio.orchestrator.async_track_state_change_event"
     ) as mock_track:
         await async_play_and_sync_routine(
             hass,
@@ -604,7 +604,7 @@ async def test_async_sync_slides_drift_prevention():
     with (
         patch.object(loop, "time", side_effect=fake_time),
         patch(
-            "custom_components.automation_generator.orchestrator.async_execute_background_actions",
+            "custom_components.cast_studio.orchestrator.async_execute_background_actions",
             side_effect=fake_execute,
         ),
         patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
@@ -665,10 +665,10 @@ async def test_play_and_sync_timeout_after_sync_started():
 
     with (
         patch(
-            "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
         ) as mock_track,
         patch(
-            "custom_components.automation_generator.orchestrator.async_call_later"
+            "custom_components.cast_studio.orchestrator.async_call_later"
         ) as mock_call_later,
     ):
         await async_play_and_sync_routine(
@@ -713,10 +713,10 @@ async def test_play_and_sync_returns_lifecycle_task():
 
     with (
         patch(
-            "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
         ) as mock_track,
         patch(
-            "custom_components.automation_generator.orchestrator.async_call_later"
+            "custom_components.cast_studio.orchestrator.async_call_later"
         ),
     ):
         playback_task = await async_play_and_sync_routine(
@@ -758,26 +758,26 @@ def test_resolve_cast_media_url_local_config_www():
     """Verify /config/www/ paths are converted to accessible HTTP URLs using get_url."""
     hass = MagicMock()
     with patch(
-        "custom_components.automation_generator.orchestrator.get_url",
+        "custom_components.cast_studio.orchestrator.get_url",
         return_value="http://192.168.1.50:8123",
     ):
         result = resolve_cast_media_url(
-            hass, "/config/www/automations/morning_briefing.mp4"
+            hass, "/config/www/cast_studio/morning_briefing.mp4"
         )
-        assert result == "http://192.168.1.50:8123/local/automations/morning_briefing.mp4"
+        assert result == "http://192.168.1.50:8123/local/cast_studio/morning_briefing.mp4"
 
 
 def test_resolve_cast_media_url_fallback_on_get_url_error():
     """Verify that if get_url raises an exception, relative /local/ path is returned."""
     hass = MagicMock()
     with patch(
-        "custom_components.automation_generator.orchestrator.get_url",
+        "custom_components.cast_studio.orchestrator.get_url",
         side_effect=Exception("No base URL configured"),
     ):
         result = resolve_cast_media_url(
-            hass, "/config/www/automations/morning_briefing.mp4"
+            hass, "/config/www/cast_studio/morning_briefing.mp4"
         )
-        assert result == "/local/automations/morning_briefing.mp4"
+        assert result == "/local/cast_studio/morning_briefing.mp4"
 
 
 def test_resolve_cast_media_url_non_www_path():
@@ -797,16 +797,16 @@ async def test_play_and_sync_resolves_cast_media_url():
 
     with (
         patch(
-            "custom_components.automation_generator.orchestrator.get_url",
+            "custom_components.cast_studio.orchestrator.get_url",
             return_value="http://homeassistant.local:8123",
         ),
         patch(
-            "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
         ),
-        patch("custom_components.automation_generator.orchestrator.async_call_later"),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
     ):
         metadata = {
-            "video_path": "/config/www/automations/morning.mp4",
+            "video_path": "/config/www/cast_studio/morning.mp4",
             "slide_timestamps": [],
         }
         await async_play_and_sync_routine(
@@ -817,7 +817,7 @@ async def test_play_and_sync_resolves_cast_media_url():
             "play_media",
             {
                 "entity_id": "media_player.kitchen_cast",
-                "media_content_id": "http://homeassistant.local:8123/local/automations/morning.mp4",
+                "media_content_id": "http://homeassistant.local:8123/local/cast_studio/morning.mp4",
                 "media_content_type": "video/mp4",
             },
         )

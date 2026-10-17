@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 from PIL import Image
 
-from custom_components.automation_generator.slide_renderer import (
+from custom_components.cast_studio.slide_renderer import (
     PhoneticLeakError,
     render_slide,
 )

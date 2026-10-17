@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.automation_generator.generator import (
+from custom_components.cast_studio.generator import (
     GeneratorError,
     RoutineConfigError,
     _extract_entity_context,
@@ -42,25 +42,25 @@ async def test_compile_routine_media_flow(tmp_path: Path):
 
     with (
         patch(
-            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
             new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_generate_step_content",
+            "custom_components.cast_studio.generator.async_generate_step_content",
             new=AsyncMock(
                 return_value={"visual_card": {"title": "T"}, "narration_script": "S"}
             ),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_synthesize_speech",
+            "custom_components.cast_studio.generator.async_synthesize_speech",
             new=AsyncMock(return_value="audio.wav"),
         ),
         patch(
-            "custom_components.automation_generator.generator.render_slide",
+            "custom_components.cast_studio.generator.render_slide",
             return_value="slide.jpg",
         ),
         patch(
-            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
             new=AsyncMock(return_value=True),
         ),
     ):
@@ -100,11 +100,11 @@ async def test_compile_routine_media_writes_metadata_json(tmp_path: Path):
 
     with (
         patch(
-            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
             new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_generate_step_content",
+            "custom_components.cast_studio.generator.async_generate_step_content",
             new=AsyncMock(
                 return_value={
                     "visual_card": {"title": "Slide Title"},
@@ -113,15 +113,15 @@ async def test_compile_routine_media_writes_metadata_json(tmp_path: Path):
             ),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_synthesize_speech",
+            "custom_components.cast_studio.generator.async_synthesize_speech",
             new=AsyncMock(return_value="audio.wav"),
         ),
         patch(
-            "custom_components.automation_generator.generator.render_slide",
+            "custom_components.cast_studio.generator.render_slide",
             return_value="slide.jpg",
         ),
         patch(
-            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
             new=AsyncMock(return_value=True),
         ),
     ):
@@ -167,23 +167,23 @@ async def test_compile_routine_media_filters_non_visual_steps(tmp_path: Path):
     )
     with (
         patch(
-            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
             new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_generate_step_content",
+            "custom_components.cast_studio.generator.async_generate_step_content",
             mock_generate,
         ),
         patch(
-            "custom_components.automation_generator.generator.async_synthesize_speech",
+            "custom_components.cast_studio.generator.async_synthesize_speech",
             new=AsyncMock(return_value="audio.wav"),
         ),
         patch(
-            "custom_components.automation_generator.generator.render_slide",
+            "custom_components.cast_studio.generator.render_slide",
             return_value="slide.jpg",
         ),
         patch(
-            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
             new=AsyncMock(return_value=True),
         ),
     ):
@@ -211,29 +211,29 @@ async def test_compile_routine_media_purges_scratchpad_in_finally(tmp_path: Path
 
     with (
         patch(
-            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
             new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_generate_step_content",
+            "custom_components.cast_studio.generator.async_generate_step_content",
             new=AsyncMock(
                 return_value={"visual_card": {"title": "T"}, "narration_script": "S"}
             ),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_synthesize_speech",
+            "custom_components.cast_studio.generator.async_synthesize_speech",
             new=AsyncMock(return_value="audio.wav"),
         ),
         patch(
-            "custom_components.automation_generator.generator.render_slide",
+            "custom_components.cast_studio.generator.render_slide",
             return_value="slide.jpg",
         ),
         patch(
-            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
             new=AsyncMock(return_value=False),  # Simulating FFmpeg failure
         ),
         patch(
-            "custom_components.automation_generator.generator.cleanup_scratch_dir"
+            "custom_components.cast_studio.generator.cleanup_scratch_dir"
         ) as mock_cleanup,
     ):
         with pytest.raises(GeneratorError):
@@ -262,25 +262,25 @@ async def test_compile_routine_media_audio_only_mode(tmp_path: Path):
     mock_render = MagicMock()
     with (
         patch(
-            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
             new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_generate_step_content",
+            "custom_components.cast_studio.generator.async_generate_step_content",
             new=AsyncMock(
                 return_value={"visual_card": {}, "narration_script": "Audio text"}
             ),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_synthesize_speech",
+            "custom_components.cast_studio.generator.async_synthesize_speech",
             new=AsyncMock(return_value="audio.wav"),
         ),
         patch(
-            "custom_components.automation_generator.generator.render_slide",
+            "custom_components.cast_studio.generator.render_slide",
             mock_render,
         ),
         patch(
-            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
             new=AsyncMock(return_value=True),
         ),
     ):
@@ -338,25 +338,25 @@ async def test_compile_routine_media_creates_nonexistent_output_dir(tmp_path: Pa
 
     with (
         patch(
-            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
             new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_generate_step_content",
+            "custom_components.cast_studio.generator.async_generate_step_content",
             new=AsyncMock(
                 return_value={"visual_card": {"title": "T"}, "narration_script": "S"}
             ),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_synthesize_speech",
+            "custom_components.cast_studio.generator.async_synthesize_speech",
             new=AsyncMock(return_value="audio.wav"),
         ),
         patch(
-            "custom_components.automation_generator.generator.render_slide",
+            "custom_components.cast_studio.generator.render_slide",
             return_value="slide.jpg",
         ),
         patch(
-            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
             new=AsyncMock(return_value=True),
         ),
     ):
@@ -499,25 +499,25 @@ async def test_compile_routine_skips_unconfigured_optional_step(tmp_path: Path):
 
     with (
         patch(
-            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
             new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_generate_step_content",
+            "custom_components.cast_studio.generator.async_generate_step_content",
             new=AsyncMock(
                 return_value={"visual_card": {"title": "T"}, "narration_script": "S"}
             ),
         ) as mock_generate,
         patch(
-            "custom_components.automation_generator.generator.async_synthesize_speech",
+            "custom_components.cast_studio.generator.async_synthesize_speech",
             new=AsyncMock(return_value="audio.wav"),
         ),
         patch(
-            "custom_components.automation_generator.generator.render_slide",
+            "custom_components.cast_studio.generator.render_slide",
             return_value="slide.jpg",
         ),
         patch(
-            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
             new=AsyncMock(return_value=True),
         ),
     ):
@@ -560,25 +560,25 @@ async def test_compile_routine_injects_entity_context(tmp_path: Path):
 
     with (
         patch(
-            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
             new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
         ),
         patch(
-            "custom_components.automation_generator.generator.async_generate_step_content",
+            "custom_components.cast_studio.generator.async_generate_step_content",
             new=AsyncMock(
                 return_value={"visual_card": {"title": "T"}, "narration_script": "S"}
             ),
         ) as mock_generate,
         patch(
-            "custom_components.automation_generator.generator.async_synthesize_speech",
+            "custom_components.cast_studio.generator.async_synthesize_speech",
             new=AsyncMock(return_value="audio.wav"),
         ),
         patch(
-            "custom_components.automation_generator.generator.render_slide",
+            "custom_components.cast_studio.generator.render_slide",
             return_value="slide.jpg",
         ),
         patch(
-            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
             new=AsyncMock(return_value=True),
         ),
     ):

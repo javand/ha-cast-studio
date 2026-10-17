@@ -1,1 +1,1 @@
-"""Tests for automation_generator."""
+"""Tests for cast_studio."""

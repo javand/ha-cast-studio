@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .const import DEFAULT_OUTPUT_DIR, LOGGER
 
-DEFAULT_SCRATCH_BASE = "/tmp/automation_generator"  # noqa: S108
+DEFAULT_SCRATCH_BASE = "/tmp/cast_studio"  # noqa: S108
 
 
 class InvalidRoutineNameError(ValueError):

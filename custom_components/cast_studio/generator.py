@@ -1,5 +1,5 @@
 """
-Core Generator Engine for ha-automation-generator.
+Core Generator Engine for CastStudio.
 
 Coordinates data ingestion, slide rendering via Pillow in executor,
 TTS speech synthesis with per-step voice and personality conditioning,

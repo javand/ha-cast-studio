@@ -1,6 +1,6 @@
 {
-  "domain": "automation_generator",
-  "name": "Automation Generator",
+  "domain": "cast_studio",
+  "name": "CastStudio",
   "codeowners": [
     "@javand"
   ],

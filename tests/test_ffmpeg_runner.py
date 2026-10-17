@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.automation_generator.ffmpeg_runner import (
+from custom_components.cast_studio.ffmpeg_runner import (
     FFmpegExecutionError,
     async_run_ffmpeg,
     build_concat_command,
@@ -153,7 +153,7 @@ async def test_async_run_ffmpeg_success():
     hass = MagicMock()
 
     with patch(
-        "custom_components.automation_generator.ffmpeg_runner._spawn_process",
+        "custom_components.cast_studio.ffmpeg_runner._spawn_process",
         new=AsyncMock(return_value=mock_process),
     ) as mock_spawn:
         result = await async_run_ffmpeg(hass, cmd)
@@ -174,7 +174,7 @@ async def test_async_run_ffmpeg_failure_returns_false():
     cmd = ["ffmpeg", "-i", "bad.jpg"]
 
     with patch(
-        "custom_components.automation_generator.ffmpeg_runner._spawn_process",
+        "custom_components.cast_studio.ffmpeg_runner._spawn_process",
         new=AsyncMock(return_value=mock_process),
     ):
         result = await async_run_ffmpeg(hass, cmd)
@@ -193,7 +193,7 @@ async def test_async_run_ffmpeg_failure_raises_error():
 
     with (
         patch(
-            "custom_components.automation_generator.ffmpeg_runner._spawn_process",
+            "custom_components.cast_studio.ffmpeg_runner._spawn_process",
             new=AsyncMock(return_value=mock_process),
         ),
         pytest.raises(FFmpegExecutionError, match="Unrecognized option"),
@@ -208,7 +208,7 @@ async def test_async_run_ffmpeg_file_not_found():
     cmd = ["nonexistent_ffmpeg"]
 
     with patch(
-        "custom_components.automation_generator.ffmpeg_runner._spawn_process",
+        "custom_components.cast_studio.ffmpeg_runner._spawn_process",
         side_effect=FileNotFoundError("No such file or directory"),
     ):
         result = await async_run_ffmpeg(hass, cmd)
@@ -225,7 +225,7 @@ async def test_async_run_ffmpeg_spawn_generic_exception():
     cmd = ["bad_exec"]
 
     with patch(
-        "custom_components.automation_generator.ffmpeg_runner._spawn_process",
+        "custom_components.cast_studio.ffmpeg_runner._spawn_process",
         side_effect=PermissionError("Permission denied"),
     ):
         result = await async_run_ffmpeg(hass, cmd)
@@ -258,7 +258,7 @@ async def test_async_run_ffmpeg_timeout():
     cmd = ["ffmpeg", "-slow"]
 
     with patch(
-        "custom_components.automation_generator.ffmpeg_runner._spawn_process",
+        "custom_components.cast_studio.ffmpeg_runner._spawn_process",
         new=AsyncMock(return_value=mock_process),
     ):
         result = await async_run_ffmpeg(hass, cmd, timeout=0.1)
@@ -268,7 +268,7 @@ async def test_async_run_ffmpeg_timeout():
 
     with (
         patch(
-            "custom_components.automation_generator.ffmpeg_runner._spawn_process",
+            "custom_components.cast_studio.ffmpeg_runner._spawn_process",
             new=AsyncMock(return_value=mock_process),
         ),
         pytest.raises(FFmpegExecutionError, match="timed out"),
@@ -289,7 +289,7 @@ async def test_async_run_ffmpeg_cancellation():
 
     with (
         patch(
-            "custom_components.automation_generator.ffmpeg_runner._spawn_process",
+            "custom_components.cast_studio.ffmpeg_runner._spawn_process",
             new=AsyncMock(return_value=mock_process),
         ),
         pytest.raises(asyncio.CancelledError),

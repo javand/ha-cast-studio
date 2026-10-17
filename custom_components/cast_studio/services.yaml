@@ -27,7 +27,7 @@ pregenerate_routine:
       name: Output Directory
       description: Destination directory path for generated media and companion metadata JSON.
       required: false
-      example: /config/www/automations
+      example: /config/www/cast_studio
       selector:
         text:
     recipient:
@@ -78,11 +78,11 @@ run_routine:
       name: Output Directory
       description: Destination directory path where compiled media and metadata reside.
       required: false
-      example: /config/www/automations
+      example: /config/www/cast_studio
       selector:
         text:
 
 reload:
   name: Reload
-  description: Reloads the Automation Generator integration configuration and resets routine sensors.
+  description: Reloads the CastStudio integration configuration and resets routine sensors.
   fields: {}

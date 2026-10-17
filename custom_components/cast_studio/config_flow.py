@@ -1,4 +1,4 @@
-"""Config flow for Automation Generator integration."""
+"""Config flow for CastStudio integration."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ from .const import (
 )
 
 
-class AutomationGeneratorFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Automation Generator."""
+class CastStudioFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for CastStudio."""
 
     VERSION = 1
 
@@ -37,7 +37,7 @@ class AutomationGeneratorFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
-                title="Automation Generator",
+                title="CastStudio",
                 data=user_input,
             )
 
@@ -85,13 +85,13 @@ class AutomationGeneratorFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> AutomationGeneratorOptionsFlowHandler:
+    ) -> CastStudioOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return AutomationGeneratorOptionsFlowHandler(config_entry)
+        return CastStudioOptionsFlowHandler(config_entry)
 
 
-class AutomationGeneratorOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options flow for Automation Generator."""
+class CastStudioOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for CastStudio."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry | None = None) -> None:
         """Initialize options flow."""
@@ -171,3 +171,8 @@ class AutomationGeneratorOptionsFlowHandler(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(schema_fields),
         )
+
+
+# Backward-compatible aliases
+AutomationGeneratorFlowHandler = CastStudioFlowHandler
+AutomationGeneratorOptionsFlowHandler = CastStudioOptionsFlowHandler

@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from custom_components.automation_generator.const import DEFAULT_OUTPUT_DIR
-from custom_components.automation_generator.storage_manager import (
+from custom_components.cast_studio.const import DEFAULT_OUTPUT_DIR
+from custom_components.cast_studio.storage_manager import (
     DEFAULT_SCRATCH_BASE,
     cleanup_scratch_dir,
     get_routine_scratch_dir,
@@ -117,12 +117,12 @@ def test_prune_nonexistent_directory(tmp_path: Path):
 
 def test_default_paths(tmp_path: Path):
     """Test default paths and constants."""
-    assert DEFAULT_SCRATCH_BASE == "/tmp/automation_generator"  # noqa: S108
-    assert DEFAULT_OUTPUT_DIR == "/config/www/automations"
+    assert DEFAULT_SCRATCH_BASE == "/tmp/cast_studio"  # noqa: S108
+    assert DEFAULT_OUTPUT_DIR == "/config/www/cast_studio"
 
     # Verify default directory for prune_stale_files points to DEFAULT_OUTPUT_DIR
     with patch(
-        "custom_components.automation_generator.storage_manager.DEFAULT_OUTPUT_DIR",
+        "custom_components.cast_studio.storage_manager.DEFAULT_OUTPUT_DIR",
         str(tmp_path),
     ):
         file = tmp_path / "test.mp4"

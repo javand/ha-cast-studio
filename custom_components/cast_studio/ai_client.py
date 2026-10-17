@@ -263,7 +263,7 @@ async def async_discover_ai_credentials(hass: HomeAssistant) -> dict[str, Any]:
     Auto-detect AI credentials from existing config entries.
 
     Priority hierarchy:
-    1. Explicit integration options from automation_generator.
+    1. Explicit integration options from cast_studio.
     2. Auto-detected google_generative_ai active entry.
     3. Fallback to native Home Assistant conversation agent.
     """
@@ -272,7 +272,7 @@ async def async_discover_ai_credentials(hass: HomeAssistant) -> dict[str, Any]:
     ):
         return {"platform": "conversation_agent", "api_key": None}
 
-    # 1. Check explicit automation_generator integration entries
+    # 1. Check explicit cast_studio integration entries
     with suppress(AttributeError, TypeError, KeyError):
         explicit_entries = hass.config_entries.async_entries(DOMAIN)
         for entry in explicit_entries:

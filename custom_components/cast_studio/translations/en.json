@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Automation Generator",
+        "title": "CastStudio",
         "description": "Configure default recipient profile, output directory, and optional Gemini API key for multimedia routine generation.",
         "data": {
           "api_key": "API Key (Optional)",
@@ -13,13 +13,13 @@
       }
     },
     "abort": {
-      "already_configured": "Automation Generator is already configured."
+      "already_configured": "CastStudio is already configured."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Automation Generator Options",
+        "title": "CastStudio Options",
         "description": "Update recipient profile, output directory, and API key preferences.",
         "data": {
           "api_key": "API Key (Optional)",
