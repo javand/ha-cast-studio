@@ -31,6 +31,14 @@ PLATFORMS: list[Platform] = [
 ]
 
 
+async def async_setup(
+    hass: HomeAssistant,  # noqa: ARG001 Unused function argument: `hass`
+    config: dict,  # noqa: ARG001 Unused function argument: `config`
+) -> bool:
+    """Set up the automation_generator component."""
+    return True
+
+
 # https://developers.home-assistant.io/docs/config_entries_index/#setting-up-an-entry
 async def async_setup_entry(
     hass: HomeAssistant,
