@@ -52,6 +52,7 @@ ICON_BOX_MAX_H = 320
 ICON_CENTER_Y = (CARD_Y0 + CARD_Y1) // 2
 
 ASPECT_RATIO_WIDESCREEN_THRESHOLD = 1.3
+OPAQUE_ALPHA = 255
 
 
 class PhoneticLeakError(ValueError, AssertionError):
@@ -296,7 +297,10 @@ def _load_image(card_data: dict[str, Any]) -> tuple[Image.Image | None, bool]:
             if "A" in raw_img.getbands():
                 # Check if image actually has any non-opaque pixels
                 alpha_extrema = raw_img.getextrema()[-1]
-                if isinstance(alpha_extrema, tuple) and alpha_extrema[0] < 255:
+                if (
+                    isinstance(alpha_extrema, tuple)
+                    and alpha_extrema[0] < OPAQUE_ALPHA
+                ):
                     has_alpha = True
             elif raw_img.info.get("transparency") is not None:
                 has_alpha = True

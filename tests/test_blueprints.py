@@ -14,6 +14,7 @@ MORNING_BRIEFING_INPUT_COUNT = 15
 BEDTIME_ROUTINE_INPUT_COUNT = 8
 EVENT_ALERT_INPUT_COUNT = 9
 WELCOME_HOME_INPUT_COUNT = 8
+EXPECTED_TOTAL_BLUEPRINTS = 4
 
 BLUEPRINTS_DIR = Path("blueprints/automation/cast_studio")
 MORNING_BRIEFING_PATH = BLUEPRINTS_DIR / "morning_briefing.yaml"
@@ -292,7 +293,7 @@ def test_event_alert_blueprint_structure():
     assert "Enceladus" in inputs["alert_voice"]["selector"]["select"]["options"]
 
     assert inputs["alert_personality"]["default"] == "news_anchor"
-    assert "text" in inputs["alert_personality"]["selector"]
+    assert "select" in inputs["alert_personality"]["selector"]
 
     assert "action" in inputs["background_actions"]["selector"]
     assert inputs["background_actions"]["default"] == []
@@ -311,15 +312,16 @@ def test_event_alert_triggers_and_actions():
 
     actions = bp.get("action") or bp.get("actions", [])
     assert isinstance(actions, list)
-    action_str = str(actions)
-    assert "cast_studio.run_routine" in action_str
-    assert "clip_name" in action_str
-    assert "alert_title" in action_str
-    assert "alert_message" in action_str
-    assert "image_asset" in action_str
-    assert "alert_voice" in action_str
-    assert "alert_personality" in action_str
-    assert "background_actions" in action_str
+    assert actions[0]["action"] == "cast_studio.run_routine"
+    r_config = actions[0]["data"]["routine_config"]
+    assert r_config["static"] is True
+    assert r_config["title"] == "alert_title"
+    assert r_config["message"] == "alert_message"
+    assert r_config["image_path"] == "image_asset"
+    assert r_config["voice"] == "alert_voice"
+    assert r_config["voice_personality"] == "alert_personality"
+    assert r_config["background_actions"] == "background_actions"
+    assert r_config["actions"] == "background_actions"
 
 
 def test_event_alert_ha_blueprint_schema():
@@ -349,7 +351,7 @@ def test_welcome_home_blueprint_structure():
 
     inputs = meta["input"]
     expected_inputs = [
-        "arrival_trigger",
+        "person_entity",
         "recipient_name",
         "phonetic_name",
         "target_player",
@@ -361,11 +363,12 @@ def test_welcome_home_blueprint_structure():
     for inp in expected_inputs:
         assert inp in inputs, f"Input '{inp}' missing from welcome home blueprint"
 
-    assert "trigger" in inputs["arrival_trigger"]["selector"]
-    assert inputs["recipient_name"]["default"] == "Javan"
+    assert "entity" in inputs["person_entity"]["selector"]
+    assert inputs["person_entity"]["selector"]["entity"]["domain"] == "person"
+    assert inputs["recipient_name"]["default"] == ""
     assert "text" in inputs["recipient_name"]["selector"]
 
-    assert inputs["phonetic_name"]["default"] == "Jay-ven"
+    assert inputs["phonetic_name"]["default"] == ""
     assert "text" in inputs["phonetic_name"]["selector"]
 
     assert "media_player" in str(inputs["target_player"]["selector"])
@@ -378,7 +381,7 @@ def test_welcome_home_blueprint_structure():
     assert "Enceladus" in inputs["welcome_voice"]["selector"]["select"]["options"]
 
     assert inputs["welcome_personality"]["default"] == "life_coach"
-    assert "text" in inputs["welcome_personality"]["selector"]
+    assert "select" in inputs["welcome_personality"]["selector"]
 
     assert "action" in inputs["welcome_actions"]["selector"]
     assert inputs["welcome_actions"]["default"] == []
@@ -393,20 +396,18 @@ def test_welcome_home_triggers_and_actions():
 
     triggers = bp.get("trigger") or bp.get("triggers", [])
     assert isinstance(triggers, list)
-    trigger_str = str(triggers)
-    assert "arrival_trigger" in trigger_str
+    assert triggers[0]["trigger"] == "state"
+    assert triggers[0]["entity_id"] == "person_entity"
+    assert triggers[0]["to"] == "home"
 
     actions = bp.get("action") or bp.get("actions", [])
     assert isinstance(actions, list)
-    action_str = str(actions)
-    assert "cast_studio.run_routine" in action_str
-    assert "welcome_home" in action_str
-    assert "recipient_name" in action_str
-    assert "phonetic_name" in action_str
-    assert "avatar_image" in action_str
-    assert "welcome_voice" in action_str
-    assert "welcome_personality" in action_str
-    assert "welcome_actions" in action_str
+    assert actions[0]["action"] == "cast_studio.run_routine"
+    assert actions[0]["data"]["routine_name"] == "welcome_home"
+    assert (
+        actions[0]["data"]["routine_config"]["background_actions"]
+        == "welcome_actions"
+    )
 
 
 def test_welcome_home_ha_blueprint_schema():
@@ -420,7 +421,7 @@ def test_welcome_home_ha_blueprint_schema():
 
 def test_all_four_blueprints_exist_and_validate():
     """Verify all 4 blueprints exist in blueprints/automation/cast_studio and pass schema."""
-    assert len(ALL_BLUEPRINT_PATHS) == 4
+    assert len(ALL_BLUEPRINT_PATHS) == EXPECTED_TOTAL_BLUEPRINTS
     for path in ALL_BLUEPRINT_PATHS:
         assert path.exists(), f"Blueprint file does not exist: {path}"
         data = _load_yaml(path)

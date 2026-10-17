@@ -91,16 +91,11 @@ async def _async_run_in_executor(
         return func(*args, **kwargs)
 
 
-def _is_media_ready_and_fresh(
-    output_dir: str,
+def _check_static_media(
+    out_path: Path,
     routine_name: str,
-    max_age_seconds: int = 86400,
-    is_static: bool = False,
 ) -> tuple[bool, dict[str, Any] | None]:
-    """Check if media or companion metadata exists and is not stale."""
-    out_path = Path(output_dir)
-
-    # 1. Check permanent static alert clip first (never expires)
+    """Check permanent static alert clip (never expires)."""
     static_meta_file = out_path / "static" / f"{routine_name}.metadata.json"
     static_video_file = out_path / "static" / f"{routine_name}.mp4"
 
@@ -131,6 +126,24 @@ def _is_media_ready_and_fresh(
             "static": True,
         }
         return True, meta
+
+    return False, None
+
+
+def _is_media_ready_and_fresh(
+    output_dir: str,
+    routine_name: str,
+    max_age_seconds: int = 86400,
+    *,
+    is_static: bool = False,
+) -> tuple[bool, dict[str, Any] | None]:
+    """Check if media or companion metadata exists and is not stale."""
+    out_path = Path(output_dir)
+
+    # 1. Check permanent static alert clip first (never expires)
+    static_ready, static_meta = _check_static_media(out_path, routine_name)
+    if static_ready:
+        return True, static_meta
 
     if is_static:
         return False, None
@@ -319,7 +332,7 @@ async def async_run_routine(  # noqa: PLR0913
         output_dir,
         routine_name,
         86400,
-        is_static_routine,
+        is_static=is_static_routine,
     )
 
     # 2. If not ready/missing or stale, compile on-demand

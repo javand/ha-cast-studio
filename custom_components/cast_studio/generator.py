@@ -9,6 +9,7 @@ and intermediate scratchpad lifecycle management in a finally block.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import inspect
 import json
@@ -641,10 +642,8 @@ async def async_compile_static_clip(
         )
         clip_ok = await async_run_ffmpeg(hass, clip_cmd)
         if not clip_ok:
-            try:
+            with contextlib.suppress(OSError):
                 Path(final_video_path).unlink(missing_ok=True)
-            except OSError:
-                pass
             msg = f"FFmpeg clip compilation failed for static clip '{clean_clip_name}'"
             raise GeneratorError(msg)
 

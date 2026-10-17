@@ -23,8 +23,9 @@ blueprint:
       name: Target Media Player
       description: Smart display or Google Cast media player entity for multimedia playback.
       selector:
-        entity:
-          domain: media_player
+        target:
+          entity:
+            domain: media_player
     alert_title:
       name: Alert Title
       description: Headline text displayed prominently on screen.
@@ -57,7 +58,12 @@ blueprint:
       description: Persona and vocal inflection for the synthesized alert.
       default: news_anchor
       selector:
-        text: {}
+        select:
+          custom_value: true
+          options:
+            - news_anchor
+            - life_coach
+            - calm_reassuring
     background_actions:
       name: Background Actions
       description: Optional actions executed concurrently with the alert (e.g. flash kitchen lights, chime doorbell).
@@ -83,3 +89,4 @@ action:
         voice: !input alert_voice
         voice_personality: !input alert_personality
         actions: !input background_actions
+        background_actions: !input background_actions
