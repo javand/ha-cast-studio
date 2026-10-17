@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from custom_components.automation_generator.orchestrator import (
     OrchestratorError,
+    _async_sync_slides,
     _create_task,
     async_execute_background_actions,
     async_play_and_sync_routine,
@@ -248,7 +250,7 @@ async def test_play_and_sync_triggers_actions_on_playing():
 
         # media_player.play_media + light.turn_on + switch.turn_on = 3 calls
         assert hass.services.async_call.call_count == CALL_COUNT_THREE
-        mock_sleep.assert_awaited_with(2.5)
+        mock_sleep.assert_awaited_with(pytest.approx(2.5, rel=1e-2))
 
 
 @pytest.mark.asyncio
@@ -450,6 +452,8 @@ async def test_get_routine_sync_task_and_reentry():
         assert sync_task2 is None
 
         await sync_task1
+        # Task cleanup callback removes task from _ROUTINE_SYNC_TASKS
+        assert get_routine_sync_task("test_routine") is None
 
 
 @pytest.mark.asyncio
@@ -466,34 +470,42 @@ async def test_background_actions_container_and_empty_actions():
     await async_execute_background_actions(hass, [])
     assert hass.services.async_call.call_count == 0
 
-    # background_actions key in step
-    steps = [
+    # Step with BOTH actions and background_actions, plus root-level entity_id
+    steps_both = [
         {
-            "name": "bedtime",
+            "name": "morning",
+            "visual": False,
+            "actions": [{"action": "light.turn_on", "entity_id": "light.kitchen"}],
             "background_actions": [
-                {"action": "lock.lock", "target": {"entity_id": "lock.front_door"}},
+                {"service": "switch.turn_on", "entity_id": "switch.espresso"}
             ],
         }
     ]
-    await async_execute_background_actions(hass, steps)
-    assert hass.services.async_call.call_count == 1
-    hass.services.async_call.assert_awaited_once_with(
-        "lock",
-        "lock",
-        target={"entity_id": "lock.front_door"},
+    await async_execute_background_actions(hass, steps_both)
+    assert hass.services.async_call.call_count == CALL_COUNT_TWO
+    hass.services.async_call.assert_any_call(
+        "light",
+        "turn_on",
+        target={"entity_id": "light.kitchen"},
+    )
+    hass.services.async_call.assert_any_call(
+        "switch",
+        "turn_on",
+        target={"entity_id": "switch.espresso"},
     )
 
 
 @pytest.mark.asyncio
 async def test_slide_actions_fallback_to_steps():
-    """Test display actions falling back to steps definition when slide_timestamps lacks actions."""
+    """Test display actions falling back to steps definition matched by name."""
     hass = MagicMock()
     hass.services.async_call = AsyncMock()
     mock_state = MagicMock()
     mock_state.state = "idle"
     hass.states.get.return_value = mock_state
 
-    # 1. slide_timestamps without actions_on_display falls back to steps
+    # slide_timestamps[0] has no actions and corresponds to visual step 'intro'
+    # steps has a preceding non-visual step 'prep' to test name matching over positional index
     metadata = {
         "video_path": "/local/morning.mp4",
         "slide_timestamps": [
@@ -502,11 +514,19 @@ async def test_slide_actions_fallback_to_steps():
     }
     steps = [
         {
+            "name": "prep",
+            "visual": False,
+            "actions": [
+                {"action": "switch.turn_on", "target": {"entity_id": "switch.unused"}}
+            ],
+        },
+        {
             "name": "intro",
+            "visual": True,
             "actions_on_display": [
                 {"action": "light.turn_on", "target": {"entity_id": "light.kitchen"}}
             ],
-        }
+        },
     ]
 
     with patch(
@@ -522,6 +542,11 @@ async def test_slide_actions_fallback_to_steps():
         if sync_task:
             await sync_task
         assert hass.services.async_call.call_count == CALL_COUNT_TWO
+        hass.services.async_call.assert_any_call(
+            "light",
+            "turn_on",
+            target={"entity_id": "light.kitchen"},
+        )
 
     # 2. empty slide_timestamps in metadata, schedule extracted from steps
     metadata_empty_slides = {
@@ -554,6 +579,41 @@ async def test_slide_actions_fallback_to_steps():
         if sync_task:
             await sync_task
         assert hass.services.async_call.call_count == CALL_COUNT_FOUR
+
+
+@pytest.mark.asyncio
+async def test_async_sync_slides_drift_prevention():
+    """Test sleep delays anchor to monotonic loop time, avoiding cumulative drift."""
+    hass = MagicMock()
+    schedule = [
+        (0.0, [{"action": "light.turn_on", "target": {"entity_id": "light.one"}}]),
+        (2.0, [{"action": "light.turn_on", "target": {"entity_id": "light.two"}}]),
+    ]
+
+    loop = asyncio.get_running_loop()
+    time_cursor = [100.0]
+
+    def fake_time() -> float:
+        return time_cursor[0]
+
+    async def fake_execute(*_args: Any, **_kwargs: Any) -> None:
+        # Simulate execution of action consuming 0.5 seconds
+        time_cursor[0] += 0.5
+
+    with (
+        patch.object(loop, "time", side_effect=fake_time),
+        patch(
+            "custom_components.automation_generator.orchestrator.async_execute_background_actions",
+            side_effect=fake_execute,
+        ),
+        patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
+    ):
+        await _async_sync_slides(hass, schedule)
+        # Offset 2.0 minus elapsed 0.5 should sleep 1.5 instead of 2.0
+        mock_sleep.assert_awaited_once_with(pytest.approx(1.5))
+
+    # Empty schedule returns immediately
+    await _async_sync_slides(hass, [])
 
 
 @pytest.mark.asyncio

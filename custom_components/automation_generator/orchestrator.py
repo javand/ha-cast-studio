@@ -46,6 +46,22 @@ def get_routine_sync_task(routine_name: str) -> asyncio.Task[Any] | None:
     return _ROUTINE_SYNC_TASKS.get(routine_name)
 
 
+def _register_routine_task(
+    task: asyncio.Task[Any],
+    routine_name: str,
+) -> None:
+    """Register sync task and hook lifecycle cleanup callback."""
+    _ACTIVE_SYNC_TASKS.add(task)
+    _ROUTINE_SYNC_TASKS[routine_name] = task
+
+    def _on_done(t: asyncio.Task[Any]) -> None:
+        _ACTIVE_SYNC_TASKS.discard(t)
+        if _ROUTINE_SYNC_TASKS.get(routine_name) is t:
+            _ROUTINE_SYNC_TASKS.pop(routine_name, None)
+
+    task.add_done_callback(_on_done)
+
+
 def get_media_payload(metadata: dict[str, Any]) -> tuple[str, str]:
     """
     Determine media path and content type from routine metadata.
@@ -115,19 +131,26 @@ def extract_actions(steps_or_actions: list[dict[str, Any]]) -> list[dict[str, An
         if not isinstance(item, dict):
             continue
 
+        has_container = False
         if "actions" in item and isinstance(item["actions"], list):
+            has_container = True
             # Only include if not a visual step
             if not item.get("visual", False):
                 actions.extend(
                     [act for act in item["actions"] if isinstance(act, dict)]
                 )
-        elif "background_actions" in item and isinstance(
+        if "background_actions" in item and isinstance(
             item["background_actions"], list
         ):
+            has_container = True
             actions.extend(
                 [act for act in item["background_actions"] if isinstance(act, dict)]
             )
-        elif ("action" in item or "service" in item) and not item.get("visual", False):
+        if (
+            not has_container
+            and ("action" in item or "service" in item)
+            and not item.get("visual", False)
+        ):
             # Direct action item
             actions.append(item)
 
@@ -156,6 +179,10 @@ async def _async_execute_single_action(
     domain, service = action_name.split(".", 1)
     target = action_def.get("target")
     data = action_def.get("data") or action_def.get("service_data")
+
+    # Support root-level entity_id when target is not explicitly provided
+    if target is None and "entity_id" in action_def:
+        target = {"entity_id": action_def["entity_id"]}
 
     kwargs: dict[str, Any] = {}
     if data is not None:
@@ -211,12 +238,19 @@ def extract_slide_schedule(
     slide_timestamps = metadata.get("slide_timestamps", [])
 
     if slide_timestamps:
-        for idx, slide in enumerate(slide_timestamps):
+        for slide in slide_timestamps:
             offset = float(slide.get("timestamp", slide.get("start_time", 0.0)))
             actions = slide.get("actions_on_display") or slide.get("actions")
-            if not actions and idx < len(steps):
-                step = steps[idx]
-                actions = step.get("actions_on_display") or step.get("actions")
+            if not actions and steps:
+                slide_name = slide.get("step_name") or slide.get("name")
+                matching_step = next(
+                    (s for s in steps if s.get("name") == slide_name),
+                    None,
+                )
+                if matching_step:
+                    actions = matching_step.get(
+                        "actions_on_display"
+                    ) or matching_step.get("actions")
             if actions:
                 actions_list = actions if isinstance(actions, list) else [actions]
                 schedule.append((offset, actions_list))
@@ -242,17 +276,24 @@ async def _async_sync_slides(
     """
     Execute synchronized actions_on_display at their designated timestamps.
 
+    Sleep delays are anchored to monotonic loop time to prevent drift.
+
     Args:
         hass: Home Assistant instance.
         schedule: Sorted schedule of (offset_seconds, actions).
 
     """
-    current_time = 0.0
+    if not schedule:
+        return
+
+    loop = asyncio.get_running_loop()
+    start_time = loop.time()
+
     for offset, actions in schedule:
-        delay = offset - current_time
+        now = loop.time() - start_time
+        delay = offset - now
         if delay > 0:
             await asyncio.sleep(delay)
-            current_time = offset
         await async_execute_background_actions(hass, actions)
 
 
@@ -323,9 +364,7 @@ async def async_play_and_sync_routine(
             _async_sync_slides(hass, schedule),
             name=f"sync_slides_{routine_name}",
         )
-        _ACTIVE_SYNC_TASKS.add(task)
-        task.add_done_callback(_ACTIVE_SYNC_TASKS.discard)
-        _ROUTINE_SYNC_TASKS[routine_name] = task
+        _register_routine_task(task, routine_name)
         return task
 
     # 3. Register state listener and safety timeout
@@ -352,9 +391,7 @@ async def async_play_and_sync_routine(
             _async_sync_slides(hass, schedule),
             name=f"sync_slides_{routine_name}",
         )
-        _ACTIVE_SYNC_TASKS.add(task)
-        task.add_done_callback(_ACTIVE_SYNC_TASKS.discard)
-        _ROUTINE_SYNC_TASKS[routine_name] = task
+        _register_routine_task(task, routine_name)
         return task
 
     @callback
