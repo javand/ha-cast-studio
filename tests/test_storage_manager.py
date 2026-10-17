@@ -7,6 +7,8 @@ import time
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
+
 from custom_components.automation_generator.const import DEFAULT_OUTPUT_DIR
 from custom_components.automation_generator.storage_manager import (
     DEFAULT_SCRATCH_BASE,
@@ -35,6 +37,44 @@ def test_scratch_dir_lifecycle(tmp_path: Path):
 def test_cleanup_nonexistent_scratch_dir(tmp_path: Path):
     """Test cleanup does not raise when directory does not exist."""
     cleanup_scratch_dir("nonexistent_routine", base_tmp=str(tmp_path))
+
+
+def test_cleanup_empty_or_whitespace_routine(tmp_path: Path):
+    """Test cleanup guards against empty or whitespace routine names."""
+    sentinel = tmp_path / "keep.txt"
+    sentinel.write_text("keep me")
+
+    cleanup_scratch_dir("", base_tmp=str(tmp_path))
+    assert tmp_path.exists()
+    assert sentinel.exists()
+
+    cleanup_scratch_dir("   ", base_tmp=str(tmp_path))
+    assert tmp_path.exists()
+    assert sentinel.exists()
+
+
+def test_cleanup_path_traversal(tmp_path: Path):
+    """Test cleanup rejects directory traversal outside target_base."""
+    sub_base = tmp_path / "scratch"
+    sub_base.mkdir()
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("protected")
+
+    cleanup_scratch_dir("../outside.txt", base_tmp=str(sub_base))
+    assert outside_file.exists()
+    assert sub_base.exists()
+
+
+def test_get_routine_scratch_dir_empty_or_traversal(tmp_path: Path):
+    """Test get_routine_scratch_dir rejects invalid routine names."""
+    with pytest.raises(ValueError, match="empty or whitespace"):
+        get_routine_scratch_dir("", base_tmp=str(tmp_path))
+
+    with pytest.raises(ValueError, match="empty or whitespace"):
+        get_routine_scratch_dir("   ", base_tmp=str(tmp_path))
+
+    with pytest.raises(ValueError, match="Invalid routine_name path traversal"):
+        get_routine_scratch_dir("../escape", base_tmp=str(tmp_path))
 
 
 def test_prune_stale_files(tmp_path: Path):
