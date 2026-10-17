@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import ServiceCall
 
 from custom_components.automation_generator import (
@@ -213,7 +214,7 @@ async def test_run_routine_with_preexisting_media(
     }
     meta_file.write_text(json.dumps(metadata_content), encoding="utf-8")
 
-    dummy_play_task = asyncio.create_task(asyncio.sleep(0.01))
+    dummy_play_task = asyncio.create_task(asyncio.sleep(0.02))
 
     with (
         patch(
@@ -243,7 +244,7 @@ async def test_run_routine_with_preexisting_media(
         assert sensor.native_value == "playing"
 
         await dummy_play_task
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.01)
         assert sensor.native_value == "ready"
 
 
@@ -264,7 +265,7 @@ async def test_run_routine_on_demand_fallback(
         "slide_timestamps": [],
     }
 
-    dummy_play_task = asyncio.create_task(asyncio.sleep(0.01))
+    dummy_play_task = asyncio.create_task(asyncio.sleep(0.02))
 
     with (
         patch(
@@ -291,7 +292,7 @@ async def test_run_routine_on_demand_fallback(
         assert sensor.native_value == "playing"
 
         await dummy_play_task
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.01)
         assert sensor.native_value == "ready"
 
 
@@ -376,11 +377,94 @@ async def test_programmatic_api_calls(
             assert run_meta["duration"] == DURATION_18_5
 
 
+@pytest.mark.asyncio
+async def test_service_argument_validation(
+    mock_hass: MagicMock, sample_config: dict[str, Any]
+) -> None:
+    """Test validation errors on missing or empty routine_name."""
+    await async_setup(mock_hass, sample_config)
+
+    calls = mock_hass.services.async_register.call_args_list
+    pregen_handler = next(c.args[2] for c in calls if c.args[1] == "pregenerate_routine")
+    run_handler = next(c.args[2] for c in calls if c.args[1] == "run_routine")
+
+    # Missing routine_name in pregenerate service
+    with pytest.raises(ValueError, match="Missing or empty required service parameter"):
+        await pregen_handler(ServiceCall(mock_hass, DOMAIN, "pregenerate_routine", {}))
+
+    # Empty routine_name in run service
+    with pytest.raises(ValueError, match="Missing or empty required service parameter"):
+        await run_handler(
+            ServiceCall(mock_hass, DOMAIN, "run_routine", {"routine_name": "  "})
+        )
+
+    # Missing in Python API calls
+    with pytest.raises(ValueError, match="Missing or empty required parameter"):
+        await async_pregenerate_routine(mock_hass, "")
+
+    with pytest.raises(ValueError, match="Missing or empty required parameter"):
+        await async_run_routine(mock_hass, "")
+
+
+@pytest.mark.asyncio
+async def test_sensor_playback_lifecycle_holding_state(
+    mock_hass: MagicMock, sample_config: dict[str, Any]
+) -> None:
+    """Test that sensor holds 'playing' state while playback task is pending."""
+    await async_setup(mock_hass, sample_config)
+    calls = mock_hass.services.async_register.call_args_list
+    run_handler = next(c.args[2] for c in calls if c.args[1] == "run_routine")
+
+    loop = asyncio.get_running_loop()
+    playback_event = asyncio.Event()
+
+    async def controlled_playback() -> None:
+        await playback_event.wait()
+
+    playback_task = loop.create_task(controlled_playback())
+
+    with (
+        patch(
+            "custom_components.automation_generator.async_compile_routine_media",
+            new=AsyncMock(return_value={"video_path": "/fake.mp4", "duration": 10.0}),
+        ),
+        patch(
+            "custom_components.automation_generator.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.automation_generator.async_play_and_sync_routine",
+            new=AsyncMock(return_value=playback_task),
+        ),
+    ):
+        call = ServiceCall(mock_hass, DOMAIN, "run_routine", {"routine_name": "morning"})
+        await run_handler(call)
+
+        sensor = mock_hass.data[DOMAIN]["sensors"]["morning"]
+        # Sensor MUST stay in playing state while playback is ongoing
+        assert sensor.native_value == "playing"
+
+        # Allow loop turns to ensure it doesn't prematurely drop to ready
+        await asyncio.sleep(0.01)
+        assert sensor.native_value == "playing"
+
+        # Signal completion
+        playback_event.set()
+        await playback_task
+        await asyncio.sleep(0.01)
+
+        # Now sensor transitions to ready
+        assert sensor.native_value == "ready"
+
+
 def test_sensor_entity_state_transitions(mock_hass: MagicMock) -> None:
-    """Test AutomationGeneratorRoutineSensor states and attributes."""
+    """Test AutomationGeneratorRoutineSensor states, attributes, and options."""
     sensor = AutomationGeneratorRoutineSensor("evening", hass=mock_hass)
     assert sensor.entity_id == "sensor.automation_generator_evening"
     assert sensor.native_value == "idle"
+    assert sensor.device_class == SensorDeviceClass.ENUM
+    assert sensor.options == ["idle", "generating", "ready", "playing", "error"]
+    assert sensor.name == "Evening"
     assert sensor.extra_state_attributes["active_task"] is None
     assert sensor.extra_state_attributes["duration"] is None
 

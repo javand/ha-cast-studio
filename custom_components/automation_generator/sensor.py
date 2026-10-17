@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 
 from .const import DOMAIN, LOGGER
 
@@ -18,6 +18,8 @@ class AutomationGeneratorRoutineSensor(SensorEntity):
     """Sensor tracking routine compilation and playback lifecycle."""
 
     _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["idle", "generating", "ready", "playing", "error"]  # noqa: RUF012
 
     def __init__(
         self,
@@ -27,8 +29,7 @@ class AutomationGeneratorRoutineSensor(SensorEntity):
         """Initialize the routine status sensor."""
         self.routine_name = routine_name
         self._attr_unique_id = f"automation_generator_{routine_name}"
-        title = routine_name.replace("_", " ").title()
-        self._attr_name = f"Automation Generator {title}"
+        self._attr_name = routine_name.replace("_", " ").title()
         self.entity_id = f"sensor.automation_generator_{routine_name}"
         self._attr_icon = "mdi:play-circle-outline"
         self._state: str = "idle"
@@ -107,7 +108,8 @@ class AutomationGeneratorRoutineSensor(SensorEntity):
     def async_write_ha_state(self) -> None:
         """Write state to HA state machine, handling mock or real environments."""
         if (
-            self.hass is not None
+            getattr(self, "entity_platform", None) is None
+            and self.hass is not None
             and hasattr(self.hass, "states")
             and hasattr(self.hass.states, "async_set")
         ):

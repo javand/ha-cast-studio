@@ -310,13 +310,13 @@ def _create_task(
     return asyncio.create_task(coro, name=name)
 
 
-async def async_play_and_sync_routine(
+async def async_play_and_sync_routine(  # noqa: PLR0915
     hass: HomeAssistant,
     routine_name: str,
     target_player: str,
     metadata: dict[str, Any],
     steps: list[dict[str, Any]],
-) -> asyncio.Task[Any] | None:
+) -> asyncio.Task[Any]:
     """
     Play routine media and synchronize slide actions upon 'playing' state.
 
@@ -328,7 +328,7 @@ async def async_play_and_sync_routine(
         steps: List of routine step definitions.
 
     Returns:
-        The background synchronization task if initiated, or None.
+        An awaitable task representing the full playback lifecycle.
 
     """
     media_path, content_type = get_media_payload(metadata)
@@ -338,6 +338,7 @@ async def async_play_and_sync_routine(
             metadata.get("timeout", DEFAULT_PLAYING_TIMEOUT),
         )
     )
+    duration = float(metadata.get("duration", 0.0))
 
     # 1. Dispatch playback request to media player
     await hass.services.async_call(
@@ -351,6 +352,9 @@ async def async_play_and_sync_routine(
     )
 
     schedule = extract_slide_schedule(metadata, steps)
+    loop = asyncio.get_running_loop()
+    playing_future: asyncio.Future[asyncio.Task[Any] | None] = loop.create_future()
+    start_time = [loop.time()]
 
     # 2. Check if player is already 'playing' at call time
     current_state = hass.states.get(target_player)
@@ -365,61 +369,85 @@ async def async_play_and_sync_routine(
             name=f"sync_slides_{routine_name}",
         )
         _register_routine_task(task, routine_name)
-        return task
+        playing_future.set_result(task)
+    else:
+        # 3. Register state listener and safety timeout
+        cleanups: dict[str, Any] = {"unsub_state": None, "unsub_timeout": None}
+        sync_started = False
 
-    # 3. Register state listener and safety timeout
-    cleanups: dict[str, Any] = {"unsub_state": None, "unsub_timeout": None}
-    sync_started = False
+        def _cleanup() -> None:
+            if cleanups["unsub_state"] is not None:
+                cleanups["unsub_state"]()
+                cleanups["unsub_state"] = None
+            if cleanups["unsub_timeout"] is not None:
+                cleanups["unsub_timeout"]()
+                cleanups["unsub_timeout"] = None
 
-    def _cleanup() -> None:
-        if cleanups["unsub_state"] is not None:
-            cleanups["unsub_state"]()
-            cleanups["unsub_state"] = None
-        if cleanups["unsub_timeout"] is not None:
-            cleanups["unsub_timeout"]()
-            cleanups["unsub_timeout"] = None
+        def _start_sync() -> asyncio.Task[Any] | None:
+            nonlocal sync_started
+            if sync_started:
+                return None
+            sync_started = True
+            start_time[0] = loop.time()
+            _cleanup()
 
-    def _start_sync() -> asyncio.Task[Any] | None:
-        nonlocal sync_started
-        if sync_started:
-            return None
-        sync_started = True
-        _cleanup()
-
-        task = _create_task(
-            hass,
-            _async_sync_slides(hass, schedule),
-            name=f"sync_slides_{routine_name}",
-        )
-        _register_routine_task(task, routine_name)
-        return task
-
-    @callback
-    def _handle_state_changed(event: Event) -> asyncio.Task[Any] | None:
-        new_state = event.data.get("new_state")
-        if new_state is not None and getattr(new_state, "state", None) == "playing":
-            LOGGER.debug(
-                "Player '%s' entered 'playing'; starting slide sync for '%s'",
-                target_player,
-                routine_name,
+            task = _create_task(
+                hass,
+                _async_sync_slides(hass, schedule),
+                name=f"sync_slides_{routine_name}",
             )
-            return _start_sync()
-        return None
+            _register_routine_task(task, routine_name)
+            if not playing_future.done():
+                playing_future.set_result(task)
+            return task
 
-    @callback
-    def _handle_timeout(_now: Any) -> None:
-        if sync_started:
-            return
-        LOGGER.warning(
-            "Safety timeout (%.1fs) expired waiting for '%s' to enter 'playing'",
-            timeout_val,
-            target_player,
+        @callback
+        def _handle_state_changed(event: Event) -> asyncio.Task[Any] | None:
+            new_state = event.data.get("new_state")
+            if new_state is not None and getattr(new_state, "state", None) == "playing":
+                LOGGER.debug(
+                    "Player '%s' entered 'playing'; starting slide sync for '%s'",
+                    target_player,
+                    routine_name,
+                )
+                return _start_sync()
+            return None
+
+        @callback
+        def _handle_timeout(_now: Any) -> None:
+            if sync_started:
+                return
+            LOGGER.warning(
+                "Safety timeout (%.1fs) expired waiting for '%s' to enter 'playing'",
+                timeout_val,
+                target_player,
+            )
+            _cleanup()
+            if not playing_future.done():
+                playing_future.set_result(None)
+
+        cleanups["unsub_state"] = async_track_state_change_event(
+            hass, [target_player], _handle_state_changed
         )
-        _cleanup()
+        cleanups["unsub_timeout"] = async_call_later(hass, timeout_val, _handle_timeout)
 
-    cleanups["unsub_state"] = async_track_state_change_event(
-        hass, [target_player], _handle_state_changed
+    async def _coordinate_playback_lifecycle() -> None:
+        try:
+            sync_task = await playing_future
+            if sync_task is not None:
+                await sync_task
+                if duration > 0:
+                    now = loop.time() - start_time[0]
+                    remaining = duration - now
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+        except asyncio.CancelledError:
+            if not playing_future.done():
+                playing_future.cancel()
+            raise
+
+    return _create_task(
+        hass,
+        _coordinate_playback_lifecycle(),
+        name=f"playback_lifecycle_{routine_name}",
     )
-    cleanups["unsub_timeout"] = async_call_later(hass, timeout_val, _handle_timeout)
-
-    return None

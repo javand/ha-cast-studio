@@ -686,3 +686,51 @@ async def test_play_and_sync_timeout_after_sync_started():
         # 2. Timeout fires after sync started -> should return early
         timeout_cb(None)
         assert hass.services.async_call.call_count == CALL_COUNT_TWO
+
+
+@pytest.mark.asyncio
+async def test_play_and_sync_returns_lifecycle_task():
+    """Test async_play_and_sync_routine returns lifecycle task that completes upon sync."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    mock_state = MagicMock()
+    mock_state.state = "idle"
+    hass.states.get.return_value = mock_state
+
+    metadata = {
+        "video_path": "/local/morning.mp4",
+        "duration": 0.0,
+        "slide_timestamps": [
+            {
+                "timestamp": 0.0,
+                "actions_on_display": [
+                    {"action": "light.turn_on", "target": {"entity_id": "light.desk"}}
+                ],
+            }
+        ],
+    }
+
+    with (
+        patch(
+            "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+        ) as mock_track,
+        patch(
+            "custom_components.automation_generator.orchestrator.async_call_later"
+        ),
+    ):
+        playback_task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.display", metadata, []
+        )
+        assert isinstance(playback_task, asyncio.Task)
+        assert not playback_task.done()
+
+        # Trigger playing event
+        state_cb = mock_track.call_args[0][2]
+        event_playing = MagicMock()
+        event_playing.data = {"new_state": MagicMock(state="playing")}
+        state_cb(event_playing)
+
+        # Await the lifecycle task to verify it completes once sync finishes
+        await playback_task
+        assert playback_task.done()
+        assert hass.services.async_call.call_count == CALL_COUNT_TWO

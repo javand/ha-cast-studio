@@ -9,6 +9,8 @@ background smart home actions.
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -27,7 +29,6 @@ from .generator import async_compile_routine_media
 from .orchestrator import (
     async_execute_background_actions,
     async_play_and_sync_routine,
-    get_routine_sync_task,
 )
 from .sensor import (
     AutomationGeneratorRoutineSensor,
@@ -36,7 +37,7 @@ from .sensor import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Callable, Coroutine
 
     from homeassistant.core import HomeAssistant, ServiceCall
 
@@ -58,6 +59,31 @@ def _create_task(
         if isinstance(res, asyncio.Task):
             return res
     return asyncio.create_task(coro, name=name)
+
+
+async def _async_run_in_executor(
+    hass: HomeAssistant | None,
+    func: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Execute synchronous blocking function in Home Assistant executor if available."""
+    if hass is not None:
+        executor_func = getattr(hass, "async_add_executor_job", None)
+        if callable(executor_func):
+            target: Callable[..., Any] = (
+                functools.partial(func, **kwargs) if kwargs else func
+            )
+            res = executor_func(target, *args)
+            if inspect.isawaitable(res):
+                return await res
+
+    loop = asyncio.get_running_loop()
+    target = functools.partial(func, **kwargs) if kwargs else func
+    try:
+        return await loop.run_in_executor(None, target, *args)
+    except Exception:  # noqa: BLE001
+        return func(*args, **kwargs)
 
 
 def _is_media_ready_and_fresh(
@@ -124,6 +150,10 @@ async def async_pregenerate_routine(  # noqa: PLR0913
     output_dir: str | None = None,
 ) -> dict[str, Any]:
     """Pregenerate routine media assets silently ahead of time."""
+    if not routine_name or not str(routine_name).strip():
+        msg = "Missing or empty required parameter 'routine_name'"
+        raise ValueError(msg)
+
     domain_data = hass.data.setdefault(DOMAIN, {})
     if routine_config is None:
         routine_config = domain_data.get("routines", {}).get(routine_name, {})
@@ -174,6 +204,10 @@ async def async_run_routine(  # noqa: PLR0913
     output_dir: str | None = None,
 ) -> dict[str, Any]:
     """Execute routine with instant playback or fallback on-demand generation."""
+    if not routine_name or not str(routine_name).strip():
+        msg = "Missing or empty required parameter 'routine_name'"
+        raise ValueError(msg)
+
     domain_data = hass.data.setdefault(DOMAIN, {})
     if routine_config is None:
         routine_config = domain_data.get("routines", {}).get(routine_name, {})
@@ -188,8 +222,13 @@ async def async_run_routine(  # noqa: PLR0913
 
     sensor = async_get_or_create_sensor(hass, routine_name)
 
-    # 1. Check if pre-compiled media exists and is not stale (<24 hours old)
-    is_ready, metadata = _is_media_ready_and_fresh(output_dir, routine_name)
+    # 1. Check if media exists and is not stale (<24h) via executor
+    is_ready, metadata = await _async_run_in_executor(
+        hass,
+        _is_media_ready_and_fresh,
+        output_dir,
+        routine_name,
+    )
 
     # 2. If not ready/missing or stale, compile on-demand
     if not is_ready or metadata is None:
@@ -256,16 +295,11 @@ async def async_run_routine(  # noqa: PLR0913
     # 6. Monitor playback completion and restore sensor state to ready
     async def _monitor_playback_completion(
         task: asyncio.Task[Any] | None,
-        routine: str,
         sens: AutomationGeneratorRoutineSensor,
     ) -> None:
         try:
             if task is not None:
                 await task
-            else:
-                registered = get_routine_sync_task(routine)
-                if registered is not None:
-                    await registered
         except Exception as err:  # noqa: BLE001
             LOGGER.debug("Playback completion wait exception: %s", err)
         finally:
@@ -273,7 +307,7 @@ async def async_run_routine(  # noqa: PLR0913
 
     _create_task(
         hass,
-        _monitor_playback_completion(play_task, routine_name, sensor),
+        _monitor_playback_completion(play_task, sensor),
         name=f"monitor_playback_{routine_name}",
     )
 
@@ -320,9 +354,13 @@ async def async_setup(
 
     async def _async_handle_pregenerate(call: ServiceCall) -> None:
         data = dict(call.data)
+        routine_name = data.get("routine_name")
+        if not routine_name or not str(routine_name).strip():
+            msg = "Missing or empty required service parameter 'routine_name'"
+            raise ValueError(msg)
         await async_pregenerate_routine(
             hass,
-            routine_name=data["routine_name"],
+            routine_name=routine_name,
             target_player=data.get("target_player"),
             routine_config=data.get("routine_config"),
             recipient=data.get("recipient"),
@@ -331,9 +369,13 @@ async def async_setup(
 
     async def _async_handle_run(call: ServiceCall) -> None:
         data = dict(call.data)
+        routine_name = data.get("routine_name")
+        if not routine_name or not str(routine_name).strip():
+            msg = "Missing or empty required service parameter 'routine_name'"
+            raise ValueError(msg)
         await async_run_routine(
             hass,
-            routine_name=data["routine_name"],
+            routine_name=routine_name,
             target_player=data.get("target_player"),
             routine_config=data.get("routine_config"),
             recipient=data.get("recipient"),
