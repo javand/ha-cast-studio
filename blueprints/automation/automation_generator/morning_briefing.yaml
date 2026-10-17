@@ -5,6 +5,10 @@ blueprint:
     wake-up briefing with synchronized display visuals, dual-voice TTS narration, and concurrent
     smart home actions.
   domain: automation
+  author: "Javan Dicks (@javand)"
+  homeassistant:
+    min_version: "2024.10.0"
+  source_url: "https://github.com/javand/ha-automation-generator/blob/main/blueprints/automation/automation_generator/morning_briefing.yaml"
   input:
     pregenerate_time:
       name: Pre-generation Time
@@ -51,14 +55,12 @@ blueprint:
     todo_entity:
       name: Todo Entity (Optional)
       description: Task or to-do list entity to summarize in the morning briefing.
-      default: ""
       selector:
         entity:
           domain: todo
     scripture_sensor:
       name: Scripture Sensor (Optional)
       description: Sensor entity providing daily scripture or morning inspirational thought.
-      default: ""
       selector:
         entity:
           domain: sensor
@@ -105,7 +107,6 @@ blueprint:
     conversation_agent:
       name: Conversation Agent (Optional)
       description: Specific Home Assistant conversation agent entity for AI script generation.
-      default: ""
       selector:
         conversation_agent: {}
     background_actions:
@@ -123,7 +124,6 @@ trigger:
     at: !input pregenerate_time
     id: pregenerate
   - triggers: !input wake_trigger
-    id: wakeup
 
 action:
   - choose:
@@ -162,39 +162,36 @@ action:
                     entity_id: !input scripture_sensor
                     voice: !input scripture_voice
                     voice_personality: !input scripture_personality
-      - conditions:
-          - condition: trigger
-            id: wakeup
-        sequence:
-          - action: automation_generator.run_routine
-            data:
-              routine_name: morning_briefing
-              target_player: !input target_player
-              recipient:
-                name: !input recipient_name
-                phonetic_name: !input phonetic_name
-              routine_config:
-                visuals: true
-                conversation_agent: !input conversation_agent
-                background_actions: !input background_actions
-                steps:
-                  - name: weather
-                    visual: true
-                    entity_id: !input weather_entity
-                    voice: !input host_voice
-                    voice_personality: !input host_personality
-                  - name: calendar
-                    visual: true
-                    entity_ids: !input calendar_entities
-                    voice: !input host_voice
-                    voice_personality: !input host_personality
-                  - name: todo
-                    visual: true
-                    entity_id: !input todo_entity
-                    voice: !input host_voice
-                    voice_personality: !input host_personality
-                  - name: scripture
-                    visual: true
-                    entity_id: !input scripture_sensor
-                    voice: !input scripture_voice
-                    voice_personality: !input scripture_personality
+    default:
+      - action: automation_generator.run_routine
+        data:
+          routine_name: morning_briefing
+          target_player: !input target_player
+          recipient:
+            name: !input recipient_name
+            phonetic_name: !input phonetic_name
+          routine_config:
+            visuals: true
+            conversation_agent: !input conversation_agent
+            background_actions: !input background_actions
+            steps:
+              - name: weather
+                visual: true
+                entity_id: !input weather_entity
+                voice: !input host_voice
+                voice_personality: !input host_personality
+              - name: calendar
+                visual: true
+                entity_ids: !input calendar_entities
+                voice: !input host_voice
+                voice_personality: !input host_personality
+              - name: todo
+                visual: true
+                entity_id: !input todo_entity
+                voice: !input host_voice
+                voice_personality: !input host_personality
+              - name: scripture
+                visual: true
+                entity_id: !input scripture_sensor
+                voice: !input scripture_voice
+                voice_personality: !input scripture_personality

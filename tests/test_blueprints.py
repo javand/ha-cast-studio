@@ -41,14 +41,21 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def test_morning_briefing_blueprint_structure():
-    """Verify morning briefing blueprint exists, parses, and has required inputs."""
+    """Verify morning briefing blueprint exists, parses, and has required inputs and metadata."""
     assert os.path.exists(MORNING_BRIEFING_PATH), f"Missing {MORNING_BRIEFING_PATH}"
     bp = _load_yaml(MORNING_BRIEFING_PATH)
 
-    assert bp["blueprint"]["domain"] == "automation"
-    assert bp["blueprint"]["name"] == "Automation Generator - Morning Briefing"
+    meta = bp["blueprint"]
+    assert meta["domain"] == "automation"
+    assert meta["name"] == "Automation Generator - Morning Briefing"
+    assert meta["author"] == "Javan Dicks (@javand)"
+    assert meta["homeassistant"]["min_version"] == "2024.10.0"
+    assert (
+        meta["source_url"]
+        == "https://github.com/javand/ha-automation-generator/blob/main/blueprints/automation/automation_generator/morning_briefing.yaml"
+    )
 
-    inputs = bp["blueprint"]["input"]
+    inputs = meta["input"]
     expected_inputs = [
         "pregenerate_time",
         "wake_trigger",
@@ -88,6 +95,11 @@ def test_morning_briefing_blueprint_structure():
     assert "todo" in str(inputs["todo_entity"]["selector"])
     assert "sensor" in str(inputs["scripture_sensor"]["selector"])
 
+    # Optional entity selectors should not have empty-string default
+    assert "default" not in inputs["todo_entity"]
+    assert "default" not in inputs["scripture_sensor"]
+    assert "default" not in inputs["conversation_agent"]
+
     assert inputs["host_voice"]["default"] == "Pulcherrima"
     assert inputs["host_personality"]["default"] == "news_anchor"
     assert inputs["scripture_voice"]["default"] == "Enceladus"
@@ -103,35 +115,41 @@ def test_morning_briefing_triggers_and_actions():
 
     assert bp.get("mode") in ("restart", "queued")
 
-    # Verify triggers
+    # Verify triggers: pregenerate time trigger has id 'pregenerate', wake_trigger uses triggers: !input
     triggers = bp.get("trigger") or bp.get("triggers", [])
     assert isinstance(triggers, list)
-    trigger_ids = [t.get("id") for t in triggers if isinstance(t, dict)]
+    trigger_ids = [t.get("id") for t in triggers if isinstance(t, dict) and "id" in t]
     assert "pregenerate" in trigger_ids
-    assert "wakeup" in trigger_ids
+
+    # wake_trigger referenced without id alongside triggers:
+    triggers_str = str(triggers)
+    assert "wake_trigger" in triggers_str
 
     # Verify choose action
     actions = bp.get("action") or bp.get("actions", [])
     assert isinstance(actions, list)
-    choose_action = None
+    choose_block = None
     for a in actions:
         if isinstance(a, dict) and "choose" in a:
-            choose_action = a["choose"]
+            choose_block = a
             break
-    assert choose_action is not None, "Choose action block missing in morning briefing"
+    assert choose_block is not None, "Choose action block missing in morning briefing"
 
-    # Identify pregenerate and wakeup branches in choose
+    # Identify pregenerate branch in choose conditions
+    choose_branches = choose_block["choose"]
     found_pregen = False
-    found_wakeup = False
-    for branch in choose_action:
+    for branch in choose_branches:
         branch_str = str(branch)
         if "pregenerate" in branch_str and "pregenerate_routine" in branch_str:
             found_pregen = True
-        if "wakeup" in branch_str and "run_routine" in branch_str:
-            found_wakeup = True
-
     assert found_pregen, "pregenerate branch with pregenerate_routine call missing"
-    assert found_wakeup, "wakeup branch with run_routine call missing"
+
+    # Identify run_routine in default branch
+    default_branch = choose_block.get("default")
+    assert default_branch is not None, "Default branch missing from choose action"
+    default_str = str(default_branch)
+    assert "automation_generator.run_routine" in default_str
+    assert "morning_briefing" in default_str
 
 
 def test_morning_briefing_ha_blueprint_schema():
@@ -144,14 +162,21 @@ def test_morning_briefing_ha_blueprint_schema():
 
 
 def test_bedtime_routine_blueprint_structure():
-    """Verify bedtime routine blueprint exists, parses, and has required inputs."""
+    """Verify bedtime routine blueprint exists, parses, and has required inputs and metadata."""
     assert os.path.exists(BEDTIME_ROUTINE_PATH), f"Missing {BEDTIME_ROUTINE_PATH}"
     bp = _load_yaml(BEDTIME_ROUTINE_PATH)
 
-    assert bp["blueprint"]["domain"] == "automation"
-    assert bp["blueprint"]["name"] == "Automation Generator - Bedtime Routine"
+    meta = bp["blueprint"]
+    assert meta["domain"] == "automation"
+    assert meta["name"] == "Automation Generator - Bedtime Routine"
+    assert meta["author"] == "Javan Dicks (@javand)"
+    assert meta["homeassistant"]["min_version"] == "2024.10.0"
+    assert (
+        meta["source_url"]
+        == "https://github.com/javand/ha-automation-generator/blob/main/blueprints/automation/automation_generator/bedtime_routine.yaml"
+    )
 
-    inputs = bp["blueprint"]["input"]
+    inputs = meta["input"]
     expected_inputs = [
         "bedtime_trigger",
         "recipient_name",

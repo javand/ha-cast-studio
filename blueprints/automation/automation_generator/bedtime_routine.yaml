@@ -4,6 +4,10 @@ blueprint:
     Executes an evening wind-down routine with soothing multimedia playback,
     concurrent whole-house shutdown actions, and synchronized bedside display actions.
   domain: automation
+  author: "Javan Dicks (@javand)"
+  homeassistant:
+    min_version: "2024.10.0"
+  source_url: "https://github.com/javand/ha-automation-generator/blob/main/blueprints/automation/automation_generator/bedtime_routine.yaml"
   input:
     bedtime_trigger:
       name: Bedtime Trigger
