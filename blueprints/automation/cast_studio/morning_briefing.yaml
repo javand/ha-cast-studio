@@ -1,5 +1,5 @@
 blueprint:
-  name: Automation Generator - Morning Briefing
+  name: CastStudio - Morning Briefing
   description: >-
     Silently pre-compiles multimedia briefing assets overnight and delivers an instant
     wake-up briefing with synchronized display visuals, dual-voice TTS narration, and concurrent
@@ -8,7 +8,7 @@ blueprint:
   author: "Javan Dicks (@javand)"
   homeassistant:
     min_version: "2024.10.0"
-  source_url: "https://github.com/javand/ha-automation-generator/blob/main/blueprints/automation/automation_generator/morning_briefing.yaml"
+  source_url: "https://github.com/javand/ha-cast-studio/blob/main/blueprints/automation/cast_studio/morning_briefing.yaml"
   input:
     pregenerate_time:
       name: Pre-generation Time
@@ -131,7 +131,7 @@ action:
           - condition: trigger
             id: pregenerate
         sequence:
-          - action: automation_generator.pregenerate_routine
+          - action: cast_studio.pregenerate_routine
             data:
               routine_name: morning_briefing
               target_player: !input target_player
@@ -163,7 +163,7 @@ action:
                     voice: !input scripture_voice
                     voice_personality: !input scripture_personality
     default:
-      - action: automation_generator.run_routine
+      - action: cast_studio.run_routine
         data:
           routine_name: morning_briefing
           target_player: !input target_player

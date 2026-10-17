@@ -1,4 +1,4 @@
-"""Tests for Automation Generator blueprints packaging and schema verification."""
+"""Tests for CastStudio blueprints packaging and schema verification."""
 
 from __future__ import annotations
 
@@ -12,13 +12,21 @@ from homeassistant.components.blueprint.models import Blueprint
 
 MORNING_BRIEFING_INPUT_COUNT = 15
 BEDTIME_ROUTINE_INPUT_COUNT = 8
+EVENT_ALERT_INPUT_COUNT = 9
+WELCOME_HOME_INPUT_COUNT = 8
 
-MORNING_BRIEFING_PATH = Path(
-    "blueprints/automation/automation_generator/morning_briefing.yaml"
-)
-BEDTIME_ROUTINE_PATH = Path(
-    "blueprints/automation/automation_generator/bedtime_routine.yaml"
-)
+BLUEPRINTS_DIR = Path("blueprints/automation/cast_studio")
+MORNING_BRIEFING_PATH = BLUEPRINTS_DIR / "morning_briefing.yaml"
+BEDTIME_ROUTINE_PATH = BLUEPRINTS_DIR / "bedtime_routine.yaml"
+EVENT_ALERT_PATH = BLUEPRINTS_DIR / "event_alert.yaml"
+WELCOME_HOME_PATH = BLUEPRINTS_DIR / "welcome_home.yaml"
+
+ALL_BLUEPRINT_PATHS = [
+    MORNING_BRIEFING_PATH,
+    BEDTIME_ROUTINE_PATH,
+    EVENT_ALERT_PATH,
+    WELCOME_HOME_PATH,
+]
 
 
 # Register custom yaml constructor for !input tag so standard yaml.safe_load succeeds
@@ -47,12 +55,12 @@ def test_morning_briefing_blueprint_structure():
 
     meta = bp["blueprint"]
     assert meta["domain"] == "automation"
-    assert meta["name"] == "Automation Generator - Morning Briefing"
+    assert meta["name"] == "CastStudio - Morning Briefing"
     assert meta["author"] == "Javan Dicks (@javand)"
     assert meta["homeassistant"]["min_version"] == "2024.10.0"
     assert (
         meta["source_url"]
-        == "https://github.com/javand/ha-automation-generator/blob/main/blueprints/automation/automation_generator/morning_briefing.yaml"
+        == "https://github.com/javand/ha-cast-studio/blob/main/blueprints/automation/cast_studio/morning_briefing.yaml"
     )
 
     inputs = meta["input"]
@@ -144,12 +152,13 @@ def test_morning_briefing_triggers_and_actions():
         if "pregenerate" in branch_str and "pregenerate_routine" in branch_str:
             found_pregen = True
     assert found_pregen, "pregenerate branch with pregenerate_routine call missing"
+    assert "cast_studio.pregenerate_routine" in str(choose_branches)
 
     # Identify run_routine in default branch
     default_branch = choose_block.get("default")
     assert default_branch is not None, "Default branch missing from choose action"
     default_str = str(default_branch)
-    assert "automation_generator.run_routine" in default_str
+    assert "cast_studio.run_routine" in default_str
     assert "morning_briefing" in default_str
 
 
@@ -158,7 +167,7 @@ def test_morning_briefing_ha_blueprint_schema():
     data = _load_yaml(MORNING_BRIEFING_PATH)
     ha_bp = Blueprint(data, schema=AUTOMATION_BLUEPRINT_SCHEMA)
     assert ha_bp.domain == "automation"
-    assert ha_bp.name == "Automation Generator - Morning Briefing"
+    assert ha_bp.name == "CastStudio - Morning Briefing"
     assert len(ha_bp.inputs) == MORNING_BRIEFING_INPUT_COUNT
 
 
@@ -169,12 +178,12 @@ def test_bedtime_routine_blueprint_structure():
 
     meta = bp["blueprint"]
     assert meta["domain"] == "automation"
-    assert meta["name"] == "Automation Generator - Bedtime Routine"
+    assert meta["name"] == "CastStudio - Bedtime Routine"
     assert meta["author"] == "Javan Dicks (@javand)"
     assert meta["homeassistant"]["min_version"] == "2024.10.0"
     assert (
         meta["source_url"]
-        == "https://github.com/javand/ha-automation-generator/blob/main/blueprints/automation/automation_generator/bedtime_routine.yaml"
+        == "https://github.com/javand/ha-cast-studio/blob/main/blueprints/automation/cast_studio/bedtime_routine.yaml"
     )
 
     inputs = meta["input"]
@@ -219,7 +228,7 @@ def test_bedtime_routine_triggers_and_actions():
     actions = bp.get("action") or bp.get("actions", [])
     assert isinstance(actions, list)
     action_str = str(actions)
-    assert "automation_generator.run_routine" in action_str
+    assert "cast_studio.run_routine" in action_str
     assert "bedtime_routine" in action_str
 
 
@@ -228,5 +237,193 @@ def test_bedtime_routine_ha_blueprint_schema():
     data = _load_yaml(BEDTIME_ROUTINE_PATH)
     ha_bp = Blueprint(data, schema=AUTOMATION_BLUEPRINT_SCHEMA)
     assert ha_bp.domain == "automation"
-    assert ha_bp.name == "Automation Generator - Bedtime Routine"
+    assert ha_bp.name == "CastStudio - Bedtime Routine"
     assert len(ha_bp.inputs) == BEDTIME_ROUTINE_INPUT_COUNT
+
+
+def test_event_alert_blueprint_structure():
+    """Verify event alert blueprint exists, parses, and has required inputs and metadata."""
+    assert os.path.exists(EVENT_ALERT_PATH), f"Missing {EVENT_ALERT_PATH}"
+    bp = _load_yaml(EVENT_ALERT_PATH)
+
+    meta = bp["blueprint"]
+    assert meta["domain"] == "automation"
+    assert meta["name"] == "CastStudio - Reusable Event Alert"
+    assert meta["author"] == "Javan Dicks (@javand)"
+    assert meta["homeassistant"]["min_version"] == "2024.10.0"
+    assert (
+        meta["source_url"]
+        == "https://github.com/javand/ha-cast-studio/blob/main/blueprints/automation/cast_studio/event_alert.yaml"
+    )
+    assert "zero-latency visual alert clip" in meta["description"]
+
+    inputs = meta["input"]
+    expected_inputs = [
+        "alert_trigger",
+        "clip_name",
+        "target_player",
+        "alert_title",
+        "alert_message",
+        "image_asset",
+        "alert_voice",
+        "alert_personality",
+        "background_actions",
+    ]
+    for inp in expected_inputs:
+        assert inp in inputs, f"Input '{inp}' missing from event alert blueprint"
+
+    assert "trigger" in inputs["alert_trigger"]["selector"]
+    assert inputs["clip_name"]["default"] == "freezer_alert"
+    assert "text" in inputs["clip_name"]["selector"]
+
+    assert "media_player" in str(inputs["target_player"]["selector"])
+    assert inputs["alert_title"]["default"] == "Freezer Door Open!"
+    assert "text" in inputs["alert_title"]["selector"]
+
+    assert inputs["alert_message"]["default"] == "Attention: The kitchen freezer door has been left open."
+    assert "text" in inputs["alert_message"]["selector"]
+
+    assert inputs["image_asset"]["default"] == "dripping_ice.png"
+    assert "text" in inputs["image_asset"]["selector"]
+
+    assert inputs["alert_voice"]["default"] == "Pulcherrima"
+    assert "select" in inputs["alert_voice"]["selector"]
+    assert "Pulcherrima" in inputs["alert_voice"]["selector"]["select"]["options"]
+    assert "Enceladus" in inputs["alert_voice"]["selector"]["select"]["options"]
+
+    assert inputs["alert_personality"]["default"] == "news_anchor"
+    assert "text" in inputs["alert_personality"]["selector"]
+
+    assert "action" in inputs["background_actions"]["selector"]
+    assert inputs["background_actions"]["default"] == []
+
+
+def test_event_alert_triggers_and_actions():
+    """Verify event alert triggers, mode, and action payload."""
+    bp = _load_yaml(EVENT_ALERT_PATH)
+
+    assert bp.get("mode") in ("restart", "queued", "single")
+
+    triggers = bp.get("trigger") or bp.get("triggers", [])
+    assert isinstance(triggers, list)
+    trigger_str = str(triggers)
+    assert "alert_trigger" in trigger_str
+
+    actions = bp.get("action") or bp.get("actions", [])
+    assert isinstance(actions, list)
+    action_str = str(actions)
+    assert "cast_studio.run_routine" in action_str
+    assert "clip_name" in action_str
+    assert "alert_title" in action_str
+    assert "alert_message" in action_str
+    assert "image_asset" in action_str
+    assert "alert_voice" in action_str
+    assert "alert_personality" in action_str
+    assert "background_actions" in action_str
+
+
+def test_event_alert_ha_blueprint_schema():
+    """Validate event alert against Home Assistant core blueprint schema."""
+    data = _load_yaml(EVENT_ALERT_PATH)
+    ha_bp = Blueprint(data, schema=AUTOMATION_BLUEPRINT_SCHEMA)
+    assert ha_bp.domain == "automation"
+    assert ha_bp.name == "CastStudio - Reusable Event Alert"
+    assert len(ha_bp.inputs) == EVENT_ALERT_INPUT_COUNT
+
+
+def test_welcome_home_blueprint_structure():
+    """Verify welcome home blueprint exists, parses, and has required inputs and metadata."""
+    assert os.path.exists(WELCOME_HOME_PATH), f"Missing {WELCOME_HOME_PATH}"
+    bp = _load_yaml(WELCOME_HOME_PATH)
+
+    meta = bp["blueprint"]
+    assert meta["domain"] == "automation"
+    assert meta["name"] == "CastStudio - Welcome Home Routine"
+    assert meta["author"] == "Javan Dicks (@javand)"
+    assert meta["homeassistant"]["min_version"] == "2024.10.0"
+    assert (
+        meta["source_url"]
+        == "https://github.com/javand/ha-cast-studio/blob/main/blueprints/automation/cast_studio/welcome_home.yaml"
+    )
+    assert "greeting" in meta["description"].lower()
+
+    inputs = meta["input"]
+    expected_inputs = [
+        "arrival_trigger",
+        "recipient_name",
+        "phonetic_name",
+        "target_player",
+        "avatar_image",
+        "welcome_voice",
+        "welcome_personality",
+        "welcome_actions",
+    ]
+    for inp in expected_inputs:
+        assert inp in inputs, f"Input '{inp}' missing from welcome home blueprint"
+
+    assert "trigger" in inputs["arrival_trigger"]["selector"]
+    assert inputs["recipient_name"]["default"] == "Javan"
+    assert "text" in inputs["recipient_name"]["selector"]
+
+    assert inputs["phonetic_name"]["default"] == "Jay-ven"
+    assert "text" in inputs["phonetic_name"]["selector"]
+
+    assert "media_player" in str(inputs["target_player"]["selector"])
+    assert inputs["avatar_image"]["default"] == "welcome_avatar.png"
+    assert "text" in inputs["avatar_image"]["selector"]
+
+    assert inputs["welcome_voice"]["default"] == "Pulcherrima"
+    assert "select" in inputs["welcome_voice"]["selector"]
+    assert "Pulcherrima" in inputs["welcome_voice"]["selector"]["select"]["options"]
+    assert "Enceladus" in inputs["welcome_voice"]["selector"]["select"]["options"]
+
+    assert inputs["welcome_personality"]["default"] == "life_coach"
+    assert "text" in inputs["welcome_personality"]["selector"]
+
+    assert "action" in inputs["welcome_actions"]["selector"]
+    assert inputs["welcome_actions"]["default"] == []
+
+
+def test_welcome_home_triggers_and_actions():
+    """Verify welcome home triggers, mode, and action payload."""
+    bp = _load_yaml(WELCOME_HOME_PATH)
+
+    assert bp.get("mode") == "single"
+    assert bp.get("max_exceeded") == "silent"
+
+    triggers = bp.get("trigger") or bp.get("triggers", [])
+    assert isinstance(triggers, list)
+    trigger_str = str(triggers)
+    assert "arrival_trigger" in trigger_str
+
+    actions = bp.get("action") or bp.get("actions", [])
+    assert isinstance(actions, list)
+    action_str = str(actions)
+    assert "cast_studio.run_routine" in action_str
+    assert "welcome_home" in action_str
+    assert "recipient_name" in action_str
+    assert "phonetic_name" in action_str
+    assert "avatar_image" in action_str
+    assert "welcome_voice" in action_str
+    assert "welcome_personality" in action_str
+    assert "welcome_actions" in action_str
+
+
+def test_welcome_home_ha_blueprint_schema():
+    """Validate welcome home against Home Assistant core blueprint schema."""
+    data = _load_yaml(WELCOME_HOME_PATH)
+    ha_bp = Blueprint(data, schema=AUTOMATION_BLUEPRINT_SCHEMA)
+    assert ha_bp.domain == "automation"
+    assert ha_bp.name == "CastStudio - Welcome Home Routine"
+    assert len(ha_bp.inputs) == WELCOME_HOME_INPUT_COUNT
+
+
+def test_all_four_blueprints_exist_and_validate():
+    """Verify all 4 blueprints exist in blueprints/automation/cast_studio and pass schema."""
+    assert len(ALL_BLUEPRINT_PATHS) == 4
+    for path in ALL_BLUEPRINT_PATHS:
+        assert path.exists(), f"Blueprint file does not exist: {path}"
+        data = _load_yaml(path)
+        ha_bp = Blueprint(data, schema=AUTOMATION_BLUEPRINT_SCHEMA)
+        assert ha_bp.domain == "automation"
+        assert len(ha_bp.inputs) > 0

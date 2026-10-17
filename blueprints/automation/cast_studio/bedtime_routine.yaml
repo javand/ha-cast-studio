@@ -1,5 +1,5 @@
 blueprint:
-  name: Automation Generator - Bedtime Routine
+  name: CastStudio - Bedtime Routine
   description: >-
     Executes an evening wind-down routine with soothing multimedia playback,
     concurrent whole-house shutdown actions, and synchronized bedside display actions.
@@ -7,7 +7,7 @@ blueprint:
   author: "Javan Dicks (@javand)"
   homeassistant:
     min_version: "2024.10.0"
-  source_url: "https://github.com/javand/ha-automation-generator/blob/main/blueprints/automation/automation_generator/bedtime_routine.yaml"
+  source_url: "https://github.com/javand/ha-cast-studio/blob/main/blueprints/automation/cast_studio/bedtime_routine.yaml"
   input:
     bedtime_trigger:
       name: Bedtime Trigger
@@ -72,7 +72,7 @@ trigger:
   - triggers: !input bedtime_trigger
 
 action:
-  - action: automation_generator.run_routine
+  - action: cast_studio.run_routine
     data:
       routine_name: bedtime_routine
       target_player: !input target_player
