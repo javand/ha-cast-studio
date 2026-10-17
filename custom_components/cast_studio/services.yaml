@@ -82,6 +82,31 @@ run_routine:
       selector:
         text:
 
+compile_clip:
+  name: Compile Static Clip
+  description: Pre-compiles a permanent, reusable static multimedia alert clip (e.g., freezer door alert, gate open) to zero-latency video without 24h expiration.
+  fields:
+    clip_name:
+      name: Clip Name
+      description: Unique identifier for the static clip (e.g., freezer_door, front_door_open).
+      required: true
+      example: freezer_door
+      selector:
+        text:
+    step_config:
+      name: Step Configuration
+      description: Configuration dictionary defining slide typography, static image/icon, voice, and alert narration.
+      required: true
+      selector:
+        object:
+    output_dir:
+      name: Output Directory
+      description: Destination directory for generated static clip. Defaults to /config/www/cast_studio.
+      required: false
+      example: /config/www/cast_studio
+      selector:
+        text:
+
 reload:
   name: Reload
   description: Reloads the CastStudio integration configuration and resets routine sensors.

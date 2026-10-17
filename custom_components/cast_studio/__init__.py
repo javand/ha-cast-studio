@@ -28,7 +28,10 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
-from .generator import async_compile_routine_media
+from .generator import (
+    async_compile_routine_media,
+    async_compile_static_clip,
+)
 from .orchestrator import (
     async_execute_background_actions,
     async_play_and_sync_routine,
@@ -95,6 +98,37 @@ def _is_media_ready_and_fresh(
 ) -> tuple[bool, dict[str, Any] | None]:
     """Check if media or companion metadata exists and is not stale."""
     out_path = Path(output_dir)
+
+    # 1. Check permanent static alert clip first (never expires)
+    static_meta_file = out_path / "static" / f"{routine_name}.metadata.json"
+    static_video_file = out_path / "static" / f"{routine_name}.mp4"
+
+    if static_meta_file.is_file():
+        try:
+            meta = json.loads(static_meta_file.read_text(encoding="utf-8"))
+            vpath = meta.get("video_path")
+            if (vpath and Path(vpath).is_file()) or static_video_file.is_file():
+                return True, meta
+        except Exception as err:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to validate static metadata file %s: %s",
+                static_meta_file,
+                err,
+            )
+
+    if static_video_file.is_file():
+        meta = {
+            "clip_name": routine_name,
+            "routine_name": routine_name,
+            "video_path": str(static_video_file),
+            "audio_path": None,
+            "duration": 0.0,
+            "slide_timestamps": [],
+            "static": True,
+        }
+        return True, meta
+
+    # 2. Check regular routine files
     metadata_file = out_path / f"{routine_name}.metadata.json"
     video_file = out_path / f"{routine_name}.mp4"
 
@@ -197,6 +231,52 @@ async def async_pregenerate_routine(  # noqa: PLR0913
         return metadata
 
 
+async def async_compile_clip(
+    hass: HomeAssistant,
+    clip_name: str,
+    step_config: dict[str, Any],
+    output_dir: str | None = None,
+) -> dict[str, Any]:
+    """Pre-compiles a permanent, reusable static multimedia alert clip."""
+    if not clip_name or not str(clip_name).strip():
+        msg = "Missing or empty required parameter 'clip_name'"
+        raise ValueError(msg)
+    if not step_config or not isinstance(step_config, dict):
+        msg = "Missing or invalid required parameter 'step_config'"
+        raise ValueError(msg)
+
+    output_dir = output_dir or DEFAULT_OUTPUT_DIR
+
+    sensor = async_get_or_create_sensor(hass, clip_name)
+    sensor.update_state("generating", active_task="compile_clip")
+
+    try:
+        metadata = await async_compile_static_clip(
+            hass,
+            clip_name=clip_name,
+            step_config=step_config,
+            output_dir=output_dir,
+        )
+    except Exception as err:
+        sensor.update_state("error", active_task=None)
+        LOGGER.error("Failed to compile static clip '%s': %s", clip_name, err)
+        raise
+    else:
+        sensor.update_state(
+            "ready",
+            duration=metadata.get("duration"),
+            last_pregenerated=metadata.get(
+                "last_pregenerated",
+                datetime.now(UTC).isoformat(),
+            ),
+            video_path=metadata.get("video_path"),
+            audio_path=metadata.get("audio_path"),
+            slide_count=len(metadata.get("slide_timestamps", [])),
+            active_task=None,
+        )
+        return metadata
+
+
 async def async_run_routine(  # noqa: PLR0913
     hass: HomeAssistant,
     routine_name: str,
@@ -236,13 +316,22 @@ async def async_run_routine(  # noqa: PLR0913
     if not is_ready or metadata is None:
         sensor.update_state("generating", active_task="run_routine")
         try:
-            metadata = await async_compile_routine_media(
-                hass,
-                routine_name=routine_name,
-                routine_config=routine_config,
-                recipient=recipient,
-                output_dir=output_dir,
-            )
+            if routine_config.get("static"):
+                step_config = routine_config.get("step_config", routine_config)
+                metadata = await async_compile_static_clip(
+                    hass,
+                    clip_name=routine_name,
+                    step_config=step_config,
+                    output_dir=output_dir,
+                )
+            else:
+                metadata = await async_compile_routine_media(
+                    hass,
+                    routine_name=routine_name,
+                    routine_config=routine_config,
+                    recipient=recipient,
+                    output_dir=output_dir,
+                )
             sensor.update_state(
                 "ready",
                 duration=metadata.get("duration"),
@@ -384,6 +473,23 @@ async def async_setup(
             output_dir=data.get("output_dir"),
         )
 
+    async def _async_handle_compile_clip(call: ServiceCall) -> None:
+        data = dict(call.data)
+        clip_name = data.get("clip_name")
+        step_config = data.get("step_config")
+        if not clip_name or not str(clip_name).strip():
+            msg = "Missing or empty required service parameter 'clip_name'"
+            raise ValueError(msg)
+        if not step_config or not isinstance(step_config, dict):
+            msg = "Missing or invalid required service parameter 'step_config'"
+            raise ValueError(msg)
+        await async_compile_clip(
+            hass,
+            clip_name=clip_name,
+            step_config=step_config,
+            output_dir=data.get("output_dir"),
+        )
+
     async def _async_handle_reload(call: ServiceCall) -> None:  # noqa: ARG001
         await async_reload(hass)
 
@@ -392,6 +498,9 @@ async def async_setup(
     )
     hass.services.async_register(
         DOMAIN, "run_routine", _async_handle_run
+    )
+    hass.services.async_register(
+        DOMAIN, "compile_clip", _async_handle_compile_clip
     )
     hass.services.async_register(
         DOMAIN, "reload", _async_handle_reload
