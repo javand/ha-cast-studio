@@ -1,0 +1,12 @@
+{
+  "domain": "automation_generator",
+  "name": "Automation Generator",
+  "codeowners": [
+    "@javand"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/javand/ha-automation-generator",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/javand/ha-automation-generator/issues",
+  "version": "0.1.0"
+}
