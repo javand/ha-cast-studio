@@ -15,6 +15,7 @@ from custom_components.cast_studio.generator import (
     _extract_entity_context,
     _is_unconfigured_optional_step,
     async_compile_routine_media,
+    async_compile_static_clip,
     get_audio_duration,
 )
 
@@ -590,3 +591,165 @@ async def test_compile_routine_injects_entity_context(tmp_path: Path):
         assert "Keep it brief" in call_step["context"]
         assert "Weather (weather.home): Condition: sunny" in call_step["context"]
         assert "Temperature: 75°F" in call_step["context"]
+
+
+@pytest.mark.asyncio
+async def test_compile_static_clip_success(tmp_path: Path):
+    """Test compiling a static reusable clip and writing companion metadata."""
+    hass = MagicMock()
+    step_config = {
+        "title": "Freezer Door Open!",
+        "message": "Attention: The kitchen freezer door has been left open.",
+        "voice": "Pulcherrima",
+        "actions": [{"action": "light.turn_on"}],
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            new=AsyncMock(return_value="audio.wav"),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value="slide.jpg",
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        result = await async_compile_static_clip(
+            hass, "freezer_door", step_config, output_dir=str(tmp_path)
+        )
+
+        assert result["clip_name"] == "freezer_door"
+        assert result["routine_name"] == "freezer_door"
+        assert result["static"] is True
+        assert result["video_path"] == str(tmp_path / "static" / "freezer_door.mp4")
+        assert result["audio_path"] is None
+        assert result["duration"] > 0
+        assert len(result["slide_timestamps"]) == 1
+        assert result["slide_timestamps"][0]["name"] == "freezer_door"
+        assert result["slide_timestamps"][0]["actions_on_display"] == [
+            {"action": "light.turn_on"}
+        ]
+
+        metadata_file = tmp_path / "static" / "freezer_door.metadata.json"
+        assert metadata_file.exists()
+        loaded = json.loads(metadata_file.read_text(encoding="utf-8"))
+        assert loaded == result
+
+
+@pytest.mark.asyncio
+async def test_compile_static_clip_scratch_cleanup_on_error(tmp_path: Path):
+    """Test scratchpad directory cleanup even when FFmpeg or synthesis fails."""
+    hass = MagicMock()
+    step_config = {
+        "title": "Alert",
+        "message": "Alert message",
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            new=AsyncMock(return_value="audio.wav"),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value="slide.jpg",
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.cleanup_scratch_dir"
+        ) as mock_cleanup,
+    ):
+        with pytest.raises(GeneratorError, match="FFmpeg clip compilation failed"):
+            await async_compile_static_clip(
+                hass, "alert_clip", step_config, output_dir=str(tmp_path)
+            )
+
+        mock_cleanup.assert_called_once()
+        assert mock_cleanup.call_args[0][0] == "static_alert_clip"
+
+
+@pytest.mark.asyncio
+async def test_compile_static_clip_invalid_name(tmp_path: Path):
+    """Assert RoutineConfigError for empty or traversal names."""
+    hass = MagicMock()
+    step_config = {"message": "Test"}
+
+    with pytest.raises(RoutineConfigError, match="empty or whitespace"):
+        await async_compile_static_clip(
+            hass, "", step_config, output_dir=str(tmp_path)
+        )
+
+    with pytest.raises(RoutineConfigError, match="empty or whitespace"):
+        await async_compile_static_clip(
+            hass, "   ", step_config, output_dir=str(tmp_path)
+        )
+
+    with pytest.raises(RoutineConfigError, match="path traversal"):
+        await async_compile_static_clip(
+            hass, "../escape", step_config, output_dir=str(tmp_path)
+        )
+
+    with pytest.raises(RoutineConfigError, match="path traversal"):
+        await async_compile_static_clip(
+            hass, "sub/dir", step_config, output_dir=str(tmp_path)
+        )
+
+
+@pytest.mark.asyncio
+async def test_compile_static_clip_invokes_ai_when_no_narration(tmp_path: Path):
+    """Test that AI content generation is invoked if no narration/message/text is provided."""
+    hass = MagicMock()
+    step_config = {
+        "title": "AI Alert",
+    }
+    mock_ai_generate = AsyncMock(
+        return_value={
+            "visual_card": {"title": "AI Alert", "subtitle": "Warning"},
+            "narration_script": "This is an AI generated narration.",
+        }
+    )
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_generate_step_content",
+            mock_ai_generate,
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            new=AsyncMock(return_value="audio.wav"),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value="slide.jpg",
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        result = await async_compile_static_clip(
+            hass, "ai_alert", step_config, output_dir=str(tmp_path)
+        )
+        assert mock_ai_generate.call_count == 1
+        assert result["clip_name"] == "ai_alert"
+        assert result["static"] is True
+

@@ -131,3 +131,25 @@ def test_default_paths(tmp_path: Path):
         os.utime(str(file), (past_time, past_time))
         pruned = prune_stale_files()
         assert str(file) in pruned
+
+
+def test_prune_preserves_static_directory(tmp_path: Path):
+    """Test that static directory files are preserved regardless of age."""
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    static_file = static_dir / "alert.mp4"
+    static_file.write_text("static clip content")
+
+    old_file = tmp_path / "old_routine.mp4"
+    old_file.write_text("old routine content")
+
+    past_time = time.time() - 100000
+    os.utime(str(static_file), (past_time, past_time))
+    os.utime(str(old_file), (past_time, past_time))
+
+    pruned = prune_stale_files(str(tmp_path), max_age_seconds=86400)
+    assert str(old_file) in pruned
+    assert not old_file.exists()
+    assert str(static_file) not in pruned
+    assert static_file.exists()
+

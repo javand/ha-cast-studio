@@ -479,3 +479,201 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
         await _async_run_in_executor(
             hass, cleanup_scratch_dir, routine_name, base_tmp=scratch_base
         )
+
+
+def _validate_clip_name(clip_name: str) -> str:
+    """Validate clip name and protect against directory traversal."""
+    clean_clip_name = clip_name.strip() if clip_name else ""
+    if not clean_clip_name:
+        msg = "clip_name cannot be empty or whitespace"
+        raise RoutineConfigError(msg)
+
+    if (
+        ".." in clean_clip_name
+        or "/" in clean_clip_name
+        or "\\" in clean_clip_name
+        or Path(clean_clip_name).name != clean_clip_name
+    ):
+        msg = f"Invalid clip_name path traversal: '{clip_name}'"
+        raise RoutineConfigError(msg)
+
+    return clean_clip_name
+
+
+def _prepare_static_card_data(
+    clean_clip_name: str,
+    step_config: dict[str, Any],
+    ai_card_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Derive and overlay card data for static visual clip."""
+    card_data = dict(ai_card_data or {})
+    card_keys = (
+        "title",
+        "subtitle",
+        "bullet_points",
+        "image_path",
+        "icon_path",
+        "icon",
+        "layout",
+    )
+    for key in card_keys:
+        if key in step_config:
+            card_data[key] = step_config[key]
+
+    if "title" not in card_data and "alert_title" in step_config:
+        card_data["title"] = step_config["alert_title"]
+    if "image_path" not in card_data and "image_asset" in step_config:
+        card_data["image_path"] = step_config["image_asset"]
+
+    if not card_data.get("title"):
+        card_data.setdefault("title", clean_clip_name.replace("_", " ").title())
+
+    return card_data
+
+
+async def async_compile_static_clip(
+    hass: HomeAssistant,
+    clip_name: str,
+    step_config: dict[str, Any],
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+    scratch_base: str | None = None,
+) -> dict[str, Any]:
+    """
+    Compile a standalone, reusable static visual alert clip with companion metadata.
+
+    Args:
+        hass: HomeAssistant instance.
+        clip_name: Identifier for the static clip (e.g. 'freezer_door').
+        step_config: Step configuration with title, narration/message, voice, actions.
+        output_dir: Root output directory (clips stored under output_dir/static/).
+        scratch_base: Optional base path for scratch directory.
+
+    Returns:
+        Metadata dictionary for the compiled static clip.
+
+    Raises:
+        RoutineConfigError: If clip_name is empty, whitespace,
+            or invalid path traversal.
+        GeneratorError: If media generation or FFmpeg compilation fails.
+
+    """
+    clean_clip_name = _validate_clip_name(clip_name)
+
+    out_path = Path(output_dir)
+    static_dir = out_path / "static"
+    await _async_run_in_executor(hass, _ensure_directory, static_dir)
+
+    final_video_path = str(static_dir / f"{clean_clip_name}.mp4")
+    final_metadata_path = static_dir / f"{clean_clip_name}.metadata.json"
+
+    scratch_dir = await _async_run_in_executor(
+        hass,
+        get_routine_scratch_dir,
+        f"static_{clean_clip_name}",
+        base_tmp=scratch_base,
+    )
+
+    try:
+        ai_creds = await async_discover_ai_credentials(hass)
+
+        narration_script = (
+            step_config.get("narration")
+            or step_config.get("message")
+            or step_config.get("text")
+            or step_config.get("alert_message")
+        )
+
+        ai_card: dict[str, Any] = {}
+        if narration_script:
+            narration_script = str(narration_script).strip()
+        else:
+            ai_content = await async_generate_step_content(
+                hass, step_config, creds=ai_creds
+            )
+            narration_script = ai_content.get("narration_script", "")
+            ai_card = dict(ai_content.get("visual_card", {}))
+
+        card_data = _prepare_static_card_data(
+            clean_clip_name, step_config, ai_card_data=ai_card
+        )
+
+        if not narration_script:
+            narration_script = card_data.get("title", clean_clip_name)
+
+        voice = step_config.get("voice", DEFAULT_HOST_VOICE)
+        personality = (
+            step_config.get("voice_personality")
+            or step_config.get("personality")
+            or "news_anchor"
+        )
+
+        step_wav_path = str(Path(scratch_dir) / "audio.wav")
+        synth_audio = await async_synthesize_speech(
+            hass, narration_script, voice, personality, step_wav_path, creds=ai_creds
+        )
+        effective_audio_path = synth_audio or step_wav_path
+
+        step_duration_override = step_config.get("duration")
+        if step_duration_override is not None:
+            duration = float(step_duration_override)
+        else:
+            duration = await _async_run_in_executor(
+                hass,
+                get_audio_duration,
+                effective_audio_path,
+                fallback_text=narration_script,
+            )
+
+        slide_img_target = str(Path(scratch_dir) / "slide.jpg")
+        slide_img_path = await _async_run_in_executor(
+            hass,
+            render_slide,
+            card_data,
+            slide_img_target,
+            step_config.get("phonetic_name"),
+        )
+        effective_slide_path = slide_img_path or slide_img_target
+
+        clip_cmd = build_slide_clip_command(
+            effective_slide_path,
+            effective_audio_path,
+            final_video_path,
+        )
+        clip_ok = await async_run_ffmpeg(hass, clip_cmd)
+        if not clip_ok:
+            msg = f"FFmpeg clip compilation failed for static clip '{clean_clip_name}'"
+            raise GeneratorError(msg)
+
+        metadata: dict[str, Any] = {
+            "clip_name": clean_clip_name,
+            "routine_name": clean_clip_name,
+            "video_path": final_video_path,
+            "audio_path": None,
+            "duration": round(duration, 2),
+            "slide_timestamps": [
+                {
+                    "name": clean_clip_name,
+                    "timestamp": 0.0,
+                    "start_time": 0.0,
+                    "duration": round(duration, 2),
+                    "end_time": round(duration, 2),
+                    "actions_on_display": step_config.get(
+                        "actions_on_display", step_config.get("actions", [])
+                    ),
+                }
+            ],
+            "static": True,
+        }
+        await _async_run_in_executor(
+            hass, _write_json_file, final_metadata_path, metadata
+        )
+        return metadata
+
+    finally:
+        await _async_run_in_executor(
+            hass,
+            cleanup_scratch_dir,
+            f"static_{clean_clip_name}",
+            base_tmp=scratch_base,
+        )
+

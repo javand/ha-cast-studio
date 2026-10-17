@@ -94,6 +94,13 @@ def prune_stale_files(
     now = time.time()
     for file_path in target_dir.rglob("*"):
         if file_path.is_file():
+            if "static" in file_path.parts:
+                continue
+            try:
+                if file_path.is_relative_to(target_dir / "static"):
+                    continue
+            except (ValueError, AttributeError):
+                pass
             try:
                 mtime = file_path.stat().st_mtime
                 if now - mtime > max_age_seconds:
@@ -102,3 +109,4 @@ def prune_stale_files(
             except OSError as err:
                 LOGGER.warning("Failed to prune file %s: %s", file_path, err)
     return pruned
+

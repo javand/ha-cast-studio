@@ -37,10 +37,14 @@ def _clean_json_text(raw_text: str) -> str:
     return raw_text.strip()
 
 
-def _build_prompt(step_config: dict[str, Any], recipient: dict[str, Any]) -> str:
+def _build_prompt(
+    step_config: dict[str, Any],
+    recipient: dict[str, Any] | None = None,
+) -> str:
     """Construct prompt for structured content generation."""
-    name = recipient.get("name", "User")
-    phonetic_name = recipient.get("phonetic_name") or name
+    rec = recipient or {}
+    name = rec.get("name", "User")
+    phonetic_name = rec.get("phonetic_name") or name
     step_name = step_config.get("name", "briefing")
     step_type = step_config.get("type", step_name)
     personality = (
@@ -311,14 +315,17 @@ async def async_discover_ai_credentials(hass: HomeAssistant) -> dict[str, Any]:
 async def async_generate_step_content(
     hass: HomeAssistant,
     step_config: dict[str, Any],
-    recipient: dict[str, Any],
-    ai_creds: dict[str, Any],
+    recipient: dict[str, Any] | None = None,
+    ai_creds: dict[str, Any] | None = None,
+    creds: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate structured step content separating visual card and narration script."""
-    prompt = _build_prompt(step_config, recipient)
+    rec = recipient or {}
+    prompt = _build_prompt(step_config, rec)
 
-    platform = ai_creds.get("platform", "conversation_agent")
-    api_key = ai_creds.get("api_key")
+    effective_creds = creds if creds is not None else (ai_creds or {})
+    platform = effective_creds.get("platform", "conversation_agent")
+    api_key = effective_creds.get("api_key")
 
     if platform == "gemini" and api_key:
         try:
