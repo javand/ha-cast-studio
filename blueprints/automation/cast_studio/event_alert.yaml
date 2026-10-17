@@ -23,9 +23,8 @@ blueprint:
       name: Target Media Player
       description: Smart display or Google Cast media player entity for multimedia playback.
       selector:
-        target:
-          entity:
-            domain: media_player
+        entity:
+          domain: media_player
     alert_title:
       name: Alert Title
       description: Headline text displayed prominently on screen.

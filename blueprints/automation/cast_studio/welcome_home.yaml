@@ -30,9 +30,8 @@ blueprint:
       name: Target Media Player
       description: Living room or entry smart display entity for multimedia playback.
       selector:
-        target:
-          entity:
-            domain: media_player
+        entity:
+          domain: media_player
     avatar_image:
       name: Avatar Image (Optional Fallback)
       description: Profile photo or fallback avatar filename stored in CastStudio assets or media directory.
