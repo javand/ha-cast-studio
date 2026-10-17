@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
 from custom_components.automation_generator.ai_client import (
+    AIClientError,
+    _enforce_recipient_separation,
     _query_conversation_agent_structured,
     _query_gemini_structured,
     async_discover_ai_credentials,
@@ -335,3 +338,89 @@ async def test_auto_detect_skips_disabled_config_entries() -> None:
     creds = await async_discover_ai_credentials(hass)
     assert creds["platform"] == "conversation_agent"
     assert creds["api_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_generate_step_content_fallback_to_conversation_on_gemini_error() -> None:
+    """Test fallback from Gemini to conversation agent when Gemini raises AIClientError."""
+    hass = MagicMock()
+    ai_creds = {"platform": "gemini", "api_key": "bad_key", "agent_id": "conversation.mock"}
+    step_config = {"name": "greeting"}
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+
+    fallback_response = {
+        "visual_card": {"title": "Good Morning", "subtitle": "", "bullet_points": []},
+        "narration_script": "Good morning Jay-ven",
+    }
+
+    with (
+        patch(
+            "custom_components.automation_generator.ai_client._query_gemini_structured",
+            side_effect=AIClientError("API quota exceeded"),
+        ) as mock_gemini,
+        patch(
+            "custom_components.automation_generator.ai_client._query_conversation_agent_structured",
+            new=AsyncMock(return_value=fallback_response),
+        ) as mock_conv,
+    ):
+        result = await async_generate_step_content(
+            hass, step_config, recipient, ai_creds
+        )
+        assert mock_gemini.called
+        assert mock_conv.called
+        assert result["visual_card"]["title"] == "Good Morning"
+        assert result["narration_script"] == "Good morning Jay-ven"
+
+
+@pytest.mark.asyncio
+async def test_generate_step_content_fallback_to_conversation_on_network_error() -> None:
+    """Test fallback from Gemini to conversation agent on aiohttp ClientError."""
+    hass = MagicMock()
+    ai_creds = {"platform": "gemini", "api_key": "test_key"}
+    step_config = {"name": "weather"}
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+
+    fallback_response = {
+        "visual_card": {"title": "Weather", "subtitle": "Today", "bullet_points": ["Sunny"]},
+        "narration_script": "Today is sunny",
+    }
+
+    with (
+        patch(
+            "custom_components.automation_generator.ai_client._query_gemini_structured",
+            side_effect=aiohttp.ClientError("Connection refused"),
+        ),
+        patch(
+            "custom_components.automation_generator.ai_client._query_conversation_agent_structured",
+            new=AsyncMock(return_value=fallback_response),
+        ),
+    ):
+        result = await async_generate_step_content(
+            hass, step_config, recipient, ai_creds
+        )
+        assert result["visual_card"]["title"] == "Weather"
+
+
+def test_enforce_recipient_separation_case_insensitive() -> None:
+    """Test case-insensitive replacement of recipient real name in narration script."""
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    raw_content = {
+        "visual_card": {
+            "title": "Welcome Jay-ven",
+            "subtitle": "",
+            "bullet_points": ["Hello JAY-VEN"],
+        },
+        "narration_script": "Good morning javan, it is great to see you JAVAN!",
+    }
+
+    enforced = _enforce_recipient_separation(raw_content, recipient)
+
+    # In visual card: phonetic name should be replaced by real name
+    assert enforced["visual_card"]["title"] == "Welcome Javan"
+    assert "Javan" in enforced["visual_card"]["bullet_points"][0]
+
+    # In narration script: real name in any case should be replaced by phonetic name
+    assert (
+        enforced["narration_script"]
+        == "Good morning Jay-ven, it is great to see you Jay-ven!"
+    )

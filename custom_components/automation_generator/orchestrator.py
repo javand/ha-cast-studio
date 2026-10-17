@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.network import get_url
 
 from .const import LOGGER
 
@@ -107,6 +108,27 @@ def get_media_payload(metadata: dict[str, Any]) -> tuple[str, str]:
         "Metadata does not contain a valid 'video_path', 'audio_path', or 'media_path'"
     )
     raise OrchestratorError(msg)
+
+
+def resolve_cast_media_url(hass: HomeAssistant, media_path: str) -> str:
+    """
+    Resolve local disk or relative media path to an accessible HTTP URL for Google Cast.
+
+    Google Cast and DLNA devices cannot access local filesystem paths directly.
+    Files in Home Assistant's /config/www (or /www) are served over HTTP at /local/.
+    """
+    if media_path.startswith(("http://", "https://", "media-source://")):
+        return media_path
+    norm = media_path.replace("\\", "/")
+    if "/www/" in norm:
+        rel = norm.split("/www/", 1)[1].lstrip("/")
+        try:
+            base = get_url(hass, prefer_external=False).rstrip("/")
+        except Exception:  # noqa: BLE001
+            return f"/local/{rel}"
+        else:
+            return f"{base}/local/{rel}"
+    return media_path
 
 
 def extract_actions(steps_or_actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -332,6 +354,7 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
 
     """
     media_path, content_type = get_media_payload(metadata)
+    resolved_media_url = resolve_cast_media_url(hass, media_path)
     timeout_val = float(
         metadata.get(
             "playing_timeout",
@@ -346,7 +369,7 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
         "play_media",
         {
             "entity_id": target_player,
-            "media_content_id": media_path,
+            "media_content_id": resolved_media_url,
             "media_content_type": content_type,
         },
     )

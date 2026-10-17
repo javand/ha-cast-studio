@@ -76,6 +76,8 @@ def build_slide_clip_command(
         "aac",
         "-b:a",
         "192k",
+        "-ar",
+        "44100",
         "-shortest",
         str(output_clip_path),
     ]

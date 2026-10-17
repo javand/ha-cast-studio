@@ -46,6 +46,109 @@ class RoutineConfigError(GeneratorError, ValueError):
     """Raised when routine configuration is invalid or has no steps."""
 
 
+def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
+    """Extract ordered, deduplicated entity IDs configured for a step."""
+    raw_ids: list[str] = []
+    for key in ("entity_id", "entity_ids"):
+        val = step.get(key)
+        if isinstance(val, list):
+            raw_ids.extend(
+                [str(item).strip() for item in val if item and str(item).strip()]
+            )
+        elif val and str(val).strip():
+            raw_ids.append(str(val).strip())
+
+    seen: set[str] = set()
+    eids: list[str] = []
+    for eid in raw_ids:
+        if eid not in seen:
+            seen.add(eid)
+            eids.append(eid)
+    return eids
+
+
+def _extract_entity_context(  # noqa: PLR0912
+    hass: HomeAssistant,
+    step: dict[str, Any],
+) -> str:
+    """Extract live state context for configured entity IDs from Home Assistant."""
+    eids = _get_step_entity_ids(step)
+    entity_lines: list[str] = []
+
+    if hasattr(hass, "states") and hasattr(hass.states, "get"):
+        for eid in eids:
+            state_obj = hass.states.get(eid)
+            if state_obj is None:
+                continue
+
+            state_val = getattr(state_obj, "state", "unknown")
+            attrs = getattr(state_obj, "attributes", {}) or {}
+
+            if eid.startswith("weather."):
+                temp = attrs.get("temperature")
+                unit = attrs.get("temperature_unit") or "°"
+                line_parts = [f"Weather ({eid}): Condition: {state_val}"]
+                if temp is not None:
+                    line_parts.append(f"Temperature: {temp}{unit}")
+                if forecast := attrs.get("forecast"):
+                    if isinstance(forecast, list):
+                        line_parts.append(f"Forecast: {forecast[:3]}")
+                    else:
+                        line_parts.append(f"Forecast: {forecast}")
+                entity_lines.append(", ".join(line_parts))
+
+            elif eid.startswith("calendar."):
+                summary = (
+                    attrs.get("message")
+                    or attrs.get("summary")
+                    or attrs.get("description")
+                )
+                start_time = attrs.get("start_time")
+                line_parts = [f"Calendar ({eid}): State: {state_val}"]
+                if summary:
+                    line_parts.append(f"Summary: {summary}")
+                if start_time:
+                    line_parts.append(f"Start: {start_time}")
+                entity_lines.append(", ".join(line_parts))
+
+            elif eid.startswith("todo."):
+                entity_lines.append(f"To-do ({eid}): {state_val} tasks pending")
+
+            else:
+                unit = attrs.get("unit_of_measurement", "")
+                suffix = f" {unit}" if unit else ""
+                entity_lines.append(f"Sensor ({eid}): {state_val}{suffix}".strip())
+
+    entity_context_str = "\n".join(entity_lines)
+    existing_context = step.get("context")
+
+    if existing_context and str(existing_context).strip() and entity_context_str:
+        return f"{str(existing_context).strip()}\n{entity_context_str}"
+    if entity_context_str:
+        return entity_context_str
+    return str(existing_context).strip() if existing_context else ""
+
+
+def _is_unconfigured_optional_step(hass: HomeAssistant, step: dict[str, Any]) -> bool:
+    """Check if an entity step is unconfigured or missing with no fallback."""
+    has_entity_key = "entity_id" in step or "entity_ids" in step
+    if not has_entity_key:
+        return False
+
+    eids = _get_step_entity_ids(step)
+    has_valid_state = False
+    if hasattr(hass, "states") and hasattr(hass.states, "get"):
+        has_valid_state = any(hass.states.get(eid) is not None for eid in eids)
+
+    if not has_valid_state:
+        has_context = bool(step.get("context") and str(step.get("context")).strip())
+        has_actions = bool(step.get("actions") or step.get("actions_on_display"))
+        if not has_context and not has_actions:
+            return True
+
+    return False
+
+
 def get_audio_duration(
     audio_path: str,
     fallback_text: str | None = None,
@@ -207,7 +310,9 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
 
     # 2. Allocate scratchpad directory
     scratch_base = routine_config.get("scratch_base")
-    scratch_dir = get_routine_scratch_dir(routine_name, base_tmp=scratch_base)
+    scratch_dir = await _async_run_in_executor(
+        hass, get_routine_scratch_dir, routine_name, base_tmp=scratch_base
+    )
 
     try:
         # 3. Discover AI credentials
@@ -219,18 +324,33 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
         current_offset = 0.0
 
         for idx, step in enumerate(steps_to_process):
-            step_name = step.get("name", f"step_{idx:02d}")
+            # Check for unconfigured optional entity steps
+            if _is_unconfigured_optional_step(hass, step):
+                LOGGER.info(
+                    "Skipping unconfigured optional step '%s'",
+                    step.get("name", f"step_{idx:02d}"),
+                )
+                continue
+
+            step_to_process = dict(step)
+            extracted_context = _extract_entity_context(hass, step_to_process)
+            if extracted_context:
+                step_to_process["context"] = extracted_context
+
+            step_name = step_to_process.get("name", f"step_{idx:02d}")
 
             # 4. Generate structured step content
-            content = await async_generate_step_content(hass, step, recipient, ai_creds)
+            content = await async_generate_step_content(
+                hass, step_to_process, recipient, ai_creds
+            )
             card_data = content.get("visual_card", {})
             narration_script = content.get("narration_script", "")
 
             # 5. Determine voice and personality conditioning
-            voice = step.get("voice", DEFAULT_HOST_VOICE)
+            voice = step_to_process.get("voice", DEFAULT_HOST_VOICE)
             personality = (
-                step.get("voice_personality")
-                or step.get("personality")
+                step_to_process.get("voice_personality")
+                or step_to_process.get("personality")
                 or "news_anchor"
             )
 
@@ -247,12 +367,15 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
             effective_audio_path = synth_audio_path or step_wav_path
 
             # 7. Calculate step duration
-            step_duration_override = step.get("duration")
+            step_duration_override = step_to_process.get("duration")
             if step_duration_override is not None:
                 duration = float(step_duration_override)
             else:
-                duration = get_audio_duration(
-                    effective_audio_path, fallback_text=narration_script
+                duration = await _async_run_in_executor(
+                    hass,
+                    get_audio_duration,
+                    effective_audio_path,
+                    fallback_text=narration_script,
                 )
 
             # 8. Record slide timestamp & display action binding
@@ -263,8 +386,8 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
                 "start_time": round(current_offset, 2),
                 "duration": round(duration, 2),
                 "end_time": round(current_offset + duration, 2),
-                "actions_on_display": step.get(
-                    "actions_on_display", step.get("actions", [])
+                "actions_on_display": step_to_process.get(
+                    "actions_on_display", step_to_process.get("actions", [])
                 ),
             }
             slide_timestamps.append(slide_info)
@@ -297,6 +420,10 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
             else:
                 audio_paths.append(effective_audio_path)
 
+        if not slide_timestamps:
+            msg = f"No executable steps remained for routine '{routine_name}'"
+            raise RoutineConfigError(msg)
+
         total_duration = round(current_offset, 2)
         out_path = Path(output_dir)
         await _async_run_in_executor(hass, _ensure_directory, out_path)
@@ -305,7 +432,9 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
             # 10a. Concatenate clips into final MP4
             final_video_path = str(out_path / f"{routine_name}.mp4")
             concat_manifest = str(Path(scratch_dir) / "concat_list.txt")
-            write_concat_file(clip_paths, concat_manifest)
+            await _async_run_in_executor(
+                hass, write_concat_file, clip_paths, concat_manifest
+            )
             concat_cmd = build_concat_command(concat_manifest, final_video_path)
             concat_ok = await async_run_ffmpeg(hass, concat_cmd)
             if not concat_ok:
@@ -323,7 +452,9 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
             audio_format = routine_config.get("audio_format", "mp3")
             final_audio_path = str(out_path / f"{routine_name}.{audio_format}")
             concat_manifest = str(Path(scratch_dir) / "concat_audio.txt")
-            write_concat_file(audio_paths, concat_manifest)
+            await _async_run_in_executor(
+                hass, write_concat_file, audio_paths, concat_manifest
+            )
             concat_cmd = build_audio_concat_command(concat_manifest, final_audio_path)
             concat_ok = await async_run_ffmpeg(hass, concat_cmd)
             if not concat_ok:
@@ -344,5 +475,7 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
         return metadata
 
     finally:
-        # 12. Purge intermediate scratchpad files in finally block
-        cleanup_scratch_dir(routine_name, base_tmp=scratch_base)
+        # 12. Purge intermediate scratchpad files in finally block via executor
+        await _async_run_in_executor(
+            hass, cleanup_scratch_dir, routine_name, base_tmp=scratch_base
+        )

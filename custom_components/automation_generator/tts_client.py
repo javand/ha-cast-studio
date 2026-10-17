@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DEFAULT_HOST_VOICE, LOGGER
 
@@ -351,6 +352,7 @@ async def async_synthesize_speech(  # noqa: PLR0913
 
     platform = safe_creds.get("platform", "conversation_agent")
     api_key = safe_creds.get("api_key")
+    session = async_get_clientsession(hass)
 
     if platform == "gemini" and api_key:
         try:
@@ -360,6 +362,7 @@ async def async_synthesize_speech(  # noqa: PLR0913
                 effective_personality,
                 output_wav_path,
                 api_key,
+                session=session,
             )
         except (TTSClientError, TimeoutError, aiohttp.ClientError, OSError) as err:
             LOGGER.warning(
@@ -376,6 +379,7 @@ async def async_synthesize_speech(  # noqa: PLR0913
                 effective_personality,
                 output_wav_path,
                 api_key,
+                session=session,
             )
         except (TTSClientError, TimeoutError, aiohttp.ClientError, OSError) as err:
             LOGGER.warning(

@@ -113,7 +113,8 @@ def test_morning_briefing_triggers_and_actions():
     """Verify morning briefing triggers, mode, and choose action branches."""
     bp = _load_yaml(MORNING_BRIEFING_PATH)
 
-    assert bp.get("mode") in ("restart", "queued")
+    assert bp.get("mode") == "single"
+    assert bp.get("max_exceeded") == "silent"
 
     # Verify triggers: pregenerate time trigger has id 'pregenerate', wake_trigger uses triggers: !input
     triggers = bp.get("trigger") or bp.get("triggers", [])

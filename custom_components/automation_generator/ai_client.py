@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DOMAIN
+from .const import DOMAIN, LOGGER
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -102,7 +102,7 @@ def _enforce_recipient_separation(
 
     # Ensure narration_script uses phonetic_name for pronunciation
     if phonetic_name and name and phonetic_name != name:
-        name_word_pattern = re.compile(rf"\b{re.escape(name)}\b")
+        name_word_pattern = re.compile(rf"\b{re.escape(name)}\b", flags=re.IGNORECASE)
         narration_script = name_word_pattern.sub(phonetic_name, narration_script)
 
     return {
@@ -321,11 +321,23 @@ async def async_generate_step_content(
     api_key = ai_creds.get("api_key")
 
     if platform == "gemini" and api_key:
-        raw_content = await _query_gemini_structured(
-            hass=hass,
-            prompt=prompt,
-            api_key=api_key,
-        )
+        try:
+            raw_content = await _query_gemini_structured(
+                hass=hass,
+                prompt=prompt,
+                api_key=api_key,
+            )
+        except (AIClientError, aiohttp.ClientError, TimeoutError) as err:
+            LOGGER.warning(
+                "Gemini structured content generation failed (%s), "
+                "falling back to conversation agent",
+                err,
+            )
+            raw_content = await _query_conversation_agent_structured(
+                hass=hass,
+                prompt=prompt,
+                agent_id=ai_creds.get("agent_id"),
+            )
     else:
         raw_content = await _query_conversation_agent_structured(
             hass=hass,

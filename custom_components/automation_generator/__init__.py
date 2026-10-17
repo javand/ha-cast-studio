@@ -13,18 +13,21 @@ import functools
 import inspect
 import json
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.loader import async_get_loaded_integration
+from homeassistant.const import Platform
 
-from .api import IntegrationBlueprintApiClient
-from .const import DEFAULT_OUTPUT_DIR, DOMAIN, LOGGER
-from .coordinator import BlueprintDataUpdateCoordinator
-from .data import IntegrationBlueprintData
+from .const import (
+    CONF_PHONETIC_NAME,
+    CONF_RECIPIENT_NAME,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_PHONETIC_NAME,
+    DEFAULT_RECIPIENT_NAME,
+    DOMAIN,
+    LOGGER,
+)
 from .generator import async_compile_routine_media
 from .orchestrator import (
     async_execute_background_actions,
@@ -39,9 +42,8 @@ from .sensor import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant, ServiceCall
-
-    from .data import IntegrationBlueprintConfigEntry
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -400,36 +402,38 @@ async def async_setup(
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: IntegrationBlueprintConfigEntry,
+    entry: ConfigEntry,
 ) -> bool:
-    """Set up this integration using UI."""
-    coordinator = BlueprintDataUpdateCoordinator(
-        hass=hass,
-        logger=LOGGER,
-        name=DOMAIN,
-        update_interval=timedelta(hours=1),
-        config_entry=entry,
+    """Set up Automation Generator from a config entry."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    recipient_name = entry.options.get(
+        CONF_RECIPIENT_NAME, entry.data.get(CONF_RECIPIENT_NAME, DEFAULT_RECIPIENT_NAME)
     )
-    entry.runtime_data = IntegrationBlueprintData(
-        client=IntegrationBlueprintApiClient(
-            username=entry.data.get(CONF_USERNAME, ""),
-            password=entry.data.get(CONF_PASSWORD, ""),
-            session=async_get_clientsession(hass),
-        ),
-        integration=async_get_loaded_integration(hass, entry.domain),
-        coordinator=coordinator,
+    phonetic_name = entry.options.get(
+        CONF_PHONETIC_NAME, entry.data.get(CONF_PHONETIC_NAME, DEFAULT_PHONETIC_NAME)
+    )
+    domain_data.setdefault(
+        "recipient", {"name": recipient_name, "phonetic_name": phonetic_name}
     )
 
-    await coordinator.async_config_entry_first_refresh()
-
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     return True
 
 
 async def async_unload_entry(
     hass: HomeAssistant,
-    entry: IntegrationBlueprintConfigEntry,
+    entry: ConfigEntry,
 ) -> bool:
     """Handle removal of an entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_reload_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> bool:
+    """Reload config entry."""
+    await async_unload_entry(hass, entry)
+    await async_setup_entry(hass, entry)
+    return True

@@ -6,7 +6,7 @@ import asyncio
 import base64
 import wave
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
@@ -50,6 +50,7 @@ async def test_synthesize_speech_gemini_voices(tmp_path: Path) -> None:
             "news_anchor",
             output_wav,
             "test_key",
+            session=ANY,
         )
 
 
@@ -79,6 +80,7 @@ async def test_synthesize_speech_gemini_enceladus_voice(tmp_path: Path) -> None:
             "life_coach",
             output_wav,
             "test_gemini_key",
+            session=ANY,
         )
 
 
@@ -346,7 +348,12 @@ async def test_openai_voice_mapping_dispatch(tmp_path: Path) -> None:
         )
         assert res1 == output_wav
         mock_openai.assert_awaited_with(
-            "Good day", "nova", "news_anchor", output_wav, "sk-test123"
+            "Good day",
+            "nova",
+            "news_anchor",
+            output_wav,
+            "sk-test123",
+            session=ANY,
         )
 
         # Enceladus -> onyx
@@ -360,7 +367,12 @@ async def test_openai_voice_mapping_dispatch(tmp_path: Path) -> None:
         )
         assert res2 == output_wav
         mock_openai.assert_awaited_with(
-            "Scripture reading", "onyx", "life_coach", output_wav, "sk-test123"
+            "Scripture reading",
+            "onyx",
+            "life_coach",
+            output_wav,
+            "sk-test123",
+            session=ANY,
         )
 
 
@@ -581,4 +593,43 @@ async def test_synthesize_speech_defaults(tmp_path: Path) -> None:
             "news_anchor",
             output_wav,
             "k",
+            session=ANY,
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_speech_reuses_clientsession(tmp_path: Path) -> None:
+    """Verify that async_synthesize_speech reuses async_get_clientsession(hass)."""
+    hass = MagicMock()
+    output_wav = str(tmp_path / "session_reuse.wav")
+    creds = {"platform": "gemini", "api_key": "k"}
+    mock_session = MagicMock()
+
+    with (
+        patch(
+            "custom_components.automation_generator.tts_client.async_get_clientsession",
+            return_value=mock_session,
+        ) as mock_get_session,
+        patch(
+            "custom_components.automation_generator.tts_client._synthesize_gemini_tts",
+            new=AsyncMock(return_value=output_wav),
+        ) as mock_gemini,
+    ):
+        result = await async_synthesize_speech(
+            hass=hass,
+            script="Session test",
+            voice="Pulcherrima",
+            personality="news_anchor",
+            output_wav_path=output_wav,
+            creds=creds,
+        )
+        assert result == output_wav
+        mock_get_session.assert_called_once_with(hass)
+        mock_gemini.assert_awaited_once_with(
+            "Session test",
+            "Pulcherrima",
+            "news_anchor",
+            output_wav,
+            "k",
+            session=mock_session,
         )

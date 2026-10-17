@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Automation Generator",
+        "description": "Configure default recipient profile, output directory, and optional Gemini API key for multimedia routine generation.",
+        "data": {
+          "api_key": "API Key (Optional)",
+          "recipient_name": "Recipient Name",
+          "phonetic_name": "Phonetic Pronunciation Name",
+          "output_dir": "Output Directory"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Automation Generator is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Automation Generator Options",
+        "description": "Update recipient profile, output directory, and API key preferences.",
+        "data": {
+          "api_key": "API Key (Optional)",
+          "recipient_name": "Recipient Name",
+          "phonetic_name": "Phonetic Pronunciation Name",
+          "output_dir": "Output Directory"
+        }
+      }
+    }
+  }
+}

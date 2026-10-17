@@ -16,6 +16,7 @@ from custom_components.automation_generator.orchestrator import (
     async_play_and_sync_routine,
     get_media_payload,
     get_routine_sync_task,
+    resolve_cast_media_url,
 )
 
 CALL_COUNT_TWO = 2
@@ -734,3 +735,89 @@ async def test_play_and_sync_returns_lifecycle_task():
         await playback_task
         assert playback_task.done()
         assert hass.services.async_call.call_count == CALL_COUNT_TWO
+
+
+def test_resolve_cast_media_url_http_and_media_source():
+    """Verify HTTP/HTTPS and media-source URLs remain untouched."""
+    hass = MagicMock()
+    assert (
+        resolve_cast_media_url(hass, "http://192.168.1.100/video.mp4")
+        == "http://192.168.1.100/video.mp4"
+    )
+    assert (
+        resolve_cast_media_url(hass, "https://example.com/audio.mp3")
+        == "https://example.com/audio.mp3"
+    )
+    assert (
+        resolve_cast_media_url(hass, "media-source://media_source/local/test.mp3")
+        == "media-source://media_source/local/test.mp3"
+    )
+
+
+def test_resolve_cast_media_url_local_config_www():
+    """Verify /config/www/ paths are converted to accessible HTTP URLs using get_url."""
+    hass = MagicMock()
+    with patch(
+        "custom_components.automation_generator.orchestrator.get_url",
+        return_value="http://192.168.1.50:8123",
+    ):
+        result = resolve_cast_media_url(
+            hass, "/config/www/automations/morning_briefing.mp4"
+        )
+        assert result == "http://192.168.1.50:8123/local/automations/morning_briefing.mp4"
+
+
+def test_resolve_cast_media_url_fallback_on_get_url_error():
+    """Verify that if get_url raises an exception, relative /local/ path is returned."""
+    hass = MagicMock()
+    with patch(
+        "custom_components.automation_generator.orchestrator.get_url",
+        side_effect=Exception("No base URL configured"),
+    ):
+        result = resolve_cast_media_url(
+            hass, "/config/www/automations/morning_briefing.mp4"
+        )
+        assert result == "/local/automations/morning_briefing.mp4"
+
+
+def test_resolve_cast_media_url_non_www_path():
+    """Verify non-www local filesystem paths are returned unchanged."""
+    hass = MagicMock()
+    assert (
+        resolve_cast_media_url(hass, "/var/media/scratch/clip.mp4")
+        == "/var/media/scratch/clip.mp4"
+    )
+
+
+@pytest.mark.asyncio
+async def test_play_and_sync_resolves_cast_media_url():
+    """Verify async_play_and_sync_routine passes the resolved cast URL to play_media."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.automation_generator.orchestrator.get_url",
+            return_value="http://homeassistant.local:8123",
+        ),
+        patch(
+            "custom_components.automation_generator.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.automation_generator.orchestrator.async_call_later"),
+    ):
+        metadata = {
+            "video_path": "/config/www/automations/morning.mp4",
+            "slide_timestamps": [],
+        }
+        await async_play_and_sync_routine(
+            hass, "morning", "media_player.kitchen_cast", metadata, []
+        )
+        hass.services.async_call.assert_awaited_with(
+            "media_player",
+            "play_media",
+            {
+                "entity_id": "media_player.kitchen_cast",
+                "media_content_id": "http://homeassistant.local:8123/local/automations/morning.mp4",
+                "media_content_type": "video/mp4",
+            },
+        )

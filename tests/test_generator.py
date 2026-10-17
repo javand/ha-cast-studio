@@ -12,6 +12,8 @@ import pytest
 from custom_components.automation_generator.generator import (
     GeneratorError,
     RoutineConfigError,
+    _extract_entity_context,
+    _is_unconfigured_optional_step,
     async_compile_routine_media,
     get_audio_duration,
 )
@@ -388,3 +390,203 @@ def test_get_audio_duration_fallback():
         "/nonexistent/dummy.wav", fallback_text="This is a test narration"
     )
     assert duration >= MIN_FALLBACK_DURATION
+
+
+def test_extract_entity_context_all_domains():
+    """Test _extract_entity_context extracts and formats HA states from multiple domains."""
+    hass = MagicMock()
+
+    mock_weather = MagicMock(
+        state="partlycloudy",
+        attributes={"temperature": 72, "temperature_unit": "°F", "forecast": "dry"},
+    )
+    mock_calendar = MagicMock(
+        state="on",
+        attributes={"message": "Team Standup", "start_time": "09:00:00"},
+    )
+    mock_todo = MagicMock(
+        state="4",
+        attributes={},
+    )
+    mock_sensor = MagicMock(
+        state="23.5",
+        attributes={"unit_of_measurement": "kWh"},
+    )
+
+    state_map = {
+        "weather.home": mock_weather,
+        "calendar.work": mock_calendar,
+        "todo.groceries": mock_todo,
+        "sensor.power": mock_sensor,
+    }
+    hass.states.get = MagicMock(side_effect=lambda eid: state_map.get(eid))
+
+    step = {
+        "name": "daily_overview",
+        "entity_ids": ["weather.home", "calendar.work", "todo.groceries", "sensor.power"],
+        "context": "Focus on high priority tasks",
+    }
+
+    ctx = _extract_entity_context(hass, step)
+    assert "Focus on high priority tasks" in ctx
+    assert "Weather (weather.home): Condition: partlycloudy, Temperature: 72°F" in ctx
+    assert "Calendar (calendar.work): State: on, Summary: Team Standup, Start: 09:00:00" in ctx
+    assert "To-do (todo.groceries): 4 tasks pending" in ctx
+    assert "Sensor (sensor.power): 23.5 kWh" in ctx
+
+
+def test_is_unconfigured_optional_step_matrix():
+    """Test _is_unconfigured_optional_step identifies unconfigured vs valid steps."""
+    hass = MagicMock()
+    mock_state = MagicMock(state="sunny")
+    hass.states.get = MagicMock(side_effect=lambda eid: mock_state if eid == "weather.home" else None)
+
+    # 1. Non-entity step: should not be skipped
+    assert not _is_unconfigured_optional_step(hass, {"name": "greeting"})
+
+    # 2. Entity step with entity_id: None and no context: should be skipped
+    assert _is_unconfigured_optional_step(hass, {"name": "todo", "entity_id": None})
+
+    # 3. Entity step with entity_id: "" and no context: should be skipped
+    assert _is_unconfigured_optional_step(hass, {"name": "todo", "entity_id": ""})
+
+    # 4. Entity step with missing entity and no context: should be skipped
+    assert _is_unconfigured_optional_step(
+        hass, {"name": "scripture", "entity_id": "sensor.missing"}
+    )
+
+    # 5. Entity step with missing entity BUT has fallback context: should NOT be skipped
+    assert not _is_unconfigured_optional_step(
+        hass,
+        {
+            "name": "scripture",
+            "entity_id": "sensor.missing",
+            "context": "Proverbs 3:5",
+        },
+    )
+
+    # 6. Entity step with missing entity BUT has actions: should NOT be skipped
+    assert not _is_unconfigured_optional_step(
+        hass,
+        {
+            "name": "todo",
+            "entity_id": None,
+            "actions": [{"action": "light.turn_on"}],
+        },
+    )
+
+    # 7. Entity step with valid state in HA: should NOT be skipped
+    assert not _is_unconfigured_optional_step(
+        hass, {"name": "weather", "entity_id": "weather.home"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_compile_routine_skips_unconfigured_optional_step(tmp_path: Path):
+    """Test that optional unconfigured entity steps are skipped during compilation."""
+    hass = MagicMock()
+    hass.states.get = MagicMock(return_value=None)  # task list entity not found in states
+
+    routine_config = {
+        "visuals": True,
+        "steps": [
+            {"name": "greeting", "visual": True, "voice": "Pulcherrima"},
+            {"name": "todo", "visual": True, "entity_id": None},  # should be skipped
+            {"name": "outro", "visual": True, "voice": "Pulcherrima"},
+        ],
+    }
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+
+    with (
+        patch(
+            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.automation_generator.generator.async_generate_step_content",
+            new=AsyncMock(
+                return_value={"visual_card": {"title": "T"}, "narration_script": "S"}
+            ),
+        ) as mock_generate,
+        patch(
+            "custom_components.automation_generator.generator.async_synthesize_speech",
+            new=AsyncMock(return_value="audio.wav"),
+        ),
+        patch(
+            "custom_components.automation_generator.generator.render_slide",
+            return_value="slide.jpg",
+        ),
+        patch(
+            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        result = await async_compile_routine_media(
+            hass, "morning", routine_config, recipient, str(tmp_path)
+        )
+        # Only greeting and outro should be compiled (2 steps, todo skipped)
+        assert len(result["slide_timestamps"]) == TWO_STEPS
+        assert mock_generate.call_count == TWO_STEPS
+        compiled_step_names = [s["name"] for s in result["slide_timestamps"]]
+        assert "todo" not in compiled_step_names
+        assert "greeting" in compiled_step_names
+        assert "outro" in compiled_step_names
+
+
+@pytest.mark.asyncio
+async def test_compile_routine_injects_entity_context(tmp_path: Path):
+    """Test that entity state is extracted and injected into step context before AI generation."""
+    hass = MagicMock()
+    mock_weather_state = MagicMock(
+        state="sunny",
+        attributes={"temperature": 75, "temperature_unit": "°F"},
+    )
+    hass.states.get = MagicMock(
+        side_effect=lambda eid: mock_weather_state if eid == "weather.home" else None
+    )
+
+    routine_config = {
+        "visuals": True,
+        "steps": [
+            {
+                "name": "weather",
+                "visual": True,
+                "entity_id": "weather.home",
+                "context": "Keep it brief",
+            },
+        ],
+    }
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+
+    with (
+        patch(
+            "custom_components.automation_generator.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.automation_generator.generator.async_generate_step_content",
+            new=AsyncMock(
+                return_value={"visual_card": {"title": "T"}, "narration_script": "S"}
+            ),
+        ) as mock_generate,
+        patch(
+            "custom_components.automation_generator.generator.async_synthesize_speech",
+            new=AsyncMock(return_value="audio.wav"),
+        ),
+        patch(
+            "custom_components.automation_generator.generator.render_slide",
+            return_value="slide.jpg",
+        ),
+        patch(
+            "custom_components.automation_generator.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        await async_compile_routine_media(
+            hass, "morning", routine_config, recipient, str(tmp_path)
+        )
+        assert mock_generate.call_count == 1
+        call_step = mock_generate.call_args[0][1]
+        assert "Keep it brief" in call_step["context"]
+        assert "Weather (weather.home): Condition: sunny" in call_step["context"]
+        assert "Temperature: 75°F" in call_step["context"]

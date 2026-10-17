@@ -67,6 +67,9 @@ def test_build_slide_clip_command_detailed_arguments(tmp_path: Path):
     assert "-b:a" in cmd
     ba_idx = cmd.index("-b:a")
     assert cmd[ba_idx + 1] == "192k"
+    assert "-ar" in cmd
+    ar_idx = cmd.index("-ar")
+    assert cmd[ar_idx + 1] == "44100"
     assert "-shortest" in cmd
     assert cmd[-1] == output_file
 

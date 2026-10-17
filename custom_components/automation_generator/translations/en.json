@@ -1,21 +1,33 @@
 {
-    "config": {
-        "step": {
-            "user": {
-                "description": "If you need help with the configuration have a look here: {documentation_url}",
-                "data": {
-                    "username": "Username",
-                    "password": "Password"
-                }
-            }
-        },
-        "error": {
-            "auth": "Username/Password is wrong.",
-            "connection": "Unable to connect to the server.",
-            "unknown": "Unknown error occurred."
-        },
-        "abort": {
-            "already_configured": "This entry is already configured."
+  "config": {
+    "step": {
+      "user": {
+        "title": "Automation Generator",
+        "description": "Configure default recipient profile, output directory, and optional Gemini API key for multimedia routine generation.",
+        "data": {
+          "api_key": "API Key (Optional)",
+          "recipient_name": "Recipient Name",
+          "phonetic_name": "Phonetic Pronunciation Name",
+          "output_dir": "Output Directory"
         }
+      }
+    },
+    "abort": {
+      "already_configured": "Automation Generator is already configured."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Automation Generator Options",
+        "description": "Update recipient profile, output directory, and API key preferences.",
+        "data": {
+          "api_key": "API Key (Optional)",
+          "recipient_name": "Recipient Name",
+          "phonetic_name": "Phonetic Pronunciation Name",
+          "output_dir": "Output Directory"
+        }
+      }
+    }
+  }
 }

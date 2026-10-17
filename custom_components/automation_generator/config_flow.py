@@ -1,98 +1,173 @@
-"""Adds config flow for Blueprint."""
+"""Config flow for Automation Generator integration."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.helpers import selector
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.loader import async_get_loaded_integration
-from slugify import slugify
 
-from .api import (
-    IntegrationBlueprintApiClient,
-    IntegrationBlueprintApiClientAuthenticationError,
-    IntegrationBlueprintApiClientCommunicationError,
-    IntegrationBlueprintApiClientError,
+from .const import (
+    CONF_API_KEY,
+    CONF_OUTPUT_DIR,
+    CONF_PHONETIC_NAME,
+    CONF_RECIPIENT_NAME,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_PHONETIC_NAME,
+    DEFAULT_RECIPIENT_NAME,
+    DOMAIN,
 )
-from .const import DOMAIN, LOGGER
 
 
-class BlueprintFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
-    """Config flow for Blueprint."""
+class AutomationGeneratorFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Automation Generator."""
 
     VERSION = 1
 
     async def async_step_user(
         self,
-        user_input: dict | None = None,
+        user_input: dict[str, Any] | None = None,
     ) -> config_entries.ConfigFlowResult:
-        """Handle a flow initialized by the user."""
-        _errors = {}
-        if user_input is not None:
-            try:
-                await self._test_credentials(
-                    username=user_input[CONF_USERNAME],
-                    password=user_input[CONF_PASSWORD],
-                )
-            except IntegrationBlueprintApiClientAuthenticationError as exception:
-                LOGGER.warning(exception)
-                _errors["base"] = "auth"
-            except IntegrationBlueprintApiClientCommunicationError as exception:
-                LOGGER.error(exception)
-                _errors["base"] = "connection"
-            except IntegrationBlueprintApiClientError as exception:
-                LOGGER.exception(exception)
-                _errors["base"] = "unknown"
-            else:
-                await self.async_set_unique_id(
-                    ## Do NOT use this in production code
-                    ## The unique_id should never be something that can change
-                    ## https://developers.home-assistant.io/docs/config_entries_config_flow_handler#unique-ids
-                    unique_id=slugify(user_input[CONF_USERNAME])
-                )
-                self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=user_input[CONF_USERNAME],
-                    data=user_input,
-                )
+        """Handle the initial step."""
+        errors: dict[str, str] = {}
 
-        integration = async_get_loaded_integration(self.hass, DOMAIN)
-        assert integration.documentation is not None, (  # noqa: S101
-            "Integration documentation URL is not set in manifest.json"
+        if user_input is not None:
+            await self.async_set_unique_id(DOMAIN)
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(
+                title="Automation Generator",
+                data=user_input,
+            )
+
+        data_schema = vol.Schema(
+            {
+                vol.Optional(CONF_API_KEY): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.PASSWORD,
+                    ),
+                ),
+                vol.Required(
+                    CONF_RECIPIENT_NAME,
+                    default=DEFAULT_RECIPIENT_NAME,
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.TEXT,
+                    ),
+                ),
+                vol.Required(
+                    CONF_PHONETIC_NAME,
+                    default=DEFAULT_PHONETIC_NAME,
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.TEXT,
+                    ),
+                ),
+                vol.Required(
+                    CONF_OUTPUT_DIR,
+                    default=DEFAULT_OUTPUT_DIR,
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.TEXT,
+                    ),
+                ),
+            }
         )
 
         return self.async_show_form(
             step_id="user",
-            description_placeholders={
-                "documentation_url": integration.documentation,
-            },
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_USERNAME,
-                        default=(user_input or {}).get(CONF_USERNAME, vol.UNDEFINED),
-                    ): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.TEXT,
-                        ),
-                    ),
-                    vol.Required(CONF_PASSWORD): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.PASSWORD,
-                        ),
-                    ),
-                },
-            ),
-            errors=_errors,
+            data_schema=data_schema,
+            errors=errors,
         )
 
-    async def _test_credentials(self, username: str, password: str) -> None:
-        """Validate credentials."""
-        client = IntegrationBlueprintApiClient(
-            username=username,
-            password=password,
-            session=async_get_clientsession(self.hass),
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> AutomationGeneratorOptionsFlowHandler:
+        """Get the options flow for this handler."""
+        return AutomationGeneratorOptionsFlowHandler(config_entry)
+
+
+class AutomationGeneratorOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for Automation Generator."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry | None = None) -> None:
+        """Initialize options flow."""
+        super().__init__()
+        if config_entry is not None:
+            self._custom_config_entry = config_entry
+
+    @property
+    def config_entry(self) -> config_entries.ConfigEntry:
+        """Return the config entry."""
+        if hasattr(self, "_custom_config_entry"):
+            return self._custom_config_entry
+        return super().config_entry
+
+    async def async_step_init(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> config_entries.ConfigFlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        entry = self.config_entry
+        options = entry.options if entry else {}
+        data = entry.data if entry else {}
+
+        current_api_key = options.get(CONF_API_KEY, data.get(CONF_API_KEY, ""))
+        current_recipient = options.get(
+            CONF_RECIPIENT_NAME, data.get(CONF_RECIPIENT_NAME, DEFAULT_RECIPIENT_NAME)
         )
-        await client.async_get_data()
+        current_phonetic = options.get(
+            CONF_PHONETIC_NAME, data.get(CONF_PHONETIC_NAME, DEFAULT_PHONETIC_NAME)
+        )
+        current_output_dir = options.get(
+            CONF_OUTPUT_DIR, data.get(CONF_OUTPUT_DIR, DEFAULT_OUTPUT_DIR)
+        )
+
+        schema_fields: dict[Any, Any] = {}
+        if current_api_key:
+            schema_fields[vol.Optional(CONF_API_KEY, default=current_api_key)] = (
+                selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.PASSWORD,
+                    )
+                )
+            )
+        else:
+            schema_fields[vol.Optional(CONF_API_KEY)] = selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.PASSWORD,
+                )
+            )
+
+        schema_fields[
+            vol.Required(CONF_RECIPIENT_NAME, default=current_recipient)
+        ] = selector.TextSelector(
+            selector.TextSelectorConfig(
+                type=selector.TextSelectorType.TEXT,
+            )
+        )
+        schema_fields[
+            vol.Required(CONF_PHONETIC_NAME, default=current_phonetic)
+        ] = selector.TextSelector(
+            selector.TextSelectorConfig(
+                type=selector.TextSelectorType.TEXT,
+            )
+        )
+        schema_fields[
+            vol.Required(CONF_OUTPUT_DIR, default=current_output_dir)
+        ] = selector.TextSelector(
+            selector.TextSelectorConfig(
+                type=selector.TextSelectorType.TEXT,
+            )
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(schema_fields),
+        )
