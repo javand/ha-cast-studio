@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import wave
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.automation_generator.tts_client import (
     TTSClientError,
@@ -142,6 +144,122 @@ async def test_synthesize_gemini_tts_direct_api(tmp_path: Path) -> None:
         ]["voiceName"]
         == "Pulcherrima"
     )
+
+
+@pytest.mark.asyncio
+async def test_gemini_raw_pcm_wrapped_in_riff_header(tmp_path: Path) -> None:
+    """Test Gemini raw 16-bit PCM audio is automatically wrapped in a valid RIFF WAVE header."""
+    output_wav = str(tmp_path / "gemini_pcm.wav")
+    # Raw PCM bytes without RIFF header (24000Hz, 16-bit mono = 2 bytes per sample)
+    raw_pcm_samples = b"\x00\x00\x10\x00\x20\x00\x30\x00" * 3000  # 24000 bytes = 0.5s
+    b64_pcm = base64.b64encode(raw_pcm_samples).decode("ascii")
+
+    mock_resp_json = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "audio/pcm;rate=24000",
+                                "data": b64_pcm,
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value=mock_resp_json)
+
+    mock_context = MagicMock()
+    mock_context.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_context.__aexit__ = AsyncMock(return_value=None)
+
+    mock_session = MagicMock()
+    mock_session.post.return_value = mock_context
+
+    result = await _synthesize_gemini_tts(
+        script="Testing raw PCM wrapping",
+        voice="Pulcherrima",
+        personality="news_anchor",
+        output_wav_path=output_wav,
+        api_key="api_key_123",
+        session=mock_session,
+    )
+
+    assert result == output_wav
+    read_bytes = await asyncio.to_thread((tmp_path / "gemini_pcm.wav").read_bytes)
+    assert read_bytes.startswith(b"RIFF")
+    assert b"WAVE" in read_bytes
+
+    # Verify standard wave module can read audio params cleanly
+    def _read_wav_params(wav_path: str) -> tuple[int, int, int]:
+        with wave.open(wav_path, "rb") as wf:
+            return wf.getnchannels(), wf.getsampwidth(), wf.getframerate()
+
+    nchannels, sampwidth, framerate = await asyncio.to_thread(
+        _read_wav_params, output_wav
+    )
+    expected_channels = 1
+    expected_sampwidth = 2
+    expected_framerate = 24000
+    assert nchannels == expected_channels
+    assert sampwidth == expected_sampwidth
+    assert framerate == expected_framerate
+
+
+@pytest.mark.asyncio
+async def test_gemini_response_scans_multiple_parts(tmp_path: Path) -> None:
+    """Test Gemini response parser iterates across content parts to find inlineData."""
+    output_wav = str(tmp_path / "multipart_gemini.wav")
+    fake_wav = b"RIFFfake_gemini_multipart_audio"
+    b64_audio = base64.b64encode(fake_wav).decode("ascii")
+
+    mock_resp_json = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"text": "Thought: speaking clearly with news anchor cadence."},
+                        {
+                            "inlineData": {
+                                "mimeType": "audio/wav",
+                                "data": b64_audio,
+                            }
+                        },
+                    ]
+                }
+            }
+        ]
+    }
+
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value=mock_resp_json)
+
+    mock_context = MagicMock()
+    mock_context.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_context.__aexit__ = AsyncMock(return_value=None)
+
+    mock_session = MagicMock()
+    mock_session.post.return_value = mock_context
+
+    result = await _synthesize_gemini_tts(
+        script="Scanning parts test",
+        voice="Pulcherrima",
+        personality="news_anchor",
+        output_wav_path=output_wav,
+        api_key="key",
+        session=mock_session,
+    )
+
+    assert result == output_wav
+    read_bytes = await asyncio.to_thread((tmp_path / "multipart_gemini.wav").read_bytes)
+    assert read_bytes == fake_wav
 
 
 @pytest.mark.asyncio
@@ -352,7 +470,7 @@ async def test_synthesize_speech_conversation_agent_fallback_to_ha(
 
 @pytest.mark.asyncio
 async def test_synthesize_ha_tts_direct_service_call(tmp_path: Path) -> None:
-    """Test _synthesize_ha_tts calls Home Assistant tts.speak and generates output wav."""
+    """Test _synthesize_ha_tts calls Home Assistant tts.speak with target kwarg and generates wav."""
     hass = MagicMock()
     hass.services.async_call = AsyncMock()
     output_wav = str(tmp_path / "ha_direct.wav")
@@ -377,9 +495,64 @@ async def test_synthesize_ha_tts_direct_service_call(tmp_path: Path) -> None:
     assert call_args[0][1] == "speak"
     data = call_args[0][2]
     assert data["message"] == "Good evening, family"
-    assert data["target"]["entity_id"] == "tts.piper"
     assert data["options"]["voice"] == "Enceladus"
     assert data["options"]["personality"] == "calm_reassuring"
+    # Target must be passed as keyword argument
+    assert call_args[1]["target"] == {"entity_id": "tts.piper"}
+    assert call_args[1]["blocking"] is True
+
+
+@pytest.mark.asyncio
+async def test_synthesize_ha_tts_catches_home_assistant_error(tmp_path: Path) -> None:
+    """Test _synthesize_ha_tts catches HomeAssistantError and falls back to silent wav."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock(
+        side_effect=HomeAssistantError("Service tts.speak not found")
+    )
+    output_wav = str(tmp_path / "ha_error.wav")
+
+    result = await _synthesize_ha_tts(
+        hass=hass,
+        script="Error fallback test",
+        voice="Pulcherrima",
+        personality="calm",
+        output_wav_path=output_wav,
+        target_engine="tts.invalid",
+    )
+
+    assert result == output_wav
+    content = await asyncio.to_thread((tmp_path / "ha_error.wav").read_bytes)
+    assert content.startswith(b"RIFF")
+    assert b"WAVE" in content
+
+
+@pytest.mark.asyncio
+async def test_async_synthesize_speech_handles_none_creds(tmp_path: Path) -> None:
+    """Test async_synthesize_speech safely handles creds=None without error."""
+    hass = MagicMock()
+    output_wav = str(tmp_path / "none_creds.wav")
+
+    with patch(
+        "custom_components.automation_generator.tts_client._synthesize_ha_tts",
+        new=AsyncMock(return_value=output_wav),
+    ) as mock_ha:
+        result = await async_synthesize_speech(
+            hass=hass,
+            script="None creds test",
+            voice="Pulcherrima",
+            personality="news_anchor",
+            output_wav_path=output_wav,
+            creds=None,  # type: ignore[arg-type]
+        )
+        assert result == output_wav
+        mock_ha.assert_awaited_once_with(
+            hass,
+            "None creds test",
+            "Pulcherrima",
+            "news_anchor",
+            output_wav,
+            target_engine=None,
+        )
 
 
 @pytest.mark.asyncio

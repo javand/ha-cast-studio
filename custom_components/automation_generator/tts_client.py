@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import struct
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import DEFAULT_HOST_VOICE, LOGGER
 
@@ -17,6 +19,7 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 DEFAULT_PERSONALITY = "news_anchor"
+DEFAULT_GEMINI_SAMPLE_RATE = 24000
 
 OPENAI_VOICE_MAP: dict[str, str] = {
     "Pulcherrima": "nova",
@@ -76,6 +79,64 @@ def _generate_silent_wav(
         data_size,
     )
     return header + (b"\x00" * data_size)
+
+
+def _wrap_pcm_in_wav(
+    pcm_data: bytes,
+    sample_rate: int = DEFAULT_GEMINI_SAMPLE_RATE,
+    num_channels: int = 1,
+) -> bytes:
+    """Wrap raw 16-bit PCM audio in standard RIFF WAVE container."""
+    bytes_per_sample = 2
+    byte_rate = sample_rate * num_channels * bytes_per_sample
+    block_align = num_channels * bytes_per_sample
+    data_size = len(pcm_data)
+    chunk_size = 36 + data_size
+
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        chunk_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        num_channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        16,
+        b"data",
+        data_size,
+    )
+    return header + pcm_data
+
+
+def _extract_gemini_audio(data: dict[str, Any] | None) -> tuple[bytes, str]:
+    """Extract audio bytes and mime type from Gemini API response data."""
+    if not data:
+        msg = "No audio content returned from Gemini TTS API"
+        raise TTSClientError(msg)
+
+    try:
+        if "candidates" in data:
+            for candidate in data.get("candidates", []):
+                content = candidate.get("content", {})
+                for part in content.get("parts", []):
+                    if isinstance(part, dict) and "inlineData" in part:
+                        inline_data = part["inlineData"]
+                        if "data" in inline_data:
+                            audio_bytes = base64.b64decode(inline_data["data"])
+                            mime_type = str(inline_data.get("mimeType", ""))
+                            return audio_bytes, mime_type
+        if "audioContent" in data:
+            return base64.b64decode(data["audioContent"]), ""
+    except (KeyError, IndexError, TypeError, ValueError) as err:
+        msg = f"Failed to extract audio from Gemini TTS response: {err}"
+        raise TTSClientError(msg) from err
+
+    msg = "No audio content returned from Gemini TTS API"
+    raise TTSClientError(msg)
 
 
 async def _synthesize_gemini_tts(  # noqa: PLR0913
@@ -144,22 +205,15 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
             msg = f"Gemini TTS API returned status {status}: {err_body}"
             raise TTSClientError(msg)
 
-        audio_bytes: bytes | None = None
-        try:
-            if data and "candidates" in data:
-                candidate = data["candidates"][0]
-                part = candidate["content"]["parts"][0]
-                if "inlineData" in part and "data" in part["inlineData"]:
-                    audio_bytes = base64.b64decode(part["inlineData"]["data"])
-            elif data and "audioContent" in data:
-                audio_bytes = base64.b64decode(data["audioContent"])
-        except (KeyError, IndexError, TypeError, ValueError) as err:
-            msg = f"Failed to extract audio from Gemini TTS response: {err}"
-            raise TTSClientError(msg) from err
+        audio_bytes, mime_type = _extract_gemini_audio(data)
 
-        if not audio_bytes:
-            msg = "No audio content returned from Gemini TTS API"
-            raise TTSClientError(msg)
+        if not audio_bytes.startswith(b"RIFF"):
+            sample_rate = DEFAULT_GEMINI_SAMPLE_RATE
+            if "rate=" in mime_type:
+                match = re.search(r"rate=(\d+)", mime_type)
+                if match:
+                    sample_rate = int(match.group(1))
+            audio_bytes = _wrap_pcm_in_wav(audio_bytes, sample_rate=sample_rate)
 
         await asyncio.to_thread(target_path.write_bytes, audio_bytes)
         return output_wav_path
@@ -249,9 +303,6 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
     service_data: dict[str, Any] = {
         "message": script,
     }
-    if target_engine:
-        service_data["target"] = {"entity_id": target_engine}
-
     options: dict[str, Any] = {}
     if voice:
         options["voice"] = voice
@@ -260,14 +311,20 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
     if options:
         service_data["options"] = options
 
+    call_kwargs: dict[str, Any] = {
+        "blocking": True,
+    }
+    if target_engine:
+        call_kwargs["target"] = {"entity_id": target_engine}
+
     try:
         await hass.services.async_call(
             "tts",
             "speak",
             service_data,
-            blocking=True,
+            **call_kwargs,
         )
-    except (OSError, RuntimeError, ValueError) as err:
+    except (HomeAssistantError, Exception) as err:  # noqa: BLE001
         LOGGER.warning(
             "Home Assistant tts.speak call encountered warning/error: %s",
             err,
@@ -285,14 +342,15 @@ async def async_synthesize_speech(  # noqa: PLR0913
     voice: str,
     personality: str,
     output_wav_path: str,
-    creds: dict[str, Any],
+    creds: dict[str, Any] | None = None,
 ) -> str:
     """Synthesize speech with per-action voice and personality conditioning."""
+    safe_creds = creds or {}
     effective_voice = voice.strip() if voice else DEFAULT_HOST_VOICE
     effective_personality = personality.strip() if personality else DEFAULT_PERSONALITY
 
-    platform = creds.get("platform", "conversation_agent")
-    api_key = creds.get("api_key")
+    platform = safe_creds.get("platform", "conversation_agent")
+    api_key = safe_creds.get("api_key")
 
     if platform == "gemini" and api_key:
         try:
@@ -331,5 +389,5 @@ async def async_synthesize_speech(  # noqa: PLR0913
         effective_voice,
         effective_personality,
         output_wav_path,
-        target_engine=creds.get("tts_engine"),
+        target_engine=safe_creds.get("tts_engine"),
     )
