@@ -9,11 +9,15 @@ visual slides.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
+
+_LOGGER = logging.getLogger(__name__)
+BUNDLED_ASSETS_DIR = Path(__file__).parent / "assets"
 
 # Display dimensions
 CANVAS_WIDTH = 1024
@@ -40,6 +44,14 @@ CARD_RADIUS = 24
 CONTENT_LEFT = CARD_X0 + 44
 CONTENT_RIGHT = CARD_X1 - 44
 MAX_TEXT_WIDTH = CONTENT_RIGHT - CONTENT_LEFT
+
+# Side-by-side icon layout dimensions
+ICON_BOX_X = CARD_X0 + 44
+ICON_BOX_MAX_W = 320
+ICON_BOX_MAX_H = 320
+ICON_CENTER_Y = (CARD_Y0 + CARD_Y1) // 2
+
+ASPECT_RATIO_WIDESCREEN_THRESHOLD = 1.3
 
 
 class PhoneticLeakError(ValueError, AssertionError):
@@ -221,41 +233,204 @@ def _render_card_overlay(canvas: Image.Image) -> Image.Image:
     return Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
 
 
+def _resolve_image_path(raw_path: Any) -> Path | None:
+    """Resolve an image path from filesystem, bundled assets, or asset name."""
+    if not raw_path or not isinstance(raw_path, (str, Path)):
+        return None
+
+    path_obj = Path(raw_path).expanduser()
+    if path_obj.is_file():
+        return path_obj
+
+    p_str = str(raw_path).strip()
+    if not p_str:
+        return None
+
+    # Check direct name, filename, and .png stem inside bundled assets
+    candidates = (
+        BUNDLED_ASSETS_DIR / p_str,
+        BUNDLED_ASSETS_DIR / path_obj.name,
+        BUNDLED_ASSETS_DIR / f"{path_obj.stem}.png",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    return None
+
+
+def _load_image(card_data: dict[str, Any]) -> tuple[Image.Image | None, bool]:
+    """Inspect card_data for image/icon references, resolve and load into memory."""
+    raw_source = (
+        card_data.get("image_path")
+        or card_data.get("icon_path")
+        or card_data.get("icon")
+        or card_data.get("image")
+        or card_data.get("entity_picture")
+    )
+    if not raw_source:
+        return None, False
+
+    resolved_path = _resolve_image_path(raw_source)
+    if resolved_path is None or not resolved_path.is_file():
+        _LOGGER.warning(
+            "Image file '%s' not found; falling back to typography slide", raw_source
+        )
+        return None, False
+
+    try:
+        with Image.open(resolved_path) as raw_img:
+            has_alpha = ("A" in raw_img.getbands()) or (
+                raw_img.info.get("transparency") is not None
+            )
+            img = raw_img.convert("RGBA")
+            return img, has_alpha
+    except (OSError, ValueError) as err:
+        _LOGGER.warning(
+            "Failed to open image file '%s': %s; falling back to typography slide",
+            resolved_path,
+            err,
+        )
+        return None, False
+
+
+def _determine_layout_mode(
+    card_data: dict[str, Any],
+    img: Image.Image | None,
+    *,
+    has_alpha: bool,
+) -> str:
+    """Determine visual composition layout: 'card' (default), 'icon', or 'photo'."""
+    if img is None:
+        return "card"
+
+    explicit_layout = (
+        str(
+            card_data.get("layout")
+            or card_data.get("image_style")
+            or card_data.get("image_mode")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+    if explicit_layout in ("photo", "background", "full", "full_bleed", "fullscreen"):
+        return "photo"
+    if explicit_layout in ("icon", "side_by_side", "avatar", "badge", "card"):
+        return "icon"
+
+    is_icon_key = (
+        "icon" in card_data or "icon_path" in card_data
+    ) and "image_path" not in card_data
+    aspect = img.width / img.height
+    if is_icon_key or has_alpha or aspect < ASPECT_RATIO_WIDESCREEN_THRESHOLD:
+        return "icon"
+
+    return "photo"
+
+
+def _render_photo_background(img: Image.Image) -> Image.Image:
+    """Render 1024x600 photo background with aspect-fill crop and dark vignette."""
+    orig_w, orig_h = img.size
+    scale = max(CANVAS_WIDTH / orig_w, CANVAS_HEIGHT / orig_h)
+    new_w = max(CANVAS_WIDTH, round(orig_w * scale))
+    new_h = max(CANVAS_HEIGHT, round(orig_h * scale))
+    resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+    crop_left = max(0, (new_w - CANVAS_WIDTH) // 2)
+    crop_top = max(0, (new_h - CANVAS_HEIGHT) // 2)
+    base = resized.crop(
+        (crop_left, crop_top, crop_left + CANVAS_WIDTH, crop_top + CANVAS_HEIGHT)
+    ).convert("RGBA")
+
+    # Dark vignette overlay to guarantee contrast
+    vignette = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+    v_draw = ImageDraw.Draw(vignette)
+    v_draw.rectangle([(0, 0), (CANVAS_WIDTH, CANVAS_HEIGHT)], fill=(15, 23, 42, 130))
+
+    center_y = CANVAS_HEIGHT / 2
+    for y in range(CANVAS_HEIGHT):
+        dist = abs(y - center_y) / center_y
+        v_draw.line(
+            [(0, y), (CANVAS_WIDTH, y)],
+            fill=(2, 6, 23, int(90 * (dist**2))),
+        )
+
+    return Image.alpha_composite(base, vignette).convert("RGB")
+
+
+def _composite_icon(
+    canvas: Image.Image,
+    img: Image.Image,
+    *,
+    has_alpha: bool,
+) -> tuple[int, int]:
+    """
+    Composite avatar or icon on the left side of the card.
+
+    Returns updated text content boundaries (content_left, content_right).
+    """
+    img_w, img_h = img.size
+    scale = min(ICON_BOX_MAX_W / img_w, ICON_BOX_MAX_H / img_h)
+    fit_w = max(1, round(img_w * scale))
+    fit_h = max(1, round(img_h * scale))
+    fit_img = img.resize((fit_w, fit_h), Image.Resampling.LANCZOS)
+
+    pos_x = ICON_BOX_X + (ICON_BOX_MAX_W - fit_w) // 2
+    pos_y = ICON_CENTER_Y - (fit_h // 2)
+
+    if has_alpha:
+        canvas.paste(fit_img, (pos_x, pos_y), mask=fit_img.split()[3])
+    else:
+        mask = Image.new("L", (fit_w, fit_h), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.rounded_rectangle((0, 0, fit_w, fit_h), radius=20, fill=255)
+        canvas.paste(fit_img, (pos_x, pos_y), mask=mask)
+
+    content_left = ICON_BOX_X + ICON_BOX_MAX_W + 36
+    content_right = CONTENT_RIGHT
+    return content_left, content_right
+
+
 def _draw_header(
     draw: ImageDraw.ImageDraw,
     card_data: dict[str, Any],
     start_y: int,
+    content_left: int = CONTENT_LEFT,
+    content_right: int = CONTENT_RIGHT,
 ) -> int:
     """Draw title, subtitle, and divider line, returning updated y coordinate."""
+    max_text_width = content_right - content_left
     title_font = _get_font(36, bold=True)
     subtitle_font = _get_font(22, bold=False)
     curr_y = start_y
 
     title = str(card_data.get("title", "")).strip()
     if title:
-        title_lines = _wrap_text(title, title_font, MAX_TEXT_WIDTH, draw)
+        title_lines = _wrap_text(title, title_font, max_text_width, draw)
         for line in title_lines:
-            bbox = draw.textbbox((CONTENT_LEFT, curr_y), line, font=title_font)
+            bbox = draw.textbbox((content_left, curr_y), line, font=title_font)
             line_height = bbox[3] - bbox[1]
-            draw.text((CONTENT_LEFT, curr_y), line, font=title_font, fill=TITLE_COLOR)
+            draw.text((content_left, curr_y), line, font=title_font, fill=TITLE_COLOR)
             curr_y += line_height + 6
 
     subtitle = str(card_data.get("subtitle", "")).strip()
     if subtitle:
         curr_y += 4
-        sub_lines = _wrap_text(subtitle, subtitle_font, MAX_TEXT_WIDTH, draw)
+        sub_lines = _wrap_text(subtitle, subtitle_font, max_text_width, draw)
         for line in sub_lines:
-            bbox = draw.textbbox((CONTENT_LEFT, curr_y), line, font=subtitle_font)
+            bbox = draw.textbbox((content_left, curr_y), line, font=subtitle_font)
             line_height = bbox[3] - bbox[1]
             draw.text(
-                (CONTENT_LEFT, curr_y), line, font=subtitle_font, fill=SUBTITLE_COLOR
+                (content_left, curr_y), line, font=subtitle_font, fill=SUBTITLE_COLOR
             )
             curr_y += line_height + 4
 
     if title or subtitle:
         curr_y += 12
         draw.line(
-            [(CONTENT_LEFT, curr_y), (CONTENT_RIGHT, curr_y)],
+            [(content_left, curr_y), (content_right, curr_y)],
             fill=DIVIDER_COLOR,
             width=1,
         )
@@ -268,11 +443,13 @@ def _draw_bullets(
     draw: ImageDraw.ImageDraw,
     raw_bullets: list[Any],
     start_y: int,
+    content_left: int = CONTENT_LEFT,
+    content_right: int = CONTENT_RIGHT,
 ) -> int:
     """Draw bullet points with dot indicators and text wrapping."""
     bullet_font = _get_font(24, bold=False)
-    bullet_indent = CONTENT_LEFT + 28
-    bullet_max_width = CONTENT_RIGHT - bullet_indent
+    bullet_indent = content_left + 28
+    bullet_max_width = content_right - bullet_indent
     dot_radius = 4
     curr_y = start_y
 
@@ -290,7 +467,7 @@ def _draw_bullets(
         )
         line_height = first_bbox[3] - first_bbox[1]
         dot_center_y = curr_y + (line_height // 2)
-        dot_x = CONTENT_LEFT + 8
+        dot_x = content_left + 8
         draw.ellipse(
             [
                 (dot_x - dot_radius, dot_center_y - dot_radius),
@@ -328,20 +505,50 @@ def render_slide(
     # 1. Enforce identity contract before generating visual pixels
     _assert_identity_contract(card_data, phonetic_name=phonetic_name)
 
-    # 2. Render background and translucent card
-    canvas = _render_gradient_background()
-    canvas = _render_card_overlay(canvas)
+    # 2. Inspect and load image asset if present
+    img, has_alpha = _load_image(card_data)
+    layout_mode = _determine_layout_mode(card_data, img, has_alpha=has_alpha)
+
+    # 3. Render base background and card overlay
+    if layout_mode == "photo" and img is not None:
+        canvas = _render_photo_background(img)
+        canvas = _render_card_overlay(canvas)
+        content_left = CONTENT_LEFT
+        content_right = CONTENT_RIGHT
+    else:
+        canvas = _render_gradient_background()
+        canvas = _render_card_overlay(canvas)
+        if layout_mode == "icon" and img is not None:
+            content_left, content_right = _composite_icon(
+                canvas, img, has_alpha=has_alpha
+            )
+        else:
+            content_left = CONTENT_LEFT
+            content_right = CONTENT_RIGHT
+
     draw = ImageDraw.Draw(canvas)
 
-    # 3. Draw header (title, subtitle, divider)
-    curr_y = _draw_header(draw, card_data, CARD_Y0 + 36)
+    # 4. Draw header (title, subtitle, divider)
+    curr_y = _draw_header(
+        draw,
+        card_data,
+        CARD_Y0 + 36,
+        content_left=content_left,
+        content_right=content_right,
+    )
 
-    # 4. Draw bullet points
+    # 5. Draw bullet points
     raw_bullets = card_data.get("bullet_points")
     if isinstance(raw_bullets, list):
-        _draw_bullets(draw, raw_bullets, curr_y)
+        _draw_bullets(
+            draw,
+            raw_bullets,
+            curr_y,
+            content_left=content_left,
+            content_right=content_right,
+        )
 
-    # 5. Ensure output directory exists and save RGB JPEG
+    # 6. Ensure output directory exists and save RGB JPEG
     output_path = Path(output_jpeg_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(str(output_path), "JPEG", quality=95)
