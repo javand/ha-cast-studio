@@ -280,3 +280,58 @@ async def test_query_conversation_agent_structured_service_call() -> None:
         blocking=True,
         return_response=True,
     )
+
+
+def test_clean_json_text_with_conversational_preamble_and_postamble() -> None:
+    """Test _clean_json_text extracts JSON even with surrounding conversational text."""
+    from custom_components.automation_generator.ai_client import _clean_json_text
+
+    raw_response = (
+        "Here is your routine content in JSON format:\n"
+        "```json\n"
+        '{\n  "visual_card": {"title": "Good Morning"},\n  "narration_script": "Wake up"\n}\n'
+        "```\n"
+        "I hope you have a wonderful day!"
+    )
+    cleaned = _clean_json_text(raw_response)
+    data = json.loads(cleaned)
+    assert data["visual_card"]["title"] == "Good Morning"
+    assert data["narration_script"] == "Wake up"
+
+
+@pytest.mark.asyncio
+async def test_query_gemini_structured_aiohttp_client_error() -> None:
+    """Test _query_gemini_structured wraps aiohttp.ClientError into AIClientError."""
+    import aiohttp
+
+    from custom_components.automation_generator.ai_client import AIClientError
+
+    hass = MagicMock()
+    mock_session = MagicMock()
+    mock_session.post.side_effect = aiohttp.ClientError("Connection reset")
+
+    with (
+        patch(
+            "custom_components.automation_generator.ai_client.async_get_clientsession",
+            return_value=mock_session,
+        ),
+        pytest.raises(
+            AIClientError, match="Network error while communicating with Gemini API"
+        ),
+    ):
+        await _query_gemini_structured(hass, "Prompt", "key")
+
+
+@pytest.mark.asyncio
+async def test_auto_detect_skips_disabled_config_entries() -> None:
+    """Test async_discover_ai_credentials ignores config entries that are disabled."""
+    hass = MagicMock()
+    disabled_entry = MagicMock()
+    disabled_entry.domain = "google_generative_ai"
+    disabled_entry.data = {"api_key": "disabled_secret_key"}
+    disabled_entry.disabled_by = "user"
+    hass.config_entries.async_entries.return_value = [disabled_entry]
+
+    creds = await async_discover_ai_credentials(hass)
+    assert creds["platform"] == "conversation_agent"
+    assert creds["api_key"] is None

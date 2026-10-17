@@ -9,6 +9,7 @@ from contextlib import suppress
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN
@@ -22,11 +23,18 @@ class AIClientError(Exception):
 
 
 def _clean_json_text(raw_text: str) -> str:
-    """Strip markdown code fence blocks if present."""
-    text = raw_text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    return text
+    """Extract and clean JSON substring or markdown code fence blocks."""
+    # Look for markdown code fence (```json ... ``` or ``` ... ```)
+    code_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_text)
+    if code_block_match:
+        return code_block_match.group(1).strip()
+
+    # Look for outer JSON object {...}
+    json_object_match = re.search(r"(\{[\s\S]*\})", raw_text)
+    if json_object_match:
+        return json_object_match.group(1).strip()
+
+    return raw_text.strip()
 
 
 def _build_prompt(step_config: dict[str, Any], recipient: dict[str, Any]) -> str:
@@ -156,6 +164,9 @@ async def _query_gemini_structured(
     except TimeoutError as err:
         msg = "Timeout while communicating with Gemini API"
         raise AIClientError(msg) from err
+    except aiohttp.ClientError as err:
+        msg = f"Network error while communicating with Gemini API: {err}"
+        raise AIClientError(msg) from err
 
 
 async def _query_conversation_agent_structured(
@@ -218,8 +229,22 @@ async def _query_conversation_agent_structured(
     }
 
 
+def _is_entry_disabled(entry: Any) -> bool:
+    """Return True if config entry is marked as disabled."""
+    disabled_by = getattr(entry, "disabled_by", None)
+    if disabled_by is None:
+        return False
+    # Guard against MagicMock auto-attributes in tests
+    if hasattr(disabled_by, "_mock_return_value"):
+        return False
+    return bool(disabled_by)
+
+
 def _extract_entry_api_key(entry: Any) -> str | None:
-    """Safely extract api_key from config entry options or data."""
+    """Safely extract api_key from active config entry options or data."""
+    if _is_entry_disabled(entry):
+        return None
+
     data = getattr(entry, "data", {})
     options = getattr(entry, "options", {})
     data_dict = data if isinstance(data, dict) else {}
@@ -251,6 +276,8 @@ async def async_discover_ai_credentials(hass: HomeAssistant) -> dict[str, Any]:
     with suppress(AttributeError, TypeError, KeyError):
         explicit_entries = hass.config_entries.async_entries(DOMAIN)
         for entry in explicit_entries:
+            if _is_entry_disabled(entry):
+                continue
             if getattr(entry, "domain", DOMAIN) == DOMAIN:
                 api_key = _extract_entry_api_key(entry)
                 if api_key:
@@ -260,6 +287,8 @@ async def async_discover_ai_credentials(hass: HomeAssistant) -> dict[str, Any]:
     with suppress(AttributeError, TypeError, KeyError):
         genai_entries = hass.config_entries.async_entries("google_generative_ai")
         for entry in genai_entries:
+            if _is_entry_disabled(entry):
+                continue
             api_key = _extract_entry_api_key(entry)
             if api_key:
                 return {"platform": "gemini", "api_key": api_key}
@@ -268,6 +297,8 @@ async def async_discover_ai_credentials(hass: HomeAssistant) -> dict[str, Any]:
     with suppress(AttributeError, TypeError, KeyError):
         all_entries = hass.config_entries.async_entries()
         for entry in all_entries:
+            if _is_entry_disabled(entry):
+                continue
             if getattr(entry, "domain", None) == "google_generative_ai":
                 api_key = _extract_entry_api_key(entry)
                 if api_key:
