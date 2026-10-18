@@ -394,7 +394,8 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
                     {"entity_id": target_player, "is_volume_muted": False},
                 )
         with contextlib.suppress(Exception):
-            target_vol = float(metadata.get("volume_level") or 0.60)
+            vol_val = metadata.get("volume_level")
+            target_vol = float(vol_val if vol_val is not None else 0.60)
             await hass.services.async_call(
                 "media_player",
                 "volume_set",

@@ -68,7 +68,7 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
     return eids
 
 
-def _extract_entity_context(  # noqa: PLR0912
+def _extract_entity_context(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant,
     step: dict[str, Any],
 ) -> str:
@@ -121,11 +121,12 @@ def _extract_entity_context(  # noqa: PLR0912
             elif eid.startswith("todo."):
                 entity_lines.append(f"To-do ({eid}): {state_val} tasks pending")
 
-            elif "scripture" in attrs or "text" in attrs:
+            elif any(k.lower() in ("scripture", "text", "commentary") for k in attrs):
+                lower_attrs = {str(k).lower(): v for k, v in attrs.items()}
                 parts = [f"Daily Scripture ({eid}):"]
-                if ref := attrs.get("scripture"):
+                if ref := lower_attrs.get("scripture"):
                     parts.append(f"Citation: {ref}")
-                if txt := attrs.get("text"):
+                if txt := (lower_attrs.get("text") or lower_attrs.get("commentary")):
                     parts.append(f"Text: {txt}")
                 entity_lines.append("\n".join(parts))
 
