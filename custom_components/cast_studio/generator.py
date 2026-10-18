@@ -105,7 +105,7 @@ def _extract_entity_context(  # noqa: PLR0912
                     or attrs.get("description")
                 )
                 start_time = attrs.get("start_time")
-                if state_val == "off" and not attrs.get("message"):
+                if state_val == "off" and not summary:
                     entity_lines.append(
                         f"Calendar ({eid}): No scheduled meetings today. "
                         "The user's schedule is completely clear."

@@ -79,7 +79,9 @@ def _build_prompt(
         f"   the phonetic spelling '{phonetic_name}' when speaking aloud for TTS.\n"
     )
 
-    if step_name == "scripture" or step_type == "scripture":
+    if (step_name or "").lower() == "scripture" or (
+        step_type or ""
+    ).lower() == "scripture":
         prompt += (
             "4. SCRIPTURE NARRATION: After summarizing the scripture, "
             "conclude the narration with an uplifting, encouraging thought "

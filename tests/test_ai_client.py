@@ -439,6 +439,13 @@ def test_enforce_recipient_separation_case_insensitive() -> None:
 
 def test_build_prompt_scripture_includes_uplifting_thought() -> None:
     """Test scripture step prompt instructs AI to conclude with an uplifting thought."""
-    step = {"name": "scripture", "type": "scripture"}
+    step = {"name": "Scripture", "type": "scripture"}
     prompt = _build_prompt(step, {"name": "Javan"})
     assert "uplifting" in prompt.lower() or "encouraging" in prompt.lower()
+    assert "4. SCRIPTURE NARRATION" in prompt
+
+    # Non-scripture step should NOT contain scripture narration instruction
+    weather_prompt = _build_prompt(
+        {"name": "weather", "type": "weather"}, {"name": "Javan"}
+    )
+    assert "4. SCRIPTURE NARRATION" not in weather_prompt
