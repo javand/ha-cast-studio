@@ -400,6 +400,15 @@ async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
     # 4. Set sensor state to playing
     sensor.update_state("playing", active_task="run_routine")
 
+    # Forward post-routine actions from routine configuration to metadata
+    post_routine_actions = (
+        routine_config.get("post_routine_actions")
+        or routine_config.get("post_briefing_actions")
+        or routine_config.get("post_actions")
+    )
+    if post_routine_actions:
+        metadata["post_routine_actions"] = post_routine_actions
+
     # 5. Dispatch async_play_and_sync_routine
     play_task = None
     if target_player:

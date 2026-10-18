@@ -960,3 +960,115 @@ def test_resolve_cast_media_url_preexisting_query_param():
         assert resolved.startswith(
             "http://192.168.1.50:8123/local/cast_studio/video.mp4?autoplay=1&v="
         )
+
+
+@pytest.mark.asyncio
+async def test_async_play_and_sync_routine_executes_post_actions():
+    """Verify post_routine_actions execute upon playback completion."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    mock_state = MagicMock()
+    mock_state.state = "idle"
+    hass.states.get.return_value = mock_state
+
+    post_actions = [
+        {
+            "service": "cast.show_lovelace_view",
+            "target": {"entity_id": "media_player.bathroom_display"},
+            "data": {
+                "dashboard_path": "nest-display",
+                "view_path": "morning",
+            },
+        }
+    ]
+    metadata = {
+        "video_path": "/local/morning.mp4",
+        "prepare_player": False,
+        "duration": 0.05,
+        "slide_timestamps": [],
+        "post_routine_actions": post_actions,
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ) as mock_track,
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        playback_task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        assert isinstance(playback_task, asyncio.Task)
+
+        # Trigger playing event
+        state_cb = mock_track.call_args[0][2]
+        event_playing = MagicMock()
+        event_playing.data = {"new_state": MagicMock(state="playing")}
+        state_cb(event_playing)
+
+        # Await the playback lifecycle to complete
+        await playback_task
+
+        # Verify that cast.show_lovelace_view was called
+        hass.services.async_call.assert_any_call(
+            "cast",
+            "show_lovelace_view",
+            service_data={"dashboard_path": "nest-display", "view_path": "morning"},
+            target={"entity_id": "media_player.bathroom_display"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_play_and_sync_routine_executes_post_actions_fallback():
+    """Verify post_actions fallback key and single dict format execute upon playback completion."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    mock_state = MagicMock()
+    mock_state.state = "idle"
+    hass.states.get.return_value = mock_state
+
+    # Test single dictionary provided via 'post_actions'
+    post_action_dict = {
+        "service": "cast.show_lovelace_view",
+        "target": {"entity_id": "media_player.kitchen_hub"},
+        "data": {
+            "dashboard_path": "kitchen-dashboard",
+            "view_path": "overview",
+        },
+    }
+    metadata = {
+        "video_path": "/local/morning.mp4",
+        "prepare_player": False,
+        "duration": 0.02,
+        "slide_timestamps": [],
+        "post_actions": post_action_dict,
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ) as mock_track,
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        playback_task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.kitchen_hub", metadata, []
+        )
+        assert isinstance(playback_task, asyncio.Task)
+
+        # Trigger playing event
+        state_cb = mock_track.call_args[0][2]
+        event_playing = MagicMock()
+        event_playing.data = {"new_state": MagicMock(state="playing")}
+        state_cb(event_playing)
+
+        await playback_task
+
+        hass.services.async_call.assert_any_call(
+            "cast",
+            "show_lovelace_view",
+            service_data={
+                "dashboard_path": "kitchen-dashboard",
+                "view_path": "overview",
+            },
+            target={"entity_id": "media_player.kitchen_hub"},
+        )

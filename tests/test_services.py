@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -968,3 +969,63 @@ async def test_run_routine_force_regenerate(
         )
         assert res2["duration"] == fresh_duration
         mock_compile.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_routine_forwards_post_actions_to_metadata(
+    mock_hass: MagicMock, sample_config: dict[str, Any], tmp_path: Path
+) -> None:
+    """Verify async_run_routine forwards post_briefing_actions from routine_config to metadata."""
+    await async_setup(mock_hass, sample_config)
+
+    video_file = tmp_path / "morning.mp4"
+    video_file.write_bytes(b"video")
+    meta_file = tmp_path / "morning.metadata.json"
+    meta_content = {
+        "video_path": str(video_file),
+        "duration": 10.0,
+        "slide_timestamps": [],
+        "last_pregenerated": datetime.now(UTC).isoformat(),
+    }
+    meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
+
+    dummy_play_task = asyncio.create_task(asyncio.sleep(0.01))
+    post_action = {
+        "service": "cast.show_lovelace_view",
+        "target": {"entity_id": "media_player.bathroom_display"},
+        "data": {"dashboard_path": "nest-display", "view_path": "morning"},
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_play_and_sync_routine",
+            new=AsyncMock(return_value=dummy_play_task),
+        ) as mock_play,
+    ):
+        result_meta = await async_run_routine(
+            mock_hass,
+            "morning",
+            target_player="media_player.bathroom_display",
+            routine_config={
+                "output_dir": str(tmp_path),
+                "post_briefing_actions": [post_action],
+            },
+            output_dir=str(tmp_path),
+        )
+
+        assert "post_routine_actions" in result_meta
+        assert result_meta["post_routine_actions"] == [post_action]
+
+        mock_play.assert_awaited_once()
+        passed_metadata = mock_play.await_args[0][3]
+        assert passed_metadata.get("post_routine_actions") == [post_action]
+
+        await dummy_play_task
