@@ -77,7 +77,7 @@ flowchart TD
 Blueprints are stored under `blueprints/automation/cast_studio/`:
 
 1. **`morning_briefing.yaml`** (Daily Morning Show):
-   - Pregeneration schedule (04:30 AM), wake trigger, weather, calendar, tasks, scripture, dual-voice personas, and concurrent smart home actions.
+   - 7-step morning briefing sequence (`greeting` → `weather` → `fun_fact` → `calendar` → `todo` → `commute` → `scripture`), overnight pregeneration schedule (04:30 AM), wake trigger, display audio preparation, dual-voice personas, concurrent smart home actions, and `post_briefing_actions` Lovelace dashboard cast hand-off.
 2. **`bedtime_routine.yaml`** (Daily Evening Wind-Down):
    - Evening trigger, bedtime voice styling, bedside display dimming, and concurrent shutdown actions.
 3. **`event_alert.yaml`** (Reusable Static Visual Alert):
@@ -94,7 +94,7 @@ ha-cast-studio/
 ├── blueprints/
 │   └── automation/
 │       └── cast_studio/
-│           ├── morning_briefing.yaml # Morning briefing blueprint
+│           ├── morning_briefing.yaml # Morning briefing blueprint (7-step briefing + Lovelace hand-off)
 │           ├── bedtime_routine.yaml  # Bedtime routine blueprint
 │           ├── event_alert.yaml      # Static reusable alert blueprint
 │           └── welcome_home.yaml     # Welcome home arrival blueprint
@@ -144,17 +144,18 @@ ha-cast-studio/
   "name": "CastStudio",
   "codeowners": ["@javand"],
   "config_flow": true,
+  "dependencies": ["ffmpeg"],
   "documentation": "https://github.com/javand/ha-cast-studio",
+  "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/javand/ha-cast-studio/issues",
-  "dependencies": ["ffmpeg"],
   "requirements": ["pillow>=10.2.0"],
   "version": "0.1.0"
 }
 ```
 
 ### 5.2. Service Definitions (`services.yaml`)
-1. **`cast_studio.run_routine`**: Executes a multimedia routine or static clip with instant playback.
+1. **`cast_studio.run_routine`**: Executes a multimedia routine or static clip with instant playback, cache-busting timestamping (`?v=<timestamp>`), pre-playback display unmuting/volume preparation, and optional `post_routine_actions` hook.
 2. **`cast_studio.pregenerate_routine`**: Silently compiles media ahead of time.
 3. **`cast_studio.compile_clip`**: Compiles a static reusable alert video clip directly into `/config/www/cast_studio/static/<clip_name>.mp4`.
 4. **`cast_studio.reload`**: Reloads integration configuration and resets routine sensors.

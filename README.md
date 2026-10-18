@@ -55,9 +55,13 @@ Generated on the fly when unexpected contextual events occur, such as a family m
 - **Zero-Credential AI Auto-Detection:** Automatically extracts active API keys from your existing Home Assistant `google_generative_ai` (Gemini 2.5 Flash) integration, or gracefully falls back to native Home Assistant `conversation.*` agents without forcing you to re-enter API keys.
 - **Dual-Voice TTS & Style Conditioning:** Assign independent speaker voices (e.g. `Pulcherrima` and `Enceladus`) and delivery personalities (e.g. `news_anchor`, `life_coach`, `calm_reassuring`, `meditative`) to different steps in the same routine.
 - **Strict Identity Contract:** Visual cards strictly display your real name (`name`, e.g. "Javan"), while phonetic spellings (`phonetic_name`, e.g. "Jay-ven") are isolated exclusively to TTS audio prompts to guarantee accurate pronunciation without awkward on-screen text.
-- **Partitioned Action Execution:** Non-visual smart home actions (turning on kitchen lights, starting the espresso machine) fire concurrently via `asyncio.gather`, while display-synchronized actions fire precisely as each slide appears on-screen.
+- **Display Wake-Up & Audio Safety:** Automatically turns on the target display, unmutes audio, and initializes volume (default: 60%) before video starts, preventing missed or silent briefings.
+- **Aggressive Cast Cache-Busting:** Appends dynamic timestamp query parameters (`?v=<timestamp>`) to media URLs, forcing Google Cast receivers to download fresh video instead of replaying yesterday's cached media from RAM.
+- **Deep Entity & Attribute Ingestion:** Extracts complex sensor attributes (e.g. `scripture` and `text` from `sensor.jw_library_daily_text_today`), handles empty calendar schedules cleanly ("No scheduled meetings today"), and prompts AI for an uplifting closing reflection.
+- **Post-Routine Dashboard Hand-Off:** Configurable `post_routine_actions` hook executes smart home actions (such as `cast.show_lovelace_view` for `nest-display/morning`) the moment video playback finishes.
+- **Partitioned Action Execution:** Non-visual smart home actions (turning on kitchen lights, starting the espresso machine) fire concurrently via `asyncio.gather`, while visual-linked actions execute at the precise moment their slide appears during playback.
 - **Native Google Cast Network URLs:** Automatically resolves local `/config/www/...` media storage to accessible network HTTP URLs (`get_url(hass)`) so physical Cast devices can stream smoothly over your local Wi-Fi.
-- **Smart Storage Hygiene:** Compiles fixed targets with overwrite (`-y`), purges temporary files in `/tmp/cast_studio/` inside guaranteed `finally:` blocks, and automatically prunes stale routine media older than 24 hours.
+- **Smart Storage Hygiene:** Compiles fixed targets with overwrite (`-y`), purges temporary files in `/tmp/cast_studio/` inside guaranteed `finally:` blocks, and automatically prunes stale routine media older than 24 hours while permanently preserving static clips.
 
 ---
 
@@ -67,10 +71,10 @@ CastStudio ships with official Home Assistant blueprints located in `blueprints/
 
 | Blueprint | Category | Description |
 | :--- | :--- | :--- |
-| **`morning_briefing.yaml`** | ☀️ Daily Show | Silently compiles a morning briefing at 04:30 AM and plays instantly upon waking with weather, calendar, tasks, scripture, and concurrent lights/coffee. |
+| **`morning_briefing.yaml`** | ☀️ Daily Show | Complete 7-step visual morning show (`greeting` → `weather` → `fun_fact` → `calendar` → `todo` → `commute` → `scripture`) with overnight 04:30 AM pre-generation, dual voices, audio safety preparation, and Lovelace dashboard cast hand-off upon completion. |
 | **`bedtime_routine.yaml`** | 🌙 Daily Show | Evening wind-down briefing with relaxing voice styling, bedside display dimming, and concurrent shutdown actions (locking doors, turning off lights). |
 | **`event_alert.yaml`** | 🚨 Static Alert | Reusable instant alert when a sensor trips (e.g. freezer door left open for 60s, garage open) with custom graphic icons (`dripping_ice.png`, `door_alert.png`). |
-| **`welcome_home.yaml`** | 🚪 Arrival Greeting | Contextual greeting when a family member arrives home, displaying their avatar or camera snapshot and playing a custom welcome message. |
+| **`welcome_home.yaml`** | 🚪 Arrival Greeting | Contextual greeting when a family member arrives home, displaying their avatar or camera snapshot and playing a custom welcome message with dynamic caching. |
 
 ---
 
@@ -83,7 +87,15 @@ Executes a multimedia routine. Plays pre-compiled static clips or pre-generated 
 action: cast_studio.run_routine
 data:
   routine_name: morning_briefing
-  target_player: media_player.living_room_display
+  target_player: media_player.bathroom_display
+  force_regenerate: false
+  post_routine_actions:
+    - action: cast.show_lovelace_view
+      target:
+        entity_id: media_player.bathroom_display
+      data:
+        dashboard_path: nest-display
+        view_path: morning
 ```
 
 ### `cast_studio.pregenerate_routine`
@@ -134,8 +146,9 @@ Reloads integration configuration, blueprints, and resets routine status sensors
 ### Manual Installation
 1. Download the `custom_components/cast_studio` folder from the latest release.
 2. Copy it into your Home Assistant `<config_dir>/custom_components/` directory.
-3. Restart Home Assistant.
-4. (Optional) Go to **Settings** > **Devices & Services** > **Add Integration** and search for **CastStudio** to configure default profile settings or API key overrides.
+3. Copy `blueprints/automation/cast_studio/*.yaml` into `<config_dir>/blueprints/automation/cast_studio/`.
+4. Restart Home Assistant.
+5. (Optional) Go to **Settings** > **Devices & Services** > **Add Integration** and search for **CastStudio** to configure default profile settings or API key overrides.
 
 ---
 
