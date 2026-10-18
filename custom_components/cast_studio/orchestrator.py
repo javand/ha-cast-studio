@@ -9,6 +9,8 @@ synchronized display actions at precise slide timestamps with zero buffer drift.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -120,22 +122,29 @@ def resolve_cast_media_url(hass: HomeAssistant, media_path: str) -> str:
     if media_path.startswith(("http://", "https://", "media-source://")):
         return media_path
     norm = media_path.replace("\\", "/")
+    target_url: str | None = None
     if norm.startswith("/local/"):
         rel = norm.removeprefix("/local/")
         try:
             base = get_url(hass, prefer_external=False).rstrip("/")
         except Exception:  # noqa: BLE001
-            return norm
+            target_url = f"/local/{rel}"
         else:
-            return f"{base}/local/{rel}"
-    if "/www/" in norm:
+            target_url = f"{base}/local/{rel}"
+    elif "/www/" in norm:
         rel = norm.split("/www/", 1)[1].lstrip("/")
         try:
             base = get_url(hass, prefer_external=False).rstrip("/")
         except Exception:  # noqa: BLE001
-            return f"/local/{rel}"
+            target_url = f"/local/{rel}"
         else:
-            return f"{base}/local/{rel}"
+            target_url = f"{base}/local/{rel}"
+
+    if target_url is not None:
+        cache_bust = int(time.time())
+        sep = "&" if "?" in target_url else "?"
+        return f"{target_url}{sep}v={cache_bust}"
+
     return media_path
 
 
@@ -370,6 +379,24 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
         )
     )
     duration = float(metadata.get("duration", 0.0))
+
+    # 0. Wake up, unmute, and initialize volume if configured
+    if metadata.get("prepare_player", True) and target_player:
+        with contextlib.suppress(Exception):
+            await hass.services.async_call(
+                "media_player", "turn_on", {"entity_id": target_player}
+            )
+            await hass.services.async_call(
+                "media_player",
+                "volume_mute",
+                {"entity_id": target_player, "is_volume_muted": False},
+            )
+            target_vol = float(metadata.get("volume_level", 0.60))
+            await hass.services.async_call(
+                "media_player",
+                "volume_set",
+                {"entity_id": target_player, "volume_level": target_vol},
+            )
 
     # 1. Dispatch playback request to media player
     await hass.services.async_call(

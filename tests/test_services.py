@@ -912,9 +912,8 @@ def test_resolve_cast_media_url_static_clip(mock_hass: MagicMock) -> None:
             mock_hass,
             "/config/www/cast_studio/static/freezer_alert.mp4",
         )
-        assert (
-            result
-            == "http://192.168.1.50:8123/local/cast_studio/static/freezer_alert.mp4"
+        assert result.startswith(
+            "http://192.168.1.50:8123/local/cast_studio/static/freezer_alert.mp4?v="
         )
 
 

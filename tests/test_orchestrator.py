@@ -72,15 +72,11 @@ async def test_play_and_sync_waits_for_playing_state():
         await async_play_and_sync_routine(
             hass, "morning", "media_player.display", metadata, []
         )
-        hass.services.async_call.assert_awaited_with(
-            "media_player",
-            "play_media",
-            {
-                "entity_id": "media_player.display",
-                "media_content_id": "/local/morning.mp4",
-                "media_content_type": "video/mp4",
-            },
-        )
+        call_args = hass.services.async_call.await_args
+        assert call_args[0][:2] == ("media_player", "play_media")
+        assert call_args[0][2]["entity_id"] == "media_player.display"
+        assert call_args[0][2]["media_content_id"].startswith("/local/morning.mp4?v=")
+        assert call_args[0][2]["media_content_type"] == "video/mp4"
         mock_track.assert_called_once()
 
 
@@ -201,6 +197,7 @@ async def test_play_and_sync_triggers_actions_on_playing():
 
     metadata = {
         "video_path": "/local/morning.mp4",
+        "prepare_player": False,
         "slide_timestamps": [
             {
                 "timestamp": 0.0,
@@ -271,15 +268,13 @@ async def test_play_and_sync_audio_only():
         await async_play_and_sync_routine(
             hass, "morning", "media_player.speaker", metadata_mp3, []
         )
-        hass.services.async_call.assert_awaited_with(
-            "media_player",
-            "play_media",
-            {
-                "entity_id": "media_player.speaker",
-                "media_content_id": "/local/morning.mp3",
-                "media_content_type": "audio/mp3",
-            },
+        call_args_mp3 = hass.services.async_call.await_args
+        assert call_args_mp3[0][:2] == ("media_player", "play_media")
+        assert call_args_mp3[0][2]["entity_id"] == "media_player.speaker"
+        assert call_args_mp3[0][2]["media_content_id"].startswith(
+            "/local/morning.mp3?v="
         )
+        assert call_args_mp3[0][2]["media_content_type"] == "audio/mp3"
 
         metadata_wav = {
             "video_path": None,
@@ -289,15 +284,13 @@ async def test_play_and_sync_audio_only():
         await async_play_and_sync_routine(
             hass, "morning", "media_player.speaker", metadata_wav, []
         )
-        hass.services.async_call.assert_awaited_with(
-            "media_player",
-            "play_media",
-            {
-                "entity_id": "media_player.speaker",
-                "media_content_id": "/local/morning.wav",
-                "media_content_type": "audio/wav",
-            },
+        call_args_wav = hass.services.async_call.await_args
+        assert call_args_wav[0][:2] == ("media_player", "play_media")
+        assert call_args_wav[0][2]["entity_id"] == "media_player.speaker"
+        assert call_args_wav[0][2]["media_content_id"].startswith(
+            "/local/morning.wav?v="
         )
+        assert call_args_wav[0][2]["media_content_type"] == "audio/wav"
 
 
 @pytest.mark.asyncio
@@ -311,6 +304,7 @@ async def test_play_and_sync_already_playing():
 
     metadata = {
         "video_path": "/local/morning.mp4",
+        "prepare_player": False,
         "slide_timestamps": [
             {
                 "timestamp": 0.0,
@@ -350,6 +344,7 @@ async def test_play_and_sync_safety_timeout():
 
     metadata = {
         "video_path": "/local/morning.mp4",
+        "prepare_player": False,
         "slide_timestamps": [
             {
                 "timestamp": 0.0,
@@ -509,6 +504,7 @@ async def test_slide_actions_fallback_to_steps():
     # steps has a preceding non-visual step 'prep' to test name matching over positional index
     metadata = {
         "video_path": "/local/morning.mp4",
+        "prepare_player": False,
         "slide_timestamps": [
             {"timestamp": 0.0, "step_name": "intro"},
         ],
@@ -552,6 +548,7 @@ async def test_slide_actions_fallback_to_steps():
     # 2. empty slide_timestamps in metadata, schedule extracted from steps
     metadata_empty_slides = {
         "video_path": "/local/morning.mp4",
+        "prepare_player": False,
         "slide_timestamps": [],
     }
     steps_with_actions = [
@@ -650,6 +647,7 @@ async def test_play_and_sync_timeout_after_sync_started():
 
     metadata = {
         "video_path": "/local/morning.mp4",
+        "prepare_player": False,
         "slide_timestamps": [
             {
                 "timestamp": 0.0,
@@ -700,6 +698,7 @@ async def test_play_and_sync_returns_lifecycle_task():
 
     metadata = {
         "video_path": "/local/morning.mp4",
+        "prepare_player": False,
         "duration": 0.0,
         "slide_timestamps": [
             {
@@ -762,8 +761,8 @@ def test_resolve_cast_media_url_local_config_www():
         result = resolve_cast_media_url(
             hass, "/config/www/cast_studio/morning_briefing.mp4"
         )
-        assert (
-            result == "http://192.168.1.50:8123/local/cast_studio/morning_briefing.mp4"
+        assert result.startswith(
+            "http://192.168.1.50:8123/local/cast_studio/morning_briefing.mp4?v="
         )
 
 
@@ -777,7 +776,7 @@ def test_resolve_cast_media_url_fallback_on_get_url_error():
         result = resolve_cast_media_url(
             hass, "/config/www/cast_studio/morning_briefing.mp4"
         )
-        assert result == "/local/cast_studio/morning_briefing.mp4"
+        assert result.startswith("/local/cast_studio/morning_briefing.mp4?v=")
 
 
 def test_resolve_cast_media_url_non_www_path():
@@ -812,15 +811,13 @@ async def test_play_and_sync_resolves_cast_media_url():
         await async_play_and_sync_routine(
             hass, "morning", "media_player.kitchen_cast", metadata, []
         )
-        hass.services.async_call.assert_awaited_with(
-            "media_player",
-            "play_media",
-            {
-                "entity_id": "media_player.kitchen_cast",
-                "media_content_id": "http://homeassistant.local:8123/local/cast_studio/morning.mp4",
-                "media_content_type": "video/mp4",
-            },
+        play_call = hass.services.async_call.await_args
+        assert play_call[0][:2] == ("media_player", "play_media")
+        assert play_call[0][2]["entity_id"] == "media_player.kitchen_cast"
+        assert play_call[0][2]["media_content_id"].startswith(
+            "http://homeassistant.local:8123/local/cast_studio/morning.mp4?v="
         )
+        assert play_call[0][2]["media_content_type"] == "video/mp4"
 
 
 def test_resolve_cast_media_url_local_prefix():
@@ -831,6 +828,135 @@ def test_resolve_cast_media_url_local_prefix():
         return_value="http://192.168.1.50:8123",
     ):
         resolved = resolve_cast_media_url(hass, "/local/cast_studio/static/freezer.mp4")
-        assert (
-            resolved == "http://192.168.1.50:8123/local/cast_studio/static/freezer.mp4"
+        assert resolved.startswith(
+            "http://192.168.1.50:8123/local/cast_studio/static/freezer.mp4?v="
+        )
+
+
+def test_resolve_cast_media_url_appends_cache_buster():
+    """Verify resolve_cast_media_url appends timestamp cache buster query parameter."""
+    hass = MagicMock()
+    with patch(
+        "custom_components.cast_studio.orchestrator.get_url",
+        return_value="http://homeassistant.local:8123",
+    ):
+        url = resolve_cast_media_url(hass, "/config/www/automations/morning.mp4")
+        assert "http://homeassistant.local:8123/local/automations/morning.mp4?v=" in url
+
+
+@pytest.mark.asyncio
+async def test_async_play_and_sync_routine_prepares_player():
+    """Verify async_play_and_sync_routine wakes up, unmutes, and initializes volume before play_media."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        metadata = {
+            "video_path": "/local/morning.mp4",
+            "volume_level": 0.75,
+            "prepare_player": True,
+        }
+        await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+
+        hass.services.async_call.assert_any_call(
+            "media_player", "turn_on", {"entity_id": "media_player.bathroom_display"}
+        )
+        hass.services.async_call.assert_any_call(
+            "media_player",
+            "volume_mute",
+            {"entity_id": "media_player.bathroom_display", "is_volume_muted": False},
+        )
+        hass.services.async_call.assert_any_call(
+            "media_player",
+            "volume_set",
+            {"entity_id": "media_player.bathroom_display", "volume_level": 0.75},
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_play_and_sync_routine_prepares_player_default_volume_and_disabled():
+    """Verify default volume 0.60 is used and prepare_player=False disables player preparation."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        # 1. Default volume level (0.60) when volume_level not specified
+        metadata_default = {"video_path": "/local/morning.mp4"}
+        await async_play_and_sync_routine(
+            hass, "morning", "media_player.display", metadata_default, []
+        )
+        hass.services.async_call.assert_any_call(
+            "media_player",
+            "volume_set",
+            {"entity_id": "media_player.display", "volume_level": 0.60},
+        )
+
+        # 2. Disabled prepare_player
+        hass.services.async_call.reset_mock()
+        metadata_disabled = {
+            "video_path": "/local/morning.mp4",
+            "prepare_player": False,
+        }
+        await async_play_and_sync_routine(
+            hass, "morning", "media_player.display", metadata_disabled, []
+        )
+        # Only play_media called, no turn_on / volume calls
+        assert hass.services.async_call.call_count == 1
+        assert hass.services.async_call.call_args[0][:2] == (
+            "media_player",
+            "play_media",
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_play_and_sync_routine_prepares_player_exception_suppressed():
+    """Verify exceptions during player preparation do not prevent playback."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock(
+        side_effect=[Exception("Device unavailable"), None, None, None]
+    )
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        metadata = {"video_path": "/local/morning.mp4"}
+        await async_play_and_sync_routine(
+            hass, "morning", "media_player.display", metadata, []
+        )
+        # Even though turn_on raised an exception, play_media was still attempted
+        play_media_calls = [
+            c
+            for c in hass.services.async_call.call_args_list
+            if c[0][:2] == ("media_player", "play_media")
+        ]
+        assert len(play_media_calls) == 1
+
+
+def test_resolve_cast_media_url_preexisting_query_param():
+    """Verify resolve_cast_media_url appends &v= when url already has query parameters."""
+    hass = MagicMock()
+    with patch(
+        "custom_components.cast_studio.orchestrator.get_url",
+        return_value="http://192.168.1.50:8123",
+    ):
+        resolved = resolve_cast_media_url(
+            hass, "/local/cast_studio/video.mp4?autoplay=1"
+        )
+        assert resolved.startswith(
+            "http://192.168.1.50:8123/local/cast_studio/video.mp4?autoplay=1&v="
         )
