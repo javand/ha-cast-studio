@@ -145,6 +145,9 @@ blueprint:
 mode: single
 max_exceeded: silent
 
+variables:
+  recipient_name: !input recipient_name
+
 trigger:
   - trigger: time
     at: !input pregenerate_time
