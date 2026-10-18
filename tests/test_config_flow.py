@@ -66,7 +66,9 @@ async def test_config_flow_aborts_if_already_configured():
     existing_entry = MagicMock()
     existing_entry.source = config_entries.SOURCE_USER
     existing_entry.state = config_entries.ConfigEntryState.LOADED
-    flow.hass.config_entries.async_entry_for_domain_unique_id.return_value = existing_entry
+    flow.hass.config_entries.async_entry_for_domain_unique_id.return_value = (
+        existing_entry
+    )
     flow.context = {}
 
     user_input: dict[str, Any] = {

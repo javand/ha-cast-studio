@@ -174,9 +174,7 @@ async def async_setup_entry(
     routines = domain_data.get("routines", {})
     for routine_name in routines:
         if routine_name not in sensors:
-            sensors[routine_name] = CastStudioRoutineSensor(
-                routine_name, hass=hass
-            )
+            sensors[routine_name] = CastStudioRoutineSensor(routine_name, hass=hass)
 
     if sensors:
         async_add_entities(list(sensors.values()))
@@ -196,9 +194,7 @@ async def async_setup_platform(
     routines = domain_data.get("routines", {})
     for routine_name in routines:
         if routine_name not in sensors:
-            sensors[routine_name] = CastStudioRoutineSensor(
-                routine_name, hass=hass
-            )
+            sensors[routine_name] = CastStudioRoutineSensor(routine_name, hass=hass)
 
     if sensors:
         async_add_entities(list(sensors.values()))

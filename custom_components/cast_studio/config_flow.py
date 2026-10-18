@@ -145,25 +145,25 @@ class CastStudioOptionsFlowHandler(config_entries.OptionsFlow):
                 )
             )
 
-        schema_fields[
-            vol.Required(CONF_RECIPIENT_NAME, default=current_recipient)
-        ] = selector.TextSelector(
-            selector.TextSelectorConfig(
-                type=selector.TextSelectorType.TEXT,
+        schema_fields[vol.Required(CONF_RECIPIENT_NAME, default=current_recipient)] = (
+            selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.TEXT,
+                )
             )
         )
-        schema_fields[
-            vol.Required(CONF_PHONETIC_NAME, default=current_phonetic)
-        ] = selector.TextSelector(
-            selector.TextSelectorConfig(
-                type=selector.TextSelectorType.TEXT,
+        schema_fields[vol.Required(CONF_PHONETIC_NAME, default=current_phonetic)] = (
+            selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.TEXT,
+                )
             )
         )
-        schema_fields[
-            vol.Required(CONF_OUTPUT_DIR, default=current_output_dir)
-        ] = selector.TextSelector(
-            selector.TextSelectorConfig(
-                type=selector.TextSelectorType.TEXT,
+        schema_fields[vol.Required(CONF_OUTPUT_DIR, default=current_output_dir)] = (
+            selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.TEXT,
+                )
             )
         )
 

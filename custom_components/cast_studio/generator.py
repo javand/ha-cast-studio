@@ -679,4 +679,3 @@ async def async_compile_static_clip(
             f"static_{clean_clip_name}",
             base_tmp=scratch_base,
         )
-

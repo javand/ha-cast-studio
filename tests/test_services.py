@@ -120,7 +120,6 @@ async def test_services_registered(
     assert "compile_clip" in registered_services
     assert "reload" in registered_services
 
-
     # Check routine sensor created
     sensors = mock_hass.data[DOMAIN]["sensors"]
     assert "morning" in sensors
@@ -141,7 +140,9 @@ async def test_pregenerate_routine_service_success(
     await async_setup(mock_hass, sample_config)
 
     calls = mock_hass.services.async_register.call_args_list
-    pregen_handler = next(c.args[2] for c in calls if c.args[1] == "pregenerate_routine")
+    pregen_handler = next(
+        c.args[2] for c in calls if c.args[1] == "pregenerate_routine"
+    )
 
     mock_metadata = {
         "video_path": str(tmp_path / "morning.mp4"),
@@ -179,7 +180,9 @@ async def test_pregenerate_routine_service_failure(
     await async_setup(mock_hass, sample_config)
 
     calls = mock_hass.services.async_register.call_args_list
-    pregen_handler = next(c.args[2] for c in calls if c.args[1] == "pregenerate_routine")
+    pregen_handler = next(
+        c.args[2] for c in calls if c.args[1] == "pregenerate_routine"
+    )
 
     with patch(
         "custom_components.cast_studio.async_compile_routine_media",
@@ -233,7 +236,9 @@ async def test_run_routine_with_preexisting_media(
             new=AsyncMock(return_value=dummy_play_task),
         ) as mock_play,
     ):
-        call = ServiceCall(mock_hass, DOMAIN, "run_routine", {"routine_name": "morning"})
+        call = ServiceCall(
+            mock_hass, DOMAIN, "run_routine", {"routine_name": "morning"}
+        )
         await run_handler(call)
 
         # Compilation should NOT be triggered
@@ -284,7 +289,9 @@ async def test_run_routine_on_demand_fallback(
             new=AsyncMock(return_value=dummy_play_task),
         ) as mock_play,
     ):
-        call = ServiceCall(mock_hass, DOMAIN, "run_routine", {"routine_name": "morning"})
+        call = ServiceCall(
+            mock_hass, DOMAIN, "run_routine", {"routine_name": "morning"}
+        )
         await run_handler(call)
 
         mock_compile.assert_awaited_once()
@@ -339,7 +346,9 @@ async def test_run_routine_stale_media_recompiles(
             new=AsyncMock(return_value=dummy_play_task),
         ),
     ):
-        call = ServiceCall(mock_hass, DOMAIN, "run_routine", {"routine_name": "morning"})
+        call = ServiceCall(
+            mock_hass, DOMAIN, "run_routine", {"routine_name": "morning"}
+        )
         await run_handler(call)
 
         mock_compile.assert_awaited_once()
@@ -388,7 +397,9 @@ async def test_service_argument_validation(
     await async_setup(mock_hass, sample_config)
 
     calls = mock_hass.services.async_register.call_args_list
-    pregen_handler = next(c.args[2] for c in calls if c.args[1] == "pregenerate_routine")
+    pregen_handler = next(
+        c.args[2] for c in calls if c.args[1] == "pregenerate_routine"
+    )
     run_handler = next(c.args[2] for c in calls if c.args[1] == "run_routine")
 
     # Missing routine_name in pregenerate service
@@ -440,7 +451,9 @@ async def test_sensor_playback_lifecycle_holding_state(
             new=AsyncMock(return_value=playback_task),
         ),
     ):
-        call = ServiceCall(mock_hass, DOMAIN, "run_routine", {"routine_name": "morning"})
+        call = ServiceCall(
+            mock_hass, DOMAIN, "run_routine", {"routine_name": "morning"}
+        )
         await run_handler(call)
 
         sensor = mock_hass.data[DOMAIN]["sensors"]["morning"]
@@ -903,3 +916,56 @@ def test_resolve_cast_media_url_static_clip(mock_hass: MagicMock) -> None:
             result
             == "http://192.168.1.50:8123/local/cast_studio/static/freezer_alert.mp4"
         )
+
+
+@pytest.mark.asyncio
+async def test_run_routine_force_regenerate(
+    mock_hass: MagicMock, sample_config: dict[str, Any], tmp_path: Path
+) -> None:
+    """Verify force_regenerate bypasses 24h fresh media check and compiles on demand."""
+    await async_setup(mock_hass, sample_config)
+
+    cached_duration = 10.0
+    fresh_duration = 12.0
+    meta_file = tmp_path / "welcome.metadata.json"
+    video_file = tmp_path / "welcome.mp4"
+    meta_file.write_text('{"video_path": "' + str(video_file) + '", "duration": 10.0}')
+    video_file.write_text("mp4 content")
+
+    mock_compile = AsyncMock(
+        return_value={"video_path": str(video_file), "duration": fresh_duration}
+    )
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=mock_compile,
+        ),
+        patch(
+            "custom_components.cast_studio.async_play_and_sync_routine",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+    ):
+        # 1. Normal run with existing fresh media -> should NOT compile
+        res1 = await async_run_routine(
+            mock_hass,
+            "welcome",
+            routine_config={"output_dir": str(tmp_path)},
+            output_dir=str(tmp_path),
+        )
+        assert res1["duration"] == cached_duration
+        mock_compile.assert_not_called()
+
+        # 2. Run with force_regenerate=True -> MUST compile fresh media
+        res2 = await async_run_routine(
+            mock_hass,
+            "welcome",
+            routine_config={"output_dir": str(tmp_path)},
+            output_dir=str(tmp_path),
+            force_regenerate=True,
+        )
+        assert res2["duration"] == fresh_duration
+        mock_compile.assert_awaited_once()

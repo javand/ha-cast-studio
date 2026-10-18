@@ -152,4 +152,3 @@ def test_prune_preserves_static_directory(tmp_path: Path):
     assert not old_file.exists()
     assert str(static_file) not in pruned
     assert static_file.exists()
-

@@ -424,14 +424,22 @@ def test_extract_entity_context_all_domains():
 
     step = {
         "name": "daily_overview",
-        "entity_ids": ["weather.home", "calendar.work", "todo.groceries", "sensor.power"],
+        "entity_ids": [
+            "weather.home",
+            "calendar.work",
+            "todo.groceries",
+            "sensor.power",
+        ],
         "context": "Focus on high priority tasks",
     }
 
     ctx = _extract_entity_context(hass, step)
     assert "Focus on high priority tasks" in ctx
     assert "Weather (weather.home): Condition: partlycloudy, Temperature: 72°F" in ctx
-    assert "Calendar (calendar.work): State: on, Summary: Team Standup, Start: 09:00:00" in ctx
+    assert (
+        "Calendar (calendar.work): State: on, Summary: Team Standup, Start: 09:00:00"
+        in ctx
+    )
     assert "To-do (todo.groceries): 4 tasks pending" in ctx
     assert "Sensor (sensor.power): 23.5 kWh" in ctx
 
@@ -440,7 +448,9 @@ def test_is_unconfigured_optional_step_matrix():
     """Test _is_unconfigured_optional_step identifies unconfigured vs valid steps."""
     hass = MagicMock()
     mock_state = MagicMock(state="sunny")
-    hass.states.get = MagicMock(side_effect=lambda eid: mock_state if eid == "weather.home" else None)
+    hass.states.get = MagicMock(
+        side_effect=lambda eid: mock_state if eid == "weather.home" else None
+    )
 
     # 1. Non-entity step: should not be skipped
     assert not _is_unconfigured_optional_step(hass, {"name": "greeting"})
@@ -486,7 +496,9 @@ def test_is_unconfigured_optional_step_matrix():
 async def test_compile_routine_skips_unconfigured_optional_step(tmp_path: Path):
     """Test that optional unconfigured entity steps are skipped during compilation."""
     hass = MagicMock()
-    hass.states.get = MagicMock(return_value=None)  # task list entity not found in states
+    hass.states.get = MagicMock(
+        return_value=None
+    )  # task list entity not found in states
 
     routine_config = {
         "visuals": True,
@@ -690,9 +702,7 @@ async def test_compile_static_clip_invalid_name(tmp_path: Path):
     step_config = {"message": "Test"}
 
     with pytest.raises(RoutineConfigError, match="empty or whitespace"):
-        await async_compile_static_clip(
-            hass, "", step_config, output_dir=str(tmp_path)
-        )
+        await async_compile_static_clip(hass, "", step_config, output_dir=str(tmp_path))
 
     with pytest.raises(RoutineConfigError, match="empty or whitespace"):
         await async_compile_static_clip(
@@ -752,4 +762,3 @@ async def test_compile_static_clip_invokes_ai_when_no_narration(tmp_path: Path):
         assert mock_ai_generate.call_count == 1
         assert result["clip_name"] == "ai_alert"
         assert result["static"] is True
-

@@ -234,7 +234,7 @@ def _render_card_overlay(canvas: Image.Image) -> Image.Image:
     return Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
 
 
-def _resolve_image_path(raw_path: Any) -> Path | None:
+def _resolve_image_path(raw_path: Any) -> Path | None:  # noqa: PLR0911
     """Resolve an image path from filesystem, bundled assets, or asset name."""
     if not raw_path or not isinstance(raw_path, (str, Path)):
         return None
@@ -255,6 +255,19 @@ def _resolve_image_path(raw_path: Any) -> Path | None:
             if candidate.is_file():
                 return candidate
 
+    # Handle Home Assistant /api/image/serve/<image_id>/...
+    if "/api/image/serve/" in p_str:
+        image_id = p_str.split("/api/image/serve/")[1].split("/")[0]
+        for base_dir in (
+            Path("/config/image"),
+            Path("/config/.storage/image_upload"),
+            Path(".storage/image_upload"),
+            Path("image"),
+        ):
+            candidate = base_dir / image_id
+            if candidate.is_file():
+                return candidate
+
     # Check direct name, filename, and .png stem inside bundled assets
     candidates = (
         BUNDLED_ASSETS_DIR / p_str,
@@ -270,50 +283,54 @@ def _resolve_image_path(raw_path: Any) -> Path | None:
 
 def _load_image(card_data: dict[str, Any]) -> tuple[Image.Image | None, bool]:
     """Inspect card_data for image/icon references, resolve and load into memory."""
-    raw_source = (
-        card_data.get("image_path")
-        or card_data.get("icon_path")
-        or card_data.get("icon")
-        or card_data.get("image")
-        or card_data.get("entity_picture")
+    sources_to_try = [
+        card_data.get("image_path"),
+        card_data.get("icon_path"),
+        card_data.get("icon"),
+        card_data.get("image"),
+        card_data.get("entity_picture"),
+        card_data.get("avatar_image"),
+        card_data.get("avatar_fallback"),
+        card_data.get("fallback_image"),
+    ]
+    candidate_sources = [s for s in sources_to_try if s and isinstance(s, (str, Path))]
+    if not candidate_sources:
+        return None, False
+
+    for raw_source in candidate_sources:
+        resolved_path = _resolve_image_path(raw_source)
+        if resolved_path is not None and resolved_path.is_file():
+            try:
+                with Image.open(resolved_path) as raw_img:
+                    if raw_img.width <= 0 or raw_img.height <= 0:
+                        _LOGGER.warning("Image '%s' has zero dimensions", resolved_path)
+                        continue
+
+                    has_alpha = False
+                    if "A" in raw_img.getbands():
+                        alpha_extrema = raw_img.getextrema()[-1]
+                        if (
+                            isinstance(alpha_extrema, tuple)
+                            and alpha_extrema[0] < OPAQUE_ALPHA
+                        ):
+                            has_alpha = True
+                    elif raw_img.info.get("transparency") is not None:
+                        has_alpha = True
+
+                    img = raw_img.convert("RGBA")
+                    return img, has_alpha
+            except (OSError, ValueError) as err:
+                _LOGGER.warning(
+                    "Failed to open image file '%s': %s; trying next candidate",
+                    resolved_path,
+                    err,
+                )
+
+    _LOGGER.warning(
+        "Image file '%s' not found; falling back to typography slide",
+        candidate_sources[0],
     )
-    if not raw_source:
-        return None, False
-
-    resolved_path = _resolve_image_path(raw_source)
-    if resolved_path is None or not resolved_path.is_file():
-        _LOGGER.warning(
-            "Image file '%s' not found; falling back to typography slide", raw_source
-        )
-        return None, False
-
-    try:
-        with Image.open(resolved_path) as raw_img:
-            if raw_img.width <= 0 or raw_img.height <= 0:
-                _LOGGER.warning("Image '%s' has zero dimensions", resolved_path)
-                return None, False
-
-            has_alpha = False
-            if "A" in raw_img.getbands():
-                # Check if image actually has any non-opaque pixels
-                alpha_extrema = raw_img.getextrema()[-1]
-                if (
-                    isinstance(alpha_extrema, tuple)
-                    and alpha_extrema[0] < OPAQUE_ALPHA
-                ):
-                    has_alpha = True
-            elif raw_img.info.get("transparency") is not None:
-                has_alpha = True
-
-            img = raw_img.convert("RGBA")
-            return img, has_alpha
-    except (OSError, ValueError) as err:
-        _LOGGER.warning(
-            "Failed to open image file '%s': %s; falling back to typography slide",
-            resolved_path,
-            err,
-        )
-        return None, False
+    return None, False
 
 
 def _determine_layout_mode(

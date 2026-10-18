@@ -715,9 +715,7 @@ async def test_play_and_sync_returns_lifecycle_task():
         patch(
             "custom_components.cast_studio.orchestrator.async_track_state_change_event"
         ) as mock_track,
-        patch(
-            "custom_components.cast_studio.orchestrator.async_call_later"
-        ),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
     ):
         playback_task = await async_play_and_sync_routine(
             hass, "morning", "media_player.display", metadata, []
@@ -764,7 +762,9 @@ def test_resolve_cast_media_url_local_config_www():
         result = resolve_cast_media_url(
             hass, "/config/www/cast_studio/morning_briefing.mp4"
         )
-        assert result == "http://192.168.1.50:8123/local/cast_studio/morning_briefing.mp4"
+        assert (
+            result == "http://192.168.1.50:8123/local/cast_studio/morning_briefing.mp4"
+        )
 
 
 def test_resolve_cast_media_url_fallback_on_get_url_error():
@@ -820,4 +820,17 @@ async def test_play_and_sync_resolves_cast_media_url():
                 "media_content_id": "http://homeassistant.local:8123/local/cast_studio/morning.mp4",
                 "media_content_type": "video/mp4",
             },
+        )
+
+
+def test_resolve_cast_media_url_local_prefix():
+    """Test resolve_cast_media_url converts /local/ path to absolute HTTP URL."""
+    hass = MagicMock()
+    with patch(
+        "custom_components.cast_studio.orchestrator.get_url",
+        return_value="http://192.168.1.50:8123",
+    ):
+        resolved = resolve_cast_media_url(hass, "/local/cast_studio/static/freezer.mp4")
+        assert (
+            resolved == "http://192.168.1.50:8123/local/cast_studio/static/freezer.mp4"
         )

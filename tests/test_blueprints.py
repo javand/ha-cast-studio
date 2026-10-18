@@ -281,7 +281,10 @@ def test_event_alert_blueprint_structure():
     assert inputs["alert_title"]["default"] == "Freezer Door Open!"
     assert "text" in inputs["alert_title"]["selector"]
 
-    assert inputs["alert_message"]["default"] == "Attention: The kitchen freezer door has been left open."
+    assert (
+        inputs["alert_message"]["default"]
+        == "Attention: The kitchen freezer door has been left open."
+    )
     assert "text" in inputs["alert_message"]["selector"]
 
     assert inputs["image_asset"]["default"] == "dripping_ice.png"
@@ -403,10 +406,10 @@ def test_welcome_home_triggers_and_actions():
     actions = bp.get("action") or bp.get("actions", [])
     assert isinstance(actions, list)
     assert actions[0]["action"] == "cast_studio.run_routine"
-    assert actions[0]["data"]["routine_name"] == "welcome_home"
+    assert actions[0]["data"]["routine_name"].startswith("welcome_home")
+    assert actions[0]["data"].get("force_regenerate") is True
     assert (
-        actions[0]["data"]["routine_config"]["background_actions"]
-        == "welcome_actions"
+        actions[0]["data"]["routine_config"]["background_actions"] == "welcome_actions"
     )
 
 

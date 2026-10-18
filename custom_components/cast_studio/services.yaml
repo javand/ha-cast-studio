@@ -81,6 +81,13 @@ run_routine:
       example: /config/www/cast_studio
       selector:
         text:
+    force_regenerate:
+      name: Force Regenerate
+      description: If true, forces fresh on-demand compilation even if a cached media file exists.
+      required: false
+      default: false
+      selector:
+        boolean:
 
 compile_clip:
   name: Compile Static Clip

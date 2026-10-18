@@ -86,13 +86,15 @@ trigger:
 action:
   - action: cast_studio.run_routine
     data:
-      routine_name: welcome_home
+      routine_name: "welcome_home_{{ person.split('.')[1] if '.' in person else 'person' }}"
+      force_regenerate: true
       target_player: !input target_player
       recipient:
         name: "{{ resolved_name }}"
         phonetic_name: "{{ resolved_phonetic }}"
       routine_config:
         visuals: true
+        force_regenerate: true
         background_actions: !input welcome_actions
         steps:
           - name: greeting
@@ -100,6 +102,7 @@ action:
             title: "{{ resolved_name }}"
             subtitle: "Welcome Home"
             image_path: "{{ resolved_avatar }}"
+            avatar_fallback: "{{ avatar_fallback }}"
             layout: "icon"
             voice: !input welcome_voice
             voice_personality: !input welcome_personality

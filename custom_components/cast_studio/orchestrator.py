@@ -120,6 +120,14 @@ def resolve_cast_media_url(hass: HomeAssistant, media_path: str) -> str:
     if media_path.startswith(("http://", "https://", "media-source://")):
         return media_path
     norm = media_path.replace("\\", "/")
+    if norm.startswith("/local/"):
+        rel = norm.removeprefix("/local/")
+        try:
+            base = get_url(hass, prefer_external=False).rstrip("/")
+        except Exception:  # noqa: BLE001
+            return norm
+        else:
+            return f"{base}/local/{rel}"
     if "/www/" in norm:
         rel = norm.split("/www/", 1)[1].lstrip("/")
         try:

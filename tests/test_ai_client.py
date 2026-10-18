@@ -344,7 +344,11 @@ async def test_auto_detect_skips_disabled_config_entries() -> None:
 async def test_generate_step_content_fallback_to_conversation_on_gemini_error() -> None:
     """Test fallback from Gemini to conversation agent when Gemini raises AIClientError."""
     hass = MagicMock()
-    ai_creds = {"platform": "gemini", "api_key": "bad_key", "agent_id": "conversation.mock"}
+    ai_creds = {
+        "platform": "gemini",
+        "api_key": "bad_key",
+        "agent_id": "conversation.mock",
+    }
     step_config = {"name": "greeting"}
     recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
 
@@ -373,7 +377,9 @@ async def test_generate_step_content_fallback_to_conversation_on_gemini_error() 
 
 
 @pytest.mark.asyncio
-async def test_generate_step_content_fallback_to_conversation_on_network_error() -> None:
+async def test_generate_step_content_fallback_to_conversation_on_network_error() -> (
+    None
+):
     """Test fallback from Gemini to conversation agent on aiohttp ClientError."""
     hass = MagicMock()
     ai_creds = {"platform": "gemini", "api_key": "test_key"}
@@ -381,7 +387,11 @@ async def test_generate_step_content_fallback_to_conversation_on_network_error()
     recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
 
     fallback_response = {
-        "visual_card": {"title": "Weather", "subtitle": "Today", "bullet_points": ["Sunny"]},
+        "visual_card": {
+            "title": "Weather",
+            "subtitle": "Today",
+            "bullet_points": ["Sunny"],
+        },
         "narration_script": "Today is sunny",
     }
 

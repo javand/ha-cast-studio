@@ -107,4 +107,3 @@ def prune_stale_files(
             except OSError as err:
                 LOGGER.warning("Failed to prune file %s: %s", file_path, err)
     return pruned
-

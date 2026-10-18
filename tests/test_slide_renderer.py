@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from PIL import Image
 
 from custom_components.cast_studio.slide_renderer import (
     PhoneticLeakError,
+    _load_image,
+    _resolve_image_path,
     render_slide,
 )
 
@@ -340,3 +343,32 @@ def test_render_slide_bundled_asset_lookup_by_name(tmp_path: Path) -> None:
         assert pixel_plain != pixel_icon, (
             "Icon pixel must differ when bundled asset is resolved"
         )
+
+
+def test_resolve_image_path_api_image_serve(tmp_path: Path) -> None:
+    """Test resolving /api/image/serve/<id>/<size> URL to local storage file."""
+    fake_storage = tmp_path / "image"
+    fake_storage.mkdir()
+    fake_img = fake_storage / "test_avatar_123"
+    fake_img.write_text("avatar data")
+
+    with patch(
+        "custom_components.cast_studio.slide_renderer.Path.is_file",
+        autospec=True,
+    ) as mock_isfile:
+        mock_isfile.side_effect = lambda self: "test_avatar_123" in str(self)
+        resolved = _resolve_image_path("/api/image/serve/test_avatar_123/512x512")
+        assert resolved is not None
+        assert "test_avatar_123" in str(resolved)
+
+
+def test_load_image_avatar_fallback_when_primary_missing() -> None:
+    """Test _load_image falls back to avatar_fallback or bundled asset when primary image fails."""
+    card_data = {
+        "image_path": "/nonexistent/path/user_pic.png",
+        "avatar_fallback": "welcome_avatar.png",
+    }
+    img, has_alpha = _load_image(card_data)
+    assert img is not None
+    assert has_alpha is True
+    assert img.size == (512, 512)

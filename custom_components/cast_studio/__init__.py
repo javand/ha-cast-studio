@@ -297,13 +297,14 @@ async def async_compile_clip(
         return metadata
 
 
-async def async_run_routine(  # noqa: PLR0913
+async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
     hass: HomeAssistant,
     routine_name: str,
     target_player: str | None = None,
     routine_config: dict[str, Any] | None = None,
     recipient: dict[str, Any] | None = None,
     output_dir: str | None = None,
+    force_regenerate: bool = False,  # noqa: FBT001, FBT002
 ) -> dict[str, Any]:
     """Execute routine with instant playback or fallback on-demand generation."""
     if not routine_name or not str(routine_name).strip():
@@ -324,16 +325,20 @@ async def async_run_routine(  # noqa: PLR0913
 
     sensor = async_get_or_create_sensor(hass, routine_name)
 
-    # 1. Check if media exists and is not stale (<24h) via executor
-    is_static_routine = bool(routine_config.get("static", False))
-    is_ready, metadata = await _async_run_in_executor(
-        hass,
-        _is_media_ready_and_fresh,
-        output_dir,
-        routine_name,
-        86400,
-        is_static=is_static_routine,
-    )
+    # 1. Check if media exists and is fresh (<24h) unless force_regenerate is requested
+    force_reg = force_regenerate or bool(routine_config.get("force_regenerate", False))
+    if force_reg:
+        is_ready, metadata = False, None
+    else:
+        is_static_routine = bool(routine_config.get("static", False))
+        is_ready, metadata = await _async_run_in_executor(
+            hass,
+            _is_media_ready_and_fresh,
+            output_dir,
+            routine_name,
+            86400,
+            is_static=is_static_routine,
+        )
 
     # 2. If not ready/missing or stale, compile on-demand
     if not is_ready or metadata is None:
@@ -494,6 +499,7 @@ async def async_setup(
             routine_config=data.get("routine_config"),
             recipient=data.get("recipient"),
             output_dir=data.get("output_dir"),
+            force_regenerate=data.get("force_regenerate", False),
         )
 
     async def _async_handle_compile_clip(call: ServiceCall) -> None:
@@ -519,15 +525,9 @@ async def async_setup(
     hass.services.async_register(
         DOMAIN, "pregenerate_routine", _async_handle_pregenerate
     )
-    hass.services.async_register(
-        DOMAIN, "run_routine", _async_handle_run
-    )
-    hass.services.async_register(
-        DOMAIN, "compile_clip", _async_handle_compile_clip
-    )
-    hass.services.async_register(
-        DOMAIN, "reload", _async_handle_reload
-    )
+    hass.services.async_register(DOMAIN, "run_routine", _async_handle_run)
+    hass.services.async_register(DOMAIN, "compile_clip", _async_handle_compile_clip)
+    hass.services.async_register(DOMAIN, "reload", _async_handle_reload)
 
     return True
 
