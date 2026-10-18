@@ -10,7 +10,7 @@ import yaml
 from homeassistant.components.automation.config import AUTOMATION_BLUEPRINT_SCHEMA
 from homeassistant.components.blueprint.models import Blueprint
 
-MORNING_BRIEFING_INPUT_COUNT = 15
+MORNING_BRIEFING_INPUT_COUNT = 19
 BEDTIME_ROUTINE_INPUT_COUNT = 8
 EVENT_ALERT_INPUT_COUNT = 9
 WELCOME_HOME_INPUT_COUNT = 8
@@ -71,9 +71,12 @@ def test_morning_briefing_blueprint_structure():
         "recipient_name",
         "phonetic_name",
         "target_player",
+        "greeting_image",
         "weather_entity",
+        "fun_fact_entity",
         "calendar_entities",
         "todo_entity",
+        "commute_sensor",
         "scripture_sensor",
         "host_voice",
         "host_personality",
@@ -81,6 +84,7 @@ def test_morning_briefing_blueprint_structure():
         "scripture_personality",
         "conversation_agent",
         "background_actions",
+        "post_briefing_actions",
     ]
     for inp in expected_inputs:
         assert inp in inputs, f"Input '{inp}' missing from morning briefing blueprint"
@@ -98,14 +102,22 @@ def test_morning_briefing_blueprint_structure():
     assert "text" in inputs["phonetic_name"]["selector"]
 
     assert "media_player" in str(inputs["target_player"]["selector"])
+    assert inputs["greeting_image"]["default"] == "welcome_avatar.png"
+    assert "text" in inputs["greeting_image"]["selector"]
+
     assert "weather" in str(inputs["weather_entity"]["selector"])
+    assert "sensor" in str(inputs["fun_fact_entity"]["selector"])
+    assert "input_text" in str(inputs["fun_fact_entity"]["selector"])
     assert "calendar" in str(inputs["calendar_entities"]["selector"])
     assert inputs["calendar_entities"]["selector"]["entity"].get("multiple") is True
     assert "todo" in str(inputs["todo_entity"]["selector"])
+    assert "sensor" in str(inputs["commute_sensor"]["selector"])
     assert "sensor" in str(inputs["scripture_sensor"]["selector"])
 
     # Optional entity selectors should not have empty-string default
+    assert "default" not in inputs["fun_fact_entity"]
     assert "default" not in inputs["todo_entity"]
+    assert "default" not in inputs["commute_sensor"]
     assert "default" not in inputs["scripture_sensor"]
     assert "default" not in inputs["conversation_agent"]
 
@@ -116,6 +128,8 @@ def test_morning_briefing_blueprint_structure():
     assert "conversation_agent" in inputs["conversation_agent"]["selector"]
     assert "action" in inputs["background_actions"]["selector"]
     assert inputs["background_actions"]["default"] == []
+    assert "action" in inputs["post_briefing_actions"]["selector"]
+    assert inputs["post_briefing_actions"]["default"] == []
 
 
 def test_morning_briefing_triggers_and_actions():
@@ -147,20 +161,48 @@ def test_morning_briefing_triggers_and_actions():
 
     # Identify pregenerate branch in choose conditions
     choose_branches = choose_block["choose"]
-    found_pregen = False
+    pregen_action = None
     for branch in choose_branches:
         branch_str = str(branch)
         if "pregenerate" in branch_str and "pregenerate_routine" in branch_str:
-            found_pregen = True
-    assert found_pregen, "pregenerate branch with pregenerate_routine call missing"
-    assert "cast_studio.pregenerate_routine" in str(choose_branches)
+            pregen_action = branch["sequence"][0]
+            break
+    assert pregen_action is not None, (
+        "pregenerate branch with pregenerate_routine call missing"
+    )
+    assert pregen_action["action"] == "cast_studio.pregenerate_routine"
+
+    pregen_steps = pregen_action["data"]["routine_config"]["steps"]
+    expected_step_names = [
+        "greeting",
+        "weather",
+        "fun_fact",
+        "calendar",
+        "todo",
+        "commute",
+        "scripture",
+    ]
+    assert [s["name"] for s in pregen_steps] == expected_step_names
+    assert pregen_steps[0]["layout"] == "icon"
+    assert pregen_steps[0]["subtitle"] == "Good Morning"
+    assert pregen_steps[0]["icon"] == "greeting_image"
+    assert pregen_steps[0]["title"] == "recipient_name"
 
     # Identify run_routine in default branch
     default_branch = choose_block.get("default")
     assert default_branch is not None, "Default branch missing from choose action"
-    default_str = str(default_branch)
-    assert "cast_studio.run_routine" in default_str
-    assert "morning_briefing" in default_str
+    run_action = default_branch[0]
+    assert run_action["action"] == "cast_studio.run_routine"
+    assert run_action["data"]["routine_name"] == "morning_briefing"
+    assert run_action["data"].get("post_routine_actions") == "post_briefing_actions"
+
+    run_config = run_action["data"]["routine_config"]
+    assert run_config.get("post_briefing_actions") == "post_briefing_actions"
+    run_steps = run_config["steps"]
+    assert [s["name"] for s in run_steps] == expected_step_names
+    assert run_steps[0]["layout"] == "icon"
+    assert run_steps[0]["subtitle"] == "Good Morning"
+    assert run_steps[0]["icon"] == "greeting_image"
 
 
 def test_morning_briefing_ha_blueprint_schema():

@@ -88,6 +88,12 @@ run_routine:
       default: false
       selector:
         boolean:
+    post_routine_actions:
+      name: Post-Routine Actions
+      description: Actions executed upon routine playback completion (e.g., cast.show_lovelace_view).
+      required: false
+      selector:
+        action:
 
 compile_clip:
   name: Compile Static Clip

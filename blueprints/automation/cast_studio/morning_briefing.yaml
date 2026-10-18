@@ -39,12 +39,26 @@ blueprint:
       selector:
         entity:
           domain: media_player
+    greeting_image:
+      name: Greeting Image Asset
+      description: Image asset or avatar filename/path to display on the opening greeting slide.
+      default: "welcome_avatar.png"
+      selector:
+        text: {}
     weather_entity:
       name: Weather Entity
       description: Weather entity to summarize in the forecast slide.
       selector:
         entity:
           domain: weather
+    fun_fact_entity:
+      name: Fun Fact Entity (Optional)
+      description: Optional entity providing a morning fun fact, trivia, or national day.
+      selector:
+        entity:
+          domain:
+            - sensor
+            - input_text
     calendar_entities:
       name: Calendar Entities
       description: Calendar entities to query and summarize in the agenda slide.
@@ -58,6 +72,12 @@ blueprint:
       selector:
         entity:
           domain: todo
+    commute_sensor:
+      name: Commute Sensor (Optional)
+      description: Optional sensor entity providing traffic or transit commute status.
+      selector:
+        entity:
+          domain: sensor
     scripture_sensor:
       name: Scripture Sensor (Optional)
       description: Sensor entity providing daily scripture or morning inspirational thought.
@@ -115,6 +135,12 @@ blueprint:
       default: []
       selector:
         action: {}
+    post_briefing_actions:
+      name: Post-Briefing Actions
+      description: Actions executed upon video completion (e.g. cast.show_lovelace_view to switch Nest Hub to morning dashboard).
+      default: []
+      selector:
+        action: {}
 
 mode: single
 max_exceeded: silent
@@ -141,10 +167,25 @@ action:
               routine_config:
                 visuals: true
                 conversation_agent: !input conversation_agent
+                post_briefing_actions: !input post_briefing_actions
                 steps:
+                  - name: greeting
+                    visual: true
+                    title: !input recipient_name
+                    subtitle: "Good Morning"
+                    layout: "icon"
+                    icon: !input greeting_image
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
+                    context: "A cheerful, energizing morning greeting for {{ recipient_name }}."
                   - name: weather
                     visual: true
                     entity_id: !input weather_entity
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
+                  - name: fun_fact
+                    visual: true
+                    entity_id: !input fun_fact_entity
                     voice: !input host_voice
                     voice_personality: !input host_personality
                   - name: calendar
@@ -157,6 +198,11 @@ action:
                     entity_id: !input todo_entity
                     voice: !input host_voice
                     voice_personality: !input host_personality
+                  - name: commute
+                    visual: true
+                    entity_id: !input commute_sensor
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
                   - name: scripture
                     visual: true
                     entity_id: !input scripture_sensor
@@ -167,6 +213,7 @@ action:
         data:
           routine_name: morning_briefing
           target_player: !input target_player
+          post_routine_actions: !input post_briefing_actions
           recipient:
             name: !input recipient_name
             phonetic_name: !input phonetic_name
@@ -174,10 +221,25 @@ action:
             visuals: true
             conversation_agent: !input conversation_agent
             background_actions: !input background_actions
+            post_briefing_actions: !input post_briefing_actions
             steps:
+              - name: greeting
+                visual: true
+                title: !input recipient_name
+                subtitle: "Good Morning"
+                layout: "icon"
+                icon: !input greeting_image
+                voice: !input host_voice
+                voice_personality: !input host_personality
+                context: "A cheerful, energizing morning greeting for {{ recipient_name }}."
               - name: weather
                 visual: true
                 entity_id: !input weather_entity
+                voice: !input host_voice
+                voice_personality: !input host_personality
+              - name: fun_fact
+                visual: true
+                entity_id: !input fun_fact_entity
                 voice: !input host_voice
                 voice_personality: !input host_personality
               - name: calendar
@@ -188,6 +250,11 @@ action:
               - name: todo
                 visual: true
                 entity_id: !input todo_entity
+                voice: !input host_voice
+                voice_personality: !input host_personality
+              - name: commute
+                visual: true
+                entity_id: !input commute_sensor
                 voice: !input host_voice
                 voice_personality: !input host_personality
               - name: scripture

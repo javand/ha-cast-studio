@@ -1029,3 +1029,65 @@ async def test_run_routine_forwards_post_actions_to_metadata(
         assert passed_metadata.get("post_routine_actions") == [post_action]
 
         await dummy_play_task
+
+
+@pytest.mark.asyncio
+async def test_run_routine_service_call_forwards_top_level_post_routine_actions(
+    mock_hass: MagicMock, sample_config: dict[str, Any], tmp_path: Path
+) -> None:
+    """Verify run_routine service handler forwards top-level post_routine_actions to routine_config."""
+    await async_setup(mock_hass, sample_config)
+
+    calls = mock_hass.services.async_register.call_args_list
+    run_handler = next(c.args[2] for c in calls if c.args[1] == "run_routine")
+
+    video_file = tmp_path / "morning.mp4"
+    video_file.write_bytes(b"video")
+    meta_file = tmp_path / "morning.metadata.json"
+    meta_content = {
+        "video_path": str(video_file),
+        "duration": 10.0,
+        "slide_timestamps": [],
+        "last_pregenerated": datetime.now(UTC).isoformat(),
+    }
+    meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
+
+    dummy_play_task = asyncio.create_task(asyncio.sleep(0.01))
+    post_action = {
+        "service": "cast.show_lovelace_view",
+        "target": {"entity_id": "media_player.bathroom_display"},
+        "data": {"dashboard_path": "nest-display", "view_path": "morning"},
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_play_and_sync_routine",
+            new=AsyncMock(return_value=dummy_play_task),
+        ) as mock_play,
+    ):
+        service_call = ServiceCall(
+            mock_hass,
+            DOMAIN,
+            "run_routine",
+            {
+                "routine_name": "morning",
+                "target_player": "media_player.bathroom_display",
+                "output_dir": str(tmp_path),
+                "post_routine_actions": [post_action],
+            },
+        )
+        await run_handler(service_call)
+
+        mock_play.assert_awaited_once()
+        passed_metadata = mock_play.await_args[0][3]
+        assert passed_metadata.get("post_routine_actions") == [post_action]
+
+        await dummy_play_task

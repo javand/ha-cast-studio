@@ -501,11 +501,20 @@ async def async_setup(
         if not routine_name or not str(routine_name).strip():
             msg = "Missing or empty required service parameter 'routine_name'"
             raise ValueError(msg)
+        routine_config = data.get("routine_config")
+        if "post_routine_actions" in data:
+            if routine_config is None:
+                domain_data = hass.data.get(DOMAIN, {})
+                routine_config = dict(
+                    domain_data.get("routines", {}).get(routine_name, {})
+                )
+            if "post_routine_actions" not in routine_config:
+                routine_config["post_routine_actions"] = data["post_routine_actions"]
         await async_run_routine(
             hass,
             routine_name=routine_name,
             target_player=data.get("target_player"),
-            routine_config=data.get("routine_config"),
+            routine_config=routine_config,
             recipient=data.get("recipient"),
             output_dir=data.get("output_dir"),
             force_regenerate=data.get("force_regenerate", False),
