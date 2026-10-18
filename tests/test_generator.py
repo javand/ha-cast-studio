@@ -762,3 +762,19 @@ async def test_compile_static_clip_invokes_ai_when_no_narration(tmp_path: Path):
         assert mock_ai_generate.call_count == 1
         assert result["clip_name"] == "ai_alert"
         assert result["static"] is True
+
+
+def test_extract_entity_context_scripture_sensor():
+    """Test that scripture and text attributes are extracted for daily scripture sensors."""
+    hass = MagicMock()
+    state_mock = MagicMock()
+    state_mock.state = "2026-10-17"
+    state_mock.attributes = {
+        "scripture": "Proverbs 7:25",
+        "text": "Do not let your heart turn aside to her paths.",
+    }
+    hass.states.get.return_value = state_mock
+    step = {"entity_id": "sensor.jw_library_daily_text_today"}
+    context = _extract_entity_context(hass, step)
+    assert "Proverbs 7:25" in context
+    assert "Do not let your heart turn aside to her paths." in context

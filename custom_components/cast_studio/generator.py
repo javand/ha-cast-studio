@@ -115,6 +115,14 @@ def _extract_entity_context(  # noqa: PLR0912
             elif eid.startswith("todo."):
                 entity_lines.append(f"To-do ({eid}): {state_val} tasks pending")
 
+            elif "scripture" in attrs or "text" in attrs:
+                parts = [f"Daily Scripture ({eid}):"]
+                if ref := attrs.get("scripture"):
+                    parts.append(f"Citation: {ref}")
+                if txt := attrs.get("text"):
+                    parts.append(f"Text: {txt}")
+                entity_lines.append("\n".join(parts))
+
             else:
                 unit = attrs.get("unit_of_measurement", "")
                 suffix = f" {unit}" if unit else ""
