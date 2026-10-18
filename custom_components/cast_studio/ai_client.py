@@ -54,7 +54,7 @@ def _build_prompt(
     )
     context = step_config.get("context", "")
 
-    return (
+    prompt = (
         "You are generating content for an automated smart home briefing routine.\n"
         f"Step Name: {step_name}\n"
         f"Step Type: {step_type}\n"
@@ -78,6 +78,16 @@ def _build_prompt(
         "3. NARRATION IDENTITY CONTRACT: In 'narration_script', always use\n"
         f"   the phonetic spelling '{phonetic_name}' when speaking aloud for TTS.\n"
     )
+
+    if step_name == "scripture" or step_type == "scripture":
+        prompt += (
+            "4. SCRIPTURE NARRATION: After summarizing the scripture, "
+            "conclude the narration with an uplifting, encouraging thought "
+            "along the lines of walking with purpose, focusing on what matters, "
+            "and having a wonderful day.\n"
+        )
+
+    return prompt
 
 
 def _enforce_recipient_separation(

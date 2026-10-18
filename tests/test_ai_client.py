@@ -10,6 +10,7 @@ import pytest
 
 from custom_components.cast_studio.ai_client import (
     AIClientError,
+    _build_prompt,
     _enforce_recipient_separation,
     _query_conversation_agent_structured,
     _query_gemini_structured,
@@ -434,3 +435,10 @@ def test_enforce_recipient_separation_case_insensitive() -> None:
         enforced["narration_script"]
         == "Good morning Jay-ven, it is great to see you Jay-ven!"
     )
+
+
+def test_build_prompt_scripture_includes_uplifting_thought() -> None:
+    """Test scripture step prompt instructs AI to conclude with an uplifting thought."""
+    step = {"name": "scripture", "type": "scripture"}
+    prompt = _build_prompt(step, {"name": "Javan"})
+    assert "uplifting" in prompt.lower() or "encouraging" in prompt.lower()

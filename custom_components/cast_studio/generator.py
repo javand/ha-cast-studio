@@ -105,12 +105,18 @@ def _extract_entity_context(  # noqa: PLR0912
                     or attrs.get("description")
                 )
                 start_time = attrs.get("start_time")
-                line_parts = [f"Calendar ({eid}): State: {state_val}"]
-                if summary:
-                    line_parts.append(f"Summary: {summary}")
-                if start_time:
-                    line_parts.append(f"Start: {start_time}")
-                entity_lines.append(", ".join(line_parts))
+                if state_val == "off" and not attrs.get("message"):
+                    entity_lines.append(
+                        f"Calendar ({eid}): No scheduled meetings today. "
+                        "The user's schedule is completely clear."
+                    )
+                else:
+                    line_parts = [f"Calendar ({eid}): State: {state_val}"]
+                    if summary:
+                        line_parts.append(f"Summary: {summary}")
+                    if start_time:
+                        line_parts.append(f"Start: {start_time}")
+                    entity_lines.append(", ".join(line_parts))
 
             elif eid.startswith("todo."):
                 entity_lines.append(f"To-do ({eid}): {state_val} tasks pending")

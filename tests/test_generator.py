@@ -778,3 +778,19 @@ def test_extract_entity_context_scripture_sensor():
     context = _extract_entity_context(hass, step)
     assert "Proverbs 7:25" in context
     assert "Do not let your heart turn aside to her paths." in context
+
+
+def test_extract_entity_context_empty_calendar():
+    """Test calendar in off state with no events reports schedule is clear."""
+    hass = MagicMock()
+    state_mock = MagicMock()
+    state_mock.state = "off"
+    state_mock.attributes = {}
+    hass.states.get.return_value = state_mock
+    step = {"entity_id": "calendar.personal"}
+    context = _extract_entity_context(hass, step)
+    assert (
+        "Calendar (calendar.personal): No scheduled meetings today. The user's schedule is completely clear."
+        in context
+    )
+    assert "State: off" not in context
