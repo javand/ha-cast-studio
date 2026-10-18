@@ -386,12 +386,15 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
             await hass.services.async_call(
                 "media_player", "turn_on", {"entity_id": target_player}
             )
-            await hass.services.async_call(
-                "media_player",
-                "volume_mute",
-                {"entity_id": target_player, "is_volume_muted": False},
-            )
-            target_vol = float(metadata.get("volume_level", 0.60))
+        if metadata.get("unmute", True):
+            with contextlib.suppress(Exception):
+                await hass.services.async_call(
+                    "media_player",
+                    "volume_mute",
+                    {"entity_id": target_player, "is_volume_muted": False},
+                )
+        with contextlib.suppress(Exception):
+            target_vol = float(metadata.get("volume_level") or 0.60)
             await hass.services.async_call(
                 "media_player",
                 "volume_set",
