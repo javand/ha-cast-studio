@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://hacs.xyz"><img src="https://img.shields.io/badge/HACS-Custom-orange.svg" alt="HACS"></a>
-  <a href="https://github.com/javand/ha-automation-generator/releases"><img src="https://img.shields.io/github/v/release/javand/ha-automation-generator?include_prereleases" alt="Release"></a>
+  <a href="https://github.com/javand/ha-cast-studio/releases"><img src="https://img.shields.io/github/v/release/javand/ha-cast-studio?include_prereleases" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/Home%20Assistant-2024.6.0%2B-blue" alt="Home Assistant Core 2024.6.0+">
 </p>
@@ -128,7 +128,7 @@ Reloads integration configuration, blueprints, and resets routine status sensors
 ### Via HACS (Recommended)
 1. Open HACS in your Home Assistant dashboard.
 2. Select **Integrations** > **Custom repositories**.
-3. Add `https://github.com/javand/ha-automation-generator` with category **Integration**.
+3. Add `https://github.com/javand/ha-cast-studio` with category **Integration**.
 4. Click **Download**, then restart Home Assistant.
 
 ### Manual Installation
