@@ -1,0 +1,109 @@
+blueprint:
+  name: CastStudio - Welcome Home Routine
+  description: >-
+    Welcomes family members upon arrival with personalized greeting slide, personal photo/avatar, and spoken greeting on smart displays.
+  domain: automation
+  author: "Javan Dicks (@javand)"
+  homeassistant:
+    min_version: "2024.10.0"
+  source_url: "https://github.com/javand/ha-cast-studio/blob/main/blueprints/automation/cast_studio/welcome_home.yaml"
+  input:
+    person_entity:
+      name: Person Entity
+      description: Person entity to monitor for arrival (e.g. person.javan).
+      selector:
+        entity:
+          domain: person
+    recipient_name:
+      name: Recipient Name (Optional Override)
+      description: Real name to display visually on greeting card. If left blank, friendly_name of the person entity is used.
+      default: ""
+      selector:
+        text: {}
+    phonetic_name:
+      name: Phonetic Name (Optional Override)
+      description: Phonetic pronunciation spelling strictly for spoken TTS narration. If left blank, recipient name is used.
+      default: ""
+      selector:
+        text: {}
+    target_player:
+      name: Target Media Player
+      description: Living room or entry smart display entity for multimedia playback.
+      selector:
+        entity:
+          domain: media_player
+    avatar_image:
+      name: Avatar Image (Optional Fallback)
+      description: Profile photo or fallback avatar filename stored in CastStudio assets or media directory.
+      default: welcome_avatar.png
+      selector:
+        text: {}
+    welcome_voice:
+      name: Welcome Voice
+      description: High-fidelity voice model for the welcome greeting.
+      default: Pulcherrima
+      selector:
+        select:
+          options:
+            - Pulcherrima
+            - Enceladus
+    welcome_personality:
+      name: Welcome Personality
+      description: Speaking persona and tone for the welcome arrival greeting.
+      default: life_coach
+      selector:
+        select:
+          custom_value: true
+          options:
+            - life_coach
+            - news_anchor
+            - calm_reassuring
+    welcome_actions:
+      name: Welcome Actions
+      description: Smart home actions executed concurrently on arrival (e.g. turn on entryway lights, adjust climate).
+      default: []
+      selector:
+        action: {}
+
+mode: single
+max_exceeded: silent
+
+variables:
+  person: !input person_entity
+  person_name: "{{ state_attr(person, 'friendly_name') or 'Friend' }}"
+  name_override: !input recipient_name
+  resolved_name: "{{ name_override if name_override | length > 0 else person_name }}"
+  phonetic_input: !input phonetic_name
+  resolved_phonetic: "{{ phonetic_input if phonetic_input | length > 0 else resolved_name }}"
+  avatar_fallback: !input avatar_image
+  resolved_avatar: "{{ state_attr(person, 'entity_picture') or avatar_fallback }}"
+
+trigger:
+  - trigger: state
+    entity_id: !input person_entity
+    to: home
+
+action:
+  - action: cast_studio.run_routine
+    data:
+      routine_name: "welcome_home_{{ person.split('.')[1] if '.' in person else 'person' }}"
+      force_regenerate: true
+      target_player: !input target_player
+      recipient:
+        name: "{{ resolved_name }}"
+        phonetic_name: "{{ resolved_phonetic }}"
+      routine_config:
+        visuals: true
+        force_regenerate: true
+        background_actions: !input welcome_actions
+        steps:
+          - name: greeting
+            visual: true
+            title: "{{ resolved_name }}"
+            subtitle: "Welcome Home"
+            image_path: "{{ resolved_avatar }}"
+            avatar_fallback: "{{ avatar_fallback }}"
+            layout: "icon"
+            voice: !input welcome_voice
+            voice_personality: !input welcome_personality
+            context: "Warm, welcoming arrival message for {{ resolved_name }}."

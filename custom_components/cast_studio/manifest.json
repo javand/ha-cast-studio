@@ -1,0 +1,19 @@
+{
+  "domain": "cast_studio",
+  "name": "CastStudio",
+  "codeowners": [
+    "@javand"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "ffmpeg"
+  ],
+  "documentation": "https://github.com/javand/ha-cast-studio",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/javand/ha-cast-studio/issues",
+  "requirements": [
+    "pillow>=10.2.0"
+  ],
+  "version": "0.1.0"
+}

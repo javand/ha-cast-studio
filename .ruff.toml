@@ -23,3 +23,14 @@ keep-runtime-typing = true
 
 [lint.mccabe]
 max-complexity = 25
+
+[lint.per-file-ignores]
+"tests/**" = [
+    "S101",
+    "ANN201",
+    "D103",
+    "PTH",
+    "E501",
+    "INP001",
+    "PLC0415",
+]
