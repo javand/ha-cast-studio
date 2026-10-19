@@ -511,3 +511,23 @@ async def test_query_conversation_agent_ignores_intent_error_response() -> None:
     result = await _query_conversation_agent_structured(hass, "Test Prompt")
     assert result["narration_script"] == ""
     assert result["visual_card"]["bullet_points"] == []
+
+
+def test_build_prompt_includes_current_local_date_and_step_guidelines() -> None:
+    """Verify _build_prompt injects Current Local Date and step-specific narrative guidelines."""
+    commute_prompt = _build_prompt(
+        {"name": "commute", "type": "commute"}, {"name": "Javan"}
+    )
+    assert "Current Local Date:" in commute_prompt
+    assert "faster" in commute_prompt.lower()
+
+    weather_prompt = _build_prompt(
+        {"name": "weather", "type": "weather"}, {"name": "Javan"}
+    )
+    assert "Current Local Date:" in weather_prompt
+    assert "high" in weather_prompt.lower() or "forecast" in weather_prompt.lower()
+
+    fun_fact_prompt = _build_prompt(
+        {"name": "fun_fact", "type": "fun_fact"}, {"name": "Javan"}
+    )
+    assert "National Day" in fun_fact_prompt

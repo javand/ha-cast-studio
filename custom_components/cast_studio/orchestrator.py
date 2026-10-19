@@ -19,11 +19,11 @@ from homeassistant.helpers.event import async_call_later, async_track_state_chan
 from homeassistant.helpers.network import get_url
 
 from .const import LOGGER
+from .helpers import create_task
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
-
     from homeassistant.core import Event, HomeAssistant
+
 
 _ACTIVE_SYNC_TASKS: set[asyncio.Task[Any]] = set()
 _ROUTINE_SYNC_TASKS: dict[str, asyncio.Task[Any]] = {}
@@ -336,17 +336,7 @@ async def _async_sync_slides(
         await async_execute_background_actions(hass, actions)
 
 
-def _create_task(
-    hass: HomeAssistant,
-    coro: Coroutine[Any, Any, Any],
-    name: str | None = None,
-) -> asyncio.Task[Any]:
-    """Create an asynchronous task in Home Assistant or fallback to asyncio loop."""
-    if hasattr(hass, "async_create_task") and callable(hass.async_create_task):
-        res = hass.async_create_task(coro, name=name)
-        if isinstance(res, asyncio.Task):
-            return res
-    return asyncio.create_task(coro, name=name)
+_create_task = create_task
 
 
 def _is_routine_media_playing(  # noqa: PLR0911

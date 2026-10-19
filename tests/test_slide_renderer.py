@@ -372,3 +372,46 @@ def test_load_image_avatar_fallback_when_primary_missing() -> None:
     assert img is not None
     assert has_alpha is True
     assert img.size == (512, 512)
+
+
+def test_resolve_slide_theme_by_step_and_weather_condition() -> None:
+    """Test resolve_slide_theme resolves step-specific and weather-aware palettes."""
+    from custom_components.cast_studio.slide_renderer import (
+        SLIDE_THEMES,
+        resolve_slide_theme,
+    )
+
+    assert "greeting" in SLIDE_THEMES
+    assert "commute" in SLIDE_THEMES
+    assert "scripture" in SLIDE_THEMES
+
+    rain_theme = resolve_slide_theme(
+        {"step_name": "weather", "weather_condition": "rainy"}
+    )
+    sunny_theme = resolve_slide_theme(
+        {"step_name": "weather", "weather_condition": "sunny"}
+    )
+    assert rain_theme["bg_top"] != sunny_theme["bg_top"]
+    assert rain_theme["badge"] == "TODAY'S WEATHER"
+
+    commute_theme = resolve_slide_theme({"step_name": "commute"})
+    assert commute_theme["badge"] == "COMMUTE OVERVIEW"
+
+
+def test_render_slide_applies_step_theme_and_category_badge(tmp_path: Path) -> None:
+    """Test render_slide applies themed background gradient and category badge when step_name/theme is set."""
+    default_out = str(tmp_path / "default_slide.jpg")
+    themed_out = str(tmp_path / "themed_slide.jpg")
+
+    render_slide({"title": "Morning Update"}, default_out)
+    render_slide(
+        {
+            "title": "Morning Update",
+            "step_name": "scripture",
+            "badge": "DAILY SCRIPTURE",
+        },
+        themed_out,
+    )
+
+    with Image.open(default_out) as def_img, Image.open(themed_out) as thm_img:
+        assert def_img.getpixel((10, 10)) != thm_img.getpixel((10, 10))

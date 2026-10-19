@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Mapping
 from contextlib import suppress
+from datetime import datetime
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +18,47 @@ from .const import DOMAIN, LOGGER
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
+
+STEP_PROMPT_GUIDELINES: dict[str, str] = {
+    "greeting": (
+        "4. GREETING NARRATION: Welcome the recipient warmly by name, mention the "
+        "current day of the week and date, and set an energizing tone for the day.\n"
+    ),
+    "weather": (
+        "4. WEATHER NARRATION: State the current sky condition and temperature, "
+        "then highlight today's expected high/low forecast and any rain or wind "
+        "outlook.\n"
+    ),
+    "fun_fact": (
+        "4. FUN FACT & NATIONAL DAY: Announce today's National Day holiday "
+        "observance for the current date and share a concise, surprising 1-2 "
+        "sentence morning fun fact.\n"
+    ),
+    "calendar": (
+        "4. SCHEDULE NARRATION: Summarize today's scheduled events chronologically "
+        "with their start times, or confirm that the schedule is clear if no "
+        "events are listed.\n"
+    ),
+    "todo": (
+        "4. TASKS NARRATION: State how many tasks are pending on the to-do list and "
+        "call out the top priority task items clearly.\n"
+    ),
+    "commute": (
+        "4. COMMUTE COMPARISON: Report current travel times for all available "
+        "commute options (e.g., Driving vs. Metro/Transit) and explicitly state "
+        "which option is faster and by how many minutes.\n"
+    ),
+    "scripture": (
+        "4. SCRIPTURE NARRATION: After summarizing the scripture, "
+        "conclude the narration with an uplifting, encouraging thought "
+        "along the lines of walking with purpose, focusing on what matters, "
+        "and having a wonderful day.\n"
+    ),
+    "wind_down": (
+        "4. BEDTIME NARRATION: Deliver a calm, soothing evening wind-down message "
+        "wishing the recipient a peaceful and restful night.\n"
+    ),
+}
 
 
 class AIClientError(Exception):
@@ -54,9 +96,11 @@ def _build_prompt(
         or "informative and clear"
     )
     context = step_config.get("context", "")
+    now_str = datetime.now().astimezone().strftime("%A, %B %-d, %Y")
 
     prompt = (
         "You are generating content for an automated smart home briefing routine.\n"
+        f"Current Local Date: {now_str}\n"
         f"Step Name: {step_name}\n"
         f"Step Type: {step_type}\n"
         f"Recipient Real Name: {name}\n"
@@ -80,15 +124,13 @@ def _build_prompt(
         f"   the phonetic spelling '{phonetic_name}' when speaking aloud for TTS.\n"
     )
 
-    if (step_name or "").lower() == "scripture" or (
-        step_type or ""
-    ).lower() == "scripture":
-        prompt += (
-            "4. SCRIPTURE NARRATION: After summarizing the scripture, "
-            "conclude the narration with an uplifting, encouraging thought "
-            "along the lines of walking with purpose, focusing on what matters, "
-            "and having a wonderful day.\n"
-        )
+    step_key = str(step_type or step_name or "").strip().lower()
+    name_key = str(step_name or "").strip().lower()
+    guideline = STEP_PROMPT_GUIDELINES.get(step_key) or STEP_PROMPT_GUIDELINES.get(
+        name_key
+    )
+    if guideline:
+        prompt += guideline
 
     return prompt
 

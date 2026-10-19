@@ -1233,3 +1233,66 @@ async def test_run_routine_zero_config_invalidates_stale_single_slide_cache(
         mock_compile.assert_awaited_once()
         assert result["duration"] == DURATION_20_0
         assert len(result["slide_timestamps"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_stores_configured_output_dir_and_uses_as_default(
+    mock_hass: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Verify async_setup_entry stores CONF_OUTPUT_DIR in hass.data and service handlers use it."""
+    from custom_components.cast_studio import async_setup_entry
+    from custom_components.cast_studio.const import CONF_OUTPUT_DIR
+
+    custom_out = str(tmp_path / "custom_cast_dir")
+    mock_entry = MagicMock()
+    mock_entry.data = {CONF_OUTPUT_DIR: custom_out}
+    mock_entry.options = {}
+    mock_hass.config_entries.async_forward_entry_setups = AsyncMock()
+
+    await async_setup(mock_hass, {DOMAIN: {}})
+    await async_setup_entry(mock_hass, mock_entry)
+
+    assert mock_hass.data[DOMAIN]["output_dir"] == custom_out
+
+    mock_meta = {
+        "video_path": f"{custom_out}/morning.mp4",
+        "duration": 5.0,
+        "slide_timestamps": [{"name": "greeting", "timestamp": 0.0}],
+    }
+    with patch(
+        "custom_components.cast_studio.async_compile_routine_media",
+        new=AsyncMock(return_value=mock_meta),
+    ) as mock_compile:
+        await async_pregenerate_routine(
+            mock_hass,
+            routine_name="morning",
+            routine_config={"steps": [{"name": "greeting", "visual": True}]},
+        )
+        assert mock_compile.await_args.kwargs["output_dir"] == custom_out
+
+
+def test_discover_morning_entities_collects_multiple_commute_sensors(
+    mock_hass: MagicMock,
+) -> None:
+    """Verify _discover_morning_entities collects all commute/travel_time sensors for comparison."""
+    from custom_components.cast_studio import _build_default_morning_routine_config
+
+    s_drive = MagicMock(entity_id="sensor.javan_commute_drive_to_work")
+    s_metro = MagicMock(entity_id="sensor.javan_commute_metro")
+    mock_hass.states.async_all = MagicMock(return_value=[s_drive, s_metro])
+
+    cfg = _build_default_morning_routine_config(mock_hass, {"name": "Javan"})
+    commute_step = next(s for s in cfg["steps"] if s["name"] == "commute")
+    assert commute_step["entity_ids"] == [
+        "sensor.javan_commute_drive_to_work",
+        "sensor.javan_commute_metro",
+    ]
+
+
+def test_sensor_unrecorded_attributes() -> None:
+    """Verify CastStudioRoutineSensor marks video_path and audio_path as unrecorded attributes."""
+    from custom_components.cast_studio.sensor import CastStudioRoutineSensor
+
+    assert "video_path" in CastStudioRoutineSensor._unrecorded_attributes
+    assert "audio_path" in CastStudioRoutineSensor._unrecorded_attributes

@@ -106,9 +106,13 @@ blueprint:
       selector:
         select:
           options:
+            - morning_host
             - news_anchor
             - upbeat_energetic
             - conversational
+            - calm_reassuring
+            - soothing
+            - meditative
           custom_value: true
     scripture_voice:
       name: Scripture Voice
@@ -129,6 +133,9 @@ blueprint:
             - life_coach
             - reverent
             - warm_uplifting
+            - calm_reassuring
+            - soothing
+            - meditative
           custom_value: true
     conversation_agent:
       name: Conversation Agent (Optional)

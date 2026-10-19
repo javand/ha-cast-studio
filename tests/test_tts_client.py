@@ -799,3 +799,24 @@ async def test_synthesize_ha_tts_voice_options_rejected_fallback(
             (tmp_path / "ha_voice_fallback.wav").read_bytes
         )
         assert content == fake_wav_bytes
+
+
+def test_personality_prompts_include_morning_host_and_bedtime_personas() -> None:
+    """Verify PERSONALITY_PROMPTS includes morning_host and bedtime personas and supports custom registration."""
+    from custom_components.cast_studio.tts_client import (
+        PERSONALITY_PROMPTS,
+        _build_gemini_tts_prompt,
+        register_personality_prompt,
+    )
+
+    for persona in ("morning_host", "calm_reassuring", "soothing", "meditative"):
+        assert persona in PERSONALITY_PROMPTS, f"Missing persona {persona}"
+        prompt = _build_gemini_tts_prompt("Hello world", persona)
+        assert "# AUDIO PROFILE:" in prompt
+        assert "### DIRECTOR'S NOTES" in prompt
+        assert persona in prompt
+
+    register_personality_prompt("custom_pirate", "Style: Enthusiastic sea captain.")
+    custom_prompt = _build_gemini_tts_prompt("Ahoy!", "custom_pirate")
+    assert "Enthusiastic sea captain." in custom_prompt
+    assert "custom_pirate" in custom_prompt

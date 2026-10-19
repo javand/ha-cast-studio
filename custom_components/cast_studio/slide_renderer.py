@@ -23,7 +23,7 @@ BUNDLED_ASSETS_DIR = Path(__file__).parent / "assets"
 CANVAS_WIDTH = 1024
 CANVAS_HEIGHT = 600
 
-# Color palette (high-contrast dark theme)
+# Color palette (high-contrast dark theme defaults)
 BG_COLOR_TOP = (15, 23, 42)  # Slate-900
 BG_COLOR_BOTTOM = (2, 6, 23)  # Slate-950
 CARD_BG_COLOR = (30, 41, 59, 215)  # Slate-800 with ~84% opacity
@@ -33,6 +33,154 @@ SUBTITLE_COLOR = (56, 189, 248)  # Sky-400 accent
 DIVIDER_COLOR = (51, 65, 85, 180)  # Slate-700
 BULLET_TEXT_COLOR = (241, 245, 249)  # Slate-100
 BULLET_DOT_COLOR = (56, 189, 248)  # Sky-400 accent
+
+SLIDE_THEMES: dict[str, dict[str, Any]] = {
+    "default": {
+        "bg_top": BG_COLOR_TOP,
+        "bg_bottom": BG_COLOR_BOTTOM,
+        "accent_color": SUBTITLE_COLOR,
+        "card_border": CARD_BORDER_COLOR,
+        "badge": "",
+    },
+    "greeting": {
+        "bg_top": (32, 18, 10),
+        "bg_bottom": (95, 48, 15),
+        "accent_color": (255, 215, 120),
+        "card_border": (180, 120, 60, 200),
+        "badge": "GOOD MORNING",
+    },
+    "weather": {
+        "bg_top": (28, 20, 12),
+        "bg_bottom": (110, 62, 18),
+        "accent_color": (253, 224, 71),
+        "card_border": (160, 110, 50, 200),
+        "badge": "TODAY'S WEATHER",
+    },
+    "weather_sunny": {
+        "bg_top": (28, 20, 12),
+        "bg_bottom": (110, 62, 18),
+        "accent_color": (253, 224, 71),
+        "card_border": (180, 130, 60, 200),
+        "badge": "TODAY'S WEATHER",
+    },
+    "weather_cloudy": {
+        "bg_top": (24, 30, 38),
+        "bg_bottom": (55, 68, 82),
+        "accent_color": (130, 210, 255),
+        "card_border": (100, 116, 139, 200),
+        "badge": "TODAY'S WEATHER",
+    },
+    "weather_rainy": {
+        "bg_top": (10, 16, 30),
+        "bg_bottom": (20, 42, 64),
+        "accent_color": (103, 232, 249),
+        "card_border": (56, 189, 248, 180),
+        "badge": "TODAY'S WEATHER",
+    },
+    "weather_snow": {
+        "bg_top": (14, 28, 44),
+        "bg_bottom": (35, 75, 105),
+        "accent_color": (195, 235, 255),
+        "card_border": (148, 210, 245, 200),
+        "badge": "TODAY'S WEATHER",
+    },
+    "fun_fact": {
+        "bg_top": (15, 8, 35),
+        "bg_bottom": (42, 18, 75),
+        "accent_color": (255, 180, 100),
+        "card_border": (126, 87, 194, 200),
+        "badge": "MORNING TRIVIA & FUN FACT",
+    },
+    "calendar": {
+        "bg_top": (8, 22, 16),
+        "bg_bottom": (18, 48, 34),
+        "accent_color": (110, 231, 183),
+        "card_border": (52, 140, 100, 200),
+        "badge": "TODAY'S SCHEDULE",
+    },
+    "todo": {
+        "bg_top": (8, 22, 16),
+        "bg_bottom": (18, 48, 34),
+        "accent_color": (110, 231, 183),
+        "card_border": (52, 140, 100, 200),
+        "badge": "PRIORITY TASKS",
+    },
+    "commute": {
+        "bg_top": (16, 19, 26),
+        "bg_bottom": (32, 38, 48),
+        "accent_color": (251, 191, 36),
+        "card_border": (180, 135, 40, 200),
+        "badge": "COMMUTE OVERVIEW",
+    },
+    "scripture": {
+        "bg_top": (26, 14, 9),
+        "bg_bottom": (52, 28, 16),
+        "accent_color": (250, 220, 160),
+        "card_border": (160, 115, 70, 200),
+        "badge": "DAILY SCRIPTURE",
+    },
+    "bedtime": {
+        "bg_top": (10, 12, 28),
+        "bg_bottom": (24, 20, 52),
+        "accent_color": (196, 181, 253),
+        "card_border": (109, 93, 175, 200),
+        "badge": "EVENING WIND-DOWN",
+    },
+    "wind_down": {
+        "bg_top": (10, 12, 28),
+        "bg_bottom": (24, 20, 52),
+        "accent_color": (196, 181, 253),
+        "card_border": (109, 93, 175, 200),
+        "badge": "EVENING WIND-DOWN",
+    },
+    "alert": {
+        "bg_top": (40, 12, 16),
+        "bg_bottom": (24, 8, 12),
+        "accent_color": (248, 113, 113),
+        "card_border": (220, 68, 68, 210),
+        "badge": "ALERT",
+    },
+    "welcome": {
+        "bg_top": (10, 26, 28),
+        "bg_bottom": (16, 52, 56),
+        "accent_color": (94, 234, 212),
+        "card_border": (45, 160, 150, 200),
+        "badge": "WELCOME HOME",
+    },
+}
+
+
+def resolve_slide_theme(card_data: dict[str, Any]) -> dict[str, Any]:
+    """Resolve visual theme palette and category badge from card_data."""
+    explicit_theme = str(card_data.get("theme") or "").strip().lower()
+    step_name = (
+        str(card_data.get("step_name") or card_data.get("type") or "").strip().lower()
+    )
+    condition = str(card_data.get("weather_condition") or "").strip().lower()
+
+    theme_key = "default"
+    if explicit_theme and explicit_theme in SLIDE_THEMES:
+        theme_key = explicit_theme
+    elif step_name == "weather" or explicit_theme == "weather":
+        rain_keywords = ("rain", "pour", "drizzle", "lightning", "storm")
+        snow_keywords = ("snow", "sleet", "hail", "ice", "blizzard")
+        cloud_keywords = ("cloud", "overcast", "fog", "mist", "wind")
+        if any(w in condition for w in rain_keywords):
+            theme_key = "weather_rainy"
+        elif any(w in condition for w in snow_keywords):
+            theme_key = "weather_snow"
+        elif any(w in condition for w in cloud_keywords):
+            theme_key = "weather_cloudy"
+        else:
+            theme_key = "weather_sunny"
+    elif step_name in SLIDE_THEMES:
+        theme_key = step_name
+
+    resolved = dict(SLIDE_THEMES.get(theme_key, SLIDE_THEMES["default"]))
+    if "badge" in card_data and card_data["badge"] is not None:
+        resolved["badge"] = str(card_data["badge"]).strip()
+    return resolved
+
 
 # Card bounding layout
 CARD_X0 = 60
@@ -207,28 +355,36 @@ def _assert_identity_contract(
                 raise PhoneticLeakError(msg)
 
 
-def _render_gradient_background() -> Image.Image:
-    """Render background canvas with dark vertical gradient."""
+def _render_gradient_background(
+    theme: dict[str, Any] | None = None,
+) -> Image.Image:
+    """Render background canvas with vertical atmospheric gradient."""
+    top_col = (theme or {}).get("bg_top", BG_COLOR_TOP)
+    bot_col = (theme or {}).get("bg_bottom", BG_COLOR_BOTTOM)
     canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
     grad_draw = ImageDraw.Draw(canvas)
     for y in range(CANVAS_HEIGHT):
         ratio = y / CANVAS_HEIGHT
-        r = int(BG_COLOR_TOP[0] * (1.0 - ratio) + BG_COLOR_BOTTOM[0] * ratio)
-        g = int(BG_COLOR_TOP[1] * (1.0 - ratio) + BG_COLOR_BOTTOM[1] * ratio)
-        b = int(BG_COLOR_TOP[2] * (1.0 - ratio) + BG_COLOR_BOTTOM[2] * ratio)
+        r = int(top_col[0] * (1.0 - ratio) + bot_col[0] * ratio)
+        g = int(top_col[1] * (1.0 - ratio) + bot_col[1] * ratio)
+        b = int(top_col[2] * (1.0 - ratio) + bot_col[2] * ratio)
         grad_draw.line([(0, y), (CANVAS_WIDTH, y)], fill=(r, g, b))
     return canvas
 
 
-def _render_card_overlay(canvas: Image.Image) -> Image.Image:
+def _render_card_overlay(
+    canvas: Image.Image,
+    theme: dict[str, Any] | None = None,
+) -> Image.Image:
     """Composite translucent rounded card overlay on top of canvas."""
+    border_col = (theme or {}).get("card_border", CARD_BORDER_COLOR)
     overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
     overlay_draw.rounded_rectangle(
         (CARD_X0, CARD_Y0, CARD_X1, CARD_Y1),
         radius=CARD_RADIUS,
         fill=CARD_BG_COLOR,
-        outline=CARD_BORDER_COLOR,
+        outline=border_col,
         width=1,
     )
     return Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
@@ -439,18 +595,40 @@ def _composite_icon(
     return content_left, content_right
 
 
-def _draw_header(
+def _draw_header(  # noqa: PLR0913
     draw: ImageDraw.ImageDraw,
     card_data: dict[str, Any],
     start_y: int,
     content_left: int = CONTENT_LEFT,
     content_right: int = CONTENT_RIGHT,
+    theme: dict[str, Any] | None = None,
 ) -> int:
-    """Draw title, subtitle, and divider line, returning updated y coordinate."""
+    """Draw optional category badge, title, subtitle, and divider line."""
     max_text_width = content_right - content_left
+    accent_color = (theme or {}).get("accent_color", SUBTITLE_COLOR)
+    badge_text = str((theme or {}).get("badge") or card_data.get("badge") or "").strip()
     title_font = _get_font(36, bold=True)
     subtitle_font = _get_font(22, bold=False)
     curr_y = start_y
+
+    if badge_text:
+        badge_font = _get_font(15, bold=True)
+        b_bbox = draw.textbbox((0, 0), badge_text.upper(), font=badge_font)
+        b_w = (b_bbox[2] - b_bbox[0]) + 24
+        b_h = (b_bbox[3] - b_bbox[1]) + 10
+        draw.rounded_rectangle(
+            (content_left, curr_y, content_left + b_w, curr_y + b_h),
+            radius=b_h // 2,
+            outline=accent_color,
+            width=1,
+        )
+        draw.text(
+            (content_left + 12, curr_y + 4),
+            badge_text.upper(),
+            font=badge_font,
+            fill=accent_color,
+        )
+        curr_y += b_h + 10
 
     title = str(card_data.get("title", "")).strip()
     if title:
@@ -469,7 +647,7 @@ def _draw_header(
             bbox = draw.textbbox((content_left, curr_y), line, font=subtitle_font)
             line_height = bbox[3] - bbox[1]
             draw.text(
-                (content_left, curr_y), line, font=subtitle_font, fill=SUBTITLE_COLOR
+                (content_left, curr_y), line, font=subtitle_font, fill=accent_color
             )
             curr_y += line_height + 4
 
@@ -485,14 +663,16 @@ def _draw_header(
     return curr_y
 
 
-def _draw_bullets(
+def _draw_bullets(  # noqa: PLR0913
     draw: ImageDraw.ImageDraw,
     raw_bullets: list[Any],
     start_y: int,
     content_left: int = CONTENT_LEFT,
     content_right: int = CONTENT_RIGHT,
+    theme: dict[str, Any] | None = None,
 ) -> int:
     """Draw bullet points with dot indicators and text wrapping."""
+    dot_color = (theme or {}).get("accent_color", BULLET_DOT_COLOR)
     bullet_font = _get_font(24, bold=False)
     bullet_indent = content_left + 28
     bullet_max_width = content_right - bullet_indent
@@ -519,7 +699,7 @@ def _draw_bullets(
                 (dot_x - dot_radius, dot_center_y - dot_radius),
                 (dot_x + dot_radius, dot_center_y + dot_radius),
             ],
-            fill=BULLET_DOT_COLOR,
+            fill=dot_color,
         )
 
         for line in wrapped_lines:
@@ -551,19 +731,20 @@ def render_slide(
     # 1. Enforce identity contract before generating visual pixels
     _assert_identity_contract(card_data, phonetic_name=phonetic_name)
 
-    # 2. Inspect and load image asset if present
+    # 2. Resolve visual theme and inspect/load image asset if present
+    theme = resolve_slide_theme(card_data)
     img, has_alpha = _load_image(card_data)
     layout_mode = _determine_layout_mode(card_data, img, has_alpha=has_alpha)
 
     # 3. Render base background and card overlay
     if layout_mode == "photo" and img is not None:
         canvas = _render_photo_background(img)
-        canvas = _render_card_overlay(canvas)
+        canvas = _render_card_overlay(canvas, theme=theme)
         content_left = CONTENT_LEFT
         content_right = CONTENT_RIGHT
     else:
-        canvas = _render_gradient_background()
-        canvas = _render_card_overlay(canvas)
+        canvas = _render_gradient_background(theme=theme)
+        canvas = _render_card_overlay(canvas, theme=theme)
         if layout_mode == "icon" and img is not None:
             content_left, content_right = _composite_icon(
                 canvas, img, has_alpha=has_alpha
@@ -574,13 +755,14 @@ def render_slide(
 
     draw = ImageDraw.Draw(canvas)
 
-    # 4. Draw header (title, subtitle, divider)
+    # 4. Draw header (badge, title, subtitle, divider)
     curr_y = _draw_header(
         draw,
         card_data,
         CARD_Y0 + 36,
         content_left=content_left,
         content_right=content_right,
+        theme=theme,
     )
 
     # 5. Draw bullet points
@@ -592,6 +774,7 @@ def render_slide(
             curr_y,
             content_left=content_left,
             content_right=content_right,
+            theme=theme,
         )
 
     # 6. Ensure output directory exists and save RGB JPEG

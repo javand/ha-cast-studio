@@ -40,6 +40,14 @@ OPENAI_KNOWN_VOICES: set[str] = {
 }
 
 PERSONALITY_PROMPTS: dict[str, str] = {
+    "morning_host": (
+        "# AUDIO PROFILE: Upbeat Morning Show Host (morning_host)\n"
+        "## THE SCENE\n"
+        "A bright, welcoming smart home morning broadcast studio.\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Warm, energetic, articulate, and genuinely welcoming.\n"
+        "Pacing: Natural, brisk morning cadence with a friendly smile in the voice."
+    ),
     "news_anchor": (
         "# AUDIO PROFILE: Broadcast Meteorologist & Anchor (news_anchor)\n"
         "### DIRECTOR'S NOTES\n"
@@ -84,8 +92,11 @@ PERSONALITY_PROMPTS: dict[str, str] = {
     ),
     "life_coach": (
         "# AUDIO PROFILE: Mindful Life Coach & Reader (life_coach)\n"
+        "## THE SCENE\n"
+        "A serene, sunlit study offering a grounded daily reflection.\n"
         "### DIRECTOR'S NOTES\n"
-        "Style: Peaceful, grounded, warm, reflective, encouraging.\n"
+        "Style: Peaceful, grounded, warm, reflective, building to an uplifting, "
+        "encouraging send-off.\n"
         "Pacing: Unhurried, deliberate, with gentle pauses between sentences."
     ),
     "contemplative": (
@@ -106,13 +117,47 @@ PERSONALITY_PROMPTS: dict[str, str] = {
         "Style: Encouraging, compassionate, bright, reassuring.\n"
         "Pacing: Smooth and uplifting."
     ),
+    "calm_reassuring": (
+        "# AUDIO PROFILE: Calm Evening Companion (calm_reassuring)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Soft, reassuring, peaceful, and comforting.\n"
+        "Pacing: Gentle, unhurried evening cadence."
+    ),
+    "soothing": (
+        "# AUDIO PROFILE: Soothing Wind-Down Guide (soothing)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Tranquil, warm, serene, and deeply relaxing.\n"
+        "Pacing: Slow, smooth, and restful."
+    ),
+    "meditative": (
+        "# AUDIO PROFILE: Mindful Meditation Guide (meditative)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Centered, hushed, mindful, and peaceful.\n"
+        "Pacing: Very unhurried with spacious pauses."
+    ),
 }
+
+
+def register_personality_prompt(name: str, style_or_profile: str) -> None:
+    """Register or override a custom TTS personality director profile."""
+    clean_key = name.strip().lower().replace(" ", "_")
+    if not clean_key:
+        return
+    if "# AUDIO PROFILE:" in style_or_profile:
+        PERSONALITY_PROMPTS[clean_key] = style_or_profile.strip()
+    else:
+        PERSONALITY_PROMPTS[clean_key] = (
+            f"# AUDIO PROFILE: Custom Persona ({clean_key})\n"
+            "### DIRECTOR'S NOTES\n"
+            f"{style_or_profile.strip()}"
+        )
 
 
 def _build_gemini_tts_prompt(script: str, personality: str) -> str:
     """Build structured Gemini 2.5 TTS director prompt with transcript delimiter."""
-    profile = PERSONALITY_PROMPTS.get(
-        personality,
+    lookup_key = personality.strip().lower().replace(" ", "_")
+    profile = PERSONALITY_PROMPTS.get(personality) or PERSONALITY_PROMPTS.get(
+        lookup_key,
         (
             f"# AUDIO PROFILE: Narrator ({personality})\n"
             "### DIRECTOR'S NOTES\n"

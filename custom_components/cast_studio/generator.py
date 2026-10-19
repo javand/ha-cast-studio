@@ -10,7 +10,6 @@ and intermediate scratchpad lifecycle management in a finally block.
 from __future__ import annotations
 
 import contextlib
-import functools
 import inspect
 import json
 import wave
@@ -30,6 +29,7 @@ from .ffmpeg_runner import (
     build_slide_clip_command,
     write_concat_file,
 )
+from .helpers import async_run_in_executor
 from .slide_renderer import render_slide
 from .storage_manager import (
     cleanup_scratch_dir,
@@ -39,12 +39,12 @@ from .storage_manager import (
 from .tts_client import async_synthesize_speech
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from homeassistant.core import HomeAssistant
 
 DEFAULT_SLIDE_PAD_SECONDS = 0.5
 FINAL_SLIDE_PAD_SECONDS = 2.5
+
+_async_run_in_executor = async_run_in_executor
 
 
 class GeneratorError(Exception):
@@ -61,11 +61,11 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
     for key in ("entity_id", "entity_ids"):
         val = step.get(key)
         if isinstance(val, list):
-            raw_ids.extend(
-                [str(item).strip() for item in val if item and str(item).strip()]
-            )
+            for item in val:
+                if item and str(item).strip():
+                    raw_ids.extend(p.strip() for p in str(item).split(",") if p.strip())
         elif val and str(val).strip():
-            raw_ids.append(str(val).strip())
+            raw_ids.extend(p.strip() for p in str(val).split(",") if p.strip())
 
     seen: set[str] = set()
     eids: list[str] = []
@@ -74,6 +74,44 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
             seen.add(eid)
             eids.append(eid)
     return eids
+
+
+def _format_weather_service_response(
+    eid: str,
+    state_obj: Any,
+    forecasts: list[Any],
+) -> str:
+    """Format weather state and weather.get_forecasts response into context string."""
+    state_val = getattr(state_obj, "state", "unknown") if state_obj else "unknown"
+    attrs = (getattr(state_obj, "attributes", None) or {}) if state_obj else {}
+    temp = attrs.get("temperature")
+    unit = attrs.get("temperature_unit") or "°F"
+    line_parts = [f"Weather ({eid}): Condition: {state_val}"]
+    if temp is not None:
+        line_parts.append(f"Temperature: {temp}{unit}")
+    if (humidity := attrs.get("humidity")) is not None:
+        line_parts.append(f"Humidity: {humidity}%")
+
+    forecast_parts: list[str] = []
+    for idx, fc in enumerate(forecasts[:2]):
+        if not isinstance(fc, dict):
+            continue
+        day_label = "Today" if idx == 0 else "Tomorrow"
+        fc_bits: list[str] = []
+        if cond := fc.get("condition"):
+            fc_bits.append(f"Condition: {cond}")
+        if (hi := fc.get("temperature")) is not None:
+            fc_bits.append(f"High: {hi}{unit}")
+        if (lo := fc.get("templow")) is not None:
+            fc_bits.append(f"Low: {lo}{unit}")
+        if (precip := fc.get("precipitation_probability")) is not None:
+            fc_bits.append(f"Rain chance: {precip}%")
+        if fc_bits:
+            forecast_parts.append(f"{day_label} ({', '.join(fc_bits)})")
+
+    if forecast_parts:
+        line_parts.append(f"Forecast: {'; '.join(forecast_parts)}")
+    return ", ".join(line_parts)
 
 
 def _format_calendar_service_response(eid: str, events: list[Any]) -> str:
@@ -119,7 +157,125 @@ def _format_todo_service_response(eid: str, items: list[Any]) -> str:
     return f"To-do ({eid}): 0 tasks pending"
 
 
-def _extract_entity_context(  # noqa: PLR0912, PLR0915
+MIN_COMMUTE_ENTRIES_FOR_COMPARISON = 2
+
+
+def _format_commute_comparison(
+    commute_entries: list[tuple[str, float, str]],
+) -> str | None:
+    """Compare 2+ numeric commute sensors and state which option is faster."""
+    if len(commute_entries) < MIN_COMMUTE_ENTRIES_FOR_COMPARISON:
+        return None
+    sorted_entries = sorted(commute_entries, key=lambda item: item[1])
+    fastest_label, fastest_val, fastest_unit = sorted_entries[0]
+    second_label, second_val, second_unit = sorted_entries[1]
+    unit_str = f" {fastest_unit}" if fastest_unit else " min"
+    sec_unit_str = f" {second_unit}" if second_unit else " min"
+    delta = round(second_val - fastest_val, 1)
+    if delta <= 0:
+        return (
+            f"Commute Comparison: {fastest_label} and {second_label} "
+            f"have the same travel time ({fastest_val:g}{unit_str})."
+        )
+    return (
+        f"Commute Comparison: {fastest_label} ({fastest_val:g}{unit_str}) is "
+        f"{delta:g} minutes faster than {second_label} ({second_val:g}{sec_unit_str})."
+    )
+
+
+def _format_scripture_sensor(
+    hass: HomeAssistant,
+    eid: str,
+    attrs: dict[str, Any],
+) -> str:
+    """Format daily scripture sensor and optional companion commentary sensor."""
+    lower_attrs = {str(k).lower(): v for k, v in attrs.items()}
+    parts = [f"Daily Scripture ({eid}):"]
+    if ref := lower_attrs.get("scripture"):
+        parts.append(f"Citation: {ref}")
+    if txt := (lower_attrs.get("text") or lower_attrs.get("commentary")):
+        parts.append(f"Text: {txt}")
+    if lower_attrs.get("text") and lower_attrs.get("commentary"):
+        parts.append(f"Commentary: {lower_attrs['commentary']}")
+    elif not lower_attrs.get("commentary") and eid.endswith("_daily_text_today"):
+        comment_obj = hass.states.get(f"{eid}_comment")
+        comment_attrs = getattr(comment_obj, "attributes", None) or {}
+        comment_text = (
+            comment_attrs.get("text") if hasattr(comment_attrs, "get") else None
+        )
+        if comment_text and comment_text != lower_attrs.get("text"):
+            parts.append(f"Commentary: {comment_text}")
+    return "\n".join(parts)
+
+
+def _format_single_entity_state(  # noqa: PLR0912
+    hass: HomeAssistant,
+    eid: str,
+    state_obj: Any,
+    commute_candidates: list[tuple[str, float, str]],
+    *,
+    is_commute_step: bool = False,
+) -> str:
+    """Format a single Home Assistant entity state into a context line."""
+    state_val = getattr(state_obj, "state", "unknown")
+    attrs = getattr(state_obj, "attributes", {}) or {}
+    if not isinstance(attrs, dict):
+        attrs = {}
+
+    if eid.startswith("weather."):
+        temp = attrs.get("temperature")
+        unit = attrs.get("temperature_unit") or "°"
+        line_parts = [f"Weather ({eid}): Condition: {state_val}"]
+        if temp is not None:
+            line_parts.append(f"Temperature: {temp}{unit}")
+        if forecast := attrs.get("forecast"):
+            if isinstance(forecast, list):
+                line_parts.append(f"Forecast: {forecast[:3]}")
+            else:
+                line_parts.append(f"Forecast: {forecast}")
+        return ", ".join(line_parts)
+
+    if eid.startswith("calendar."):
+        summary = (
+            attrs.get("message") or attrs.get("summary") or attrs.get("description")
+        )
+        start_time = attrs.get("start_time")
+        if state_val == "off" and not summary:
+            return (
+                f"Calendar ({eid}): No scheduled meetings today. "
+                "The user's schedule is completely clear."
+            )
+        line_parts = [f"Calendar ({eid}): State: {state_val}"]
+        if summary:
+            line_parts.append(f"Summary: {summary}")
+        if start_time:
+            line_parts.append(f"Start: {start_time}")
+        return ", ".join(line_parts)
+
+    if eid.startswith("todo."):
+        return f"To-do ({eid}): {state_val} tasks pending"
+
+    if any(str(k).lower() in ("scripture", "text", "commentary") for k in attrs):
+        return _format_scripture_sensor(hass, eid, attrs)
+
+    unit = str(attrs.get("unit_of_measurement", "")).strip()
+    suffix = f" {unit}" if unit else ""
+    friendly = str(attrs.get("friendly_name", "")).strip()
+    base_line = f"Sensor ({eid}): {state_val}{suffix}".strip()
+    if friendly:
+        base_line = f"{base_line} ({friendly})"
+
+    lower_eid = eid.lower()
+    if is_commute_step or "commute" in lower_eid or "travel_time" in lower_eid:
+        with contextlib.suppress(ValueError, TypeError):
+            num_val = float(str(state_val).strip())
+            label = friendly or eid.removeprefix("sensor.").replace("_", " ").title()
+            commute_candidates.append((label, num_val, unit or "min"))
+
+    return base_line
+
+
+def _extract_entity_context(
     hass: HomeAssistant,
     step: dict[str, Any],
     service_overrides: dict[str, str] | None = None,
@@ -127,11 +283,12 @@ def _extract_entity_context(  # noqa: PLR0912, PLR0915
     """Extract live state context for configured entity IDs from Home Assistant."""
     eids = _get_step_entity_ids(step)
     entity_lines: list[str] = []
-    is_fun_fact = (
-        str(step.get("name", "")).lower() == "fun_fact"
-        or str(step.get("type", "")).lower() == "fun_fact"
-    )
+    step_name = str(step.get("name", "")).lower()
+    step_type = str(step.get("type", "")).lower()
+    is_fun_fact = step_name == "fun_fact" or step_type == "fun_fact"
+    is_commute = step_name == "commute" or step_type == "commute"
     has_states_getter = hasattr(hass, "states") and hasattr(hass.states, "get")
+    commute_candidates: list[tuple[str, float, str]] = []
 
     for eid in eids:
         if service_overrides and eid in service_overrides:
@@ -146,70 +303,21 @@ def _extract_entity_context(  # noqa: PLR0912, PLR0915
             continue
 
         state_val = getattr(state_obj, "state", "unknown")
-        attrs = getattr(state_obj, "attributes", {}) or {}
-
         if is_fun_fact and str(state_val).lower() in ("unknown", "unavailable", ""):
             continue
 
-        if eid.startswith("weather."):
-            temp = attrs.get("temperature")
-            unit = attrs.get("temperature_unit") or "°"
-            line_parts = [f"Weather ({eid}): Condition: {state_val}"]
-            if temp is not None:
-                line_parts.append(f"Temperature: {temp}{unit}")
-            if forecast := attrs.get("forecast"):
-                if isinstance(forecast, list):
-                    line_parts.append(f"Forecast: {forecast[:3]}")
-                else:
-                    line_parts.append(f"Forecast: {forecast}")
-            entity_lines.append(", ".join(line_parts))
-
-        elif eid.startswith("calendar."):
-            summary = (
-                attrs.get("message") or attrs.get("summary") or attrs.get("description")
+        entity_lines.append(
+            _format_single_entity_state(
+                hass,
+                eid,
+                state_obj,
+                commute_candidates,
+                is_commute_step=is_commute,
             )
-            start_time = attrs.get("start_time")
-            if state_val == "off" and not summary:
-                entity_lines.append(
-                    f"Calendar ({eid}): No scheduled meetings today. "
-                    "The user's schedule is completely clear."
-                )
-            else:
-                line_parts = [f"Calendar ({eid}): State: {state_val}"]
-                if summary:
-                    line_parts.append(f"Summary: {summary}")
-                if start_time:
-                    line_parts.append(f"Start: {start_time}")
-                entity_lines.append(", ".join(line_parts))
+        )
 
-        elif eid.startswith("todo."):
-            entity_lines.append(f"To-do ({eid}): {state_val} tasks pending")
-
-        elif any(k.lower() in ("scripture", "text", "commentary") for k in attrs):
-            lower_attrs = {str(k).lower(): v for k, v in attrs.items()}
-            parts = [f"Daily Scripture ({eid}):"]
-            if ref := lower_attrs.get("scripture"):
-                parts.append(f"Citation: {ref}")
-            if txt := (lower_attrs.get("text") or lower_attrs.get("commentary")):
-                parts.append(f"Text: {txt}")
-            if lower_attrs.get("text") and lower_attrs.get("commentary"):
-                parts.append(f"Commentary: {lower_attrs['commentary']}")
-            elif not lower_attrs.get("commentary") and eid.endswith(
-                "_daily_text_today"
-            ):
-                comment_obj = hass.states.get(f"{eid}_comment")
-                comment_attrs = getattr(comment_obj, "attributes", None) or {}
-                comment_text = (
-                    comment_attrs.get("text") if hasattr(comment_attrs, "get") else None
-                )
-                if comment_text and comment_text != lower_attrs.get("text"):
-                    parts.append(f"Commentary: {comment_text}")
-            entity_lines.append("\n".join(parts))
-
-        else:
-            unit = attrs.get("unit_of_measurement", "")
-            suffix = f" {unit}" if unit else ""
-            entity_lines.append(f"Sensor ({eid}): {state_val}{suffix}".strip())
+    if comparison_line := _format_commute_comparison(commute_candidates):
+        entity_lines.append(comparison_line)
 
     entity_context_str = "\n".join(entity_lines)
     existing_context = step.get("context")
@@ -228,16 +336,41 @@ def _extract_entity_context(  # noqa: PLR0912, PLR0915
     return ""
 
 
+async def _async_call_service_for_entity(
+    async_call: Any,
+    domain: str,
+    service: str,
+    data: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Invoke a Home Assistant service and validate dict response output."""
+    try:
+        res = async_call(
+            domain,
+            service,
+            data,
+            blocking=True,
+            return_response=True,
+        )
+        if inspect.isawaitable(res):
+            res = await res
+        if isinstance(res, dict):
+            return res
+    except Exception as err:  # noqa: BLE001
+        LOGGER.debug("Service %s.%s failed for %s: %s", domain, service, data, err)
+    return None
+
+
 async def async_extract_entity_context(
     hass: HomeAssistant,
     step: dict[str, Any],
 ) -> str:
-    """Asynchronously extract entity context, querying calendar and todo services."""
+    """Asynchronously extract entity context for weather, calendar, and tasks."""
     eids = _get_step_entity_ids(step)
     service_overrides: dict[str, str] = {}
 
     services = getattr(hass, "services", None)
     async_call = getattr(services, "async_call", None) if services else None
+    has_states_getter = hasattr(hass, "states") and hasattr(hass.states, "get")
 
     if callable(async_call):
         now = datetime.now().astimezone()
@@ -245,52 +378,52 @@ async def async_extract_entity_context(
         end_dt = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
 
         for eid in eids:
-            if eid.startswith("calendar."):
-                try:
-                    res = async_call(
-                        "calendar",
-                        "get_events",
-                        {
-                            "entity_id": eid,
-                            "start_date_time": start_dt,
-                            "end_date_time": end_dt,
-                        },
-                        blocking=True,
-                        return_response=True,
-                    )
-                    if inspect.isawaitable(res):
-                        res = await res
-                    if isinstance(res, dict) and isinstance(res.get(eid), dict):
-                        events = res[eid].get("events")
-                        if isinstance(events, list):
-                            service_overrides[eid] = _format_calendar_service_response(
-                                eid, events
-                            )
-                except Exception as err:  # noqa: BLE001
-                    LOGGER.debug("Failed to fetch calendar events for %s: %s", eid, err)
+            if eid.startswith("weather."):
+                res = await _async_call_service_for_entity(
+                    async_call,
+                    "weather",
+                    "get_forecasts",
+                    {"entity_id": eid, "type": "daily"},
+                )
+                if res and isinstance(res.get(eid), dict):
+                    forecasts = res[eid].get("forecast")
+                    if isinstance(forecasts, list) and forecasts:
+                        state_obj = hass.states.get(eid) if has_states_getter else None
+                        service_overrides[eid] = _format_weather_service_response(
+                            eid, state_obj, forecasts
+                        )
+
+            elif eid.startswith("calendar."):
+                res = await _async_call_service_for_entity(
+                    async_call,
+                    "calendar",
+                    "get_events",
+                    {
+                        "entity_id": eid,
+                        "start_date_time": start_dt,
+                        "end_date_time": end_dt,
+                    },
+                )
+                if res and isinstance(res.get(eid), dict):
+                    events = res[eid].get("events")
+                    if isinstance(events, list):
+                        service_overrides[eid] = _format_calendar_service_response(
+                            eid, events
+                        )
 
             elif eid.startswith("todo."):
-                try:
-                    res = async_call(
-                        "todo",
-                        "get_items",
-                        {
-                            "entity_id": eid,
-                            "status": ["needs_action"],
-                        },
-                        blocking=True,
-                        return_response=True,
-                    )
-                    if inspect.isawaitable(res):
-                        res = await res
-                    if isinstance(res, dict) and isinstance(res.get(eid), dict):
-                        items = res[eid].get("items")
-                        if isinstance(items, list):
-                            service_overrides[eid] = _format_todo_service_response(
-                                eid, items
-                            )
-                except Exception as err:  # noqa: BLE001
-                    LOGGER.debug("Failed to fetch todo items for %s: %s", eid, err)
+                res = await _async_call_service_for_entity(
+                    async_call,
+                    "todo",
+                    "get_items",
+                    {"entity_id": eid, "status": ["needs_action"]},
+                )
+                if res and isinstance(res.get(eid), dict):
+                    items = res[eid].get("items")
+                    if isinstance(items, list):
+                        service_overrides[eid] = _format_todo_service_response(
+                            eid, items
+                        )
 
     return _extract_entity_context(hass, step, service_overrides=service_overrides)
 
@@ -319,6 +452,36 @@ def _is_unconfigured_optional_step(hass: HomeAssistant, step: dict[str, Any]) ->
             return True
 
     return False
+
+
+def get_executable_steps(
+    hass: HomeAssistant,
+    routine_config: dict[str, Any],
+    *,
+    log_skipped: bool = False,
+) -> list[dict[str, Any]]:
+    """Filter routine steps and skip unconfigured optional steps."""
+    all_steps = routine_config.get("steps")
+    if not all_steps or not isinstance(all_steps, list):
+        return []
+
+    is_visual = routine_config.get("visuals", True)
+    if is_visual:
+        candidates = [s for s in all_steps if s.get("visual", False) is True]
+    else:
+        candidates = [s for s in all_steps if not s.get("background_only", False)]
+
+    executable: list[dict[str, Any]] = []
+    for raw_idx, step in enumerate(candidates):
+        if _is_unconfigured_optional_step(hass, step):
+            if log_skipped:
+                LOGGER.info(
+                    "Skipping unconfigured optional step '%s'",
+                    step.get("name", f"step_{raw_idx:02d}"),
+                )
+            continue
+        executable.append(step)
+    return executable
 
 
 def get_audio_duration(
@@ -359,18 +522,7 @@ def build_audio_concat_command(
     output_audio_path: str,
     ffmpeg_bin: str = "ffmpeg",
 ) -> list[str]:
-    """
-    Build FFmpeg command to concatenate audio clips into output file.
-
-    Args:
-        concat_list_file: Manifest path listing audio files.
-        output_audio_path: Output audio file path (.mp3 or .wav).
-        ffmpeg_bin: Path or name of FFmpeg binary.
-
-    Returns:
-        List of command-line arguments.
-
-    """
+    """Build FFmpeg command to concatenate audio clips into output file."""
     if output_audio_path.endswith(".mp3"):
         return [
             ffmpeg_bin,
@@ -402,25 +554,6 @@ def build_audio_concat_command(
     ]
 
 
-async def _async_run_in_executor(
-    hass: HomeAssistant | None,
-    func: Callable[..., Any],
-    *args: Any,
-    **kwargs: Any,
-) -> Any:
-    """Execute synchronous blocking function in Home Assistant executor if available."""
-    if hass is not None:
-        executor_func = getattr(hass, "async_add_executor_job", None)
-        if callable(executor_func):
-            target: Callable[..., Any] = (
-                functools.partial(func, **kwargs) if kwargs else func
-            )
-            res = executor_func(target, *args)
-            if inspect.isawaitable(res):
-                return await res
-    return func(*args, **kwargs)
-
-
 def _ensure_directory(directory: Path) -> None:
     """Ensure directory and parents exist synchronously."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -437,7 +570,224 @@ def _unlink_file_if_exists(file_path: str) -> None:
         Path(file_path).unlink(missing_ok=True)
 
 
-async def async_compile_routine_media(  # noqa: C901, PLR0912, PLR0915
+def _detect_step_weather_condition(
+    hass: HomeAssistant,
+    step: dict[str, Any],
+) -> str | None:
+    """Return weather state condition if step references a weather entity."""
+    if not (hasattr(hass, "states") and hasattr(hass.states, "get")):
+        return None
+    for eid in _get_step_entity_ids(step):
+        if eid.startswith("weather."):
+            state_obj = hass.states.get(eid)
+            state_val = getattr(state_obj, "state", None)
+            if isinstance(state_val, str) and state_val not in (
+                "unknown",
+                "unavailable",
+                "",
+            ):
+                return state_val
+    return None
+
+
+async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
+    hass: HomeAssistant,
+    step_to_process: dict[str, Any],
+    step_name: str,
+    recipient: dict[str, Any],
+    ai_creds: dict[str, Any],
+    *,
+    is_visual: bool,
+    default_pad_seconds: float,
+    audio_target_path: str,
+    slide_target_path: str | None = None,
+    clip_target_path: str | None = None,
+) -> tuple[str, float, float]:
+    """Compile a single routine or static step into audio and (if visual) MP4 clip."""
+    explicit_narration = (
+        step_to_process.get("narration")
+        or step_to_process.get("message")
+        or step_to_process.get("text")
+        or step_to_process.get("alert_message")
+    )
+    if explicit_narration and str(explicit_narration).strip():
+        raw_content = {
+            "visual_card": {
+                "title": step_to_process.get(
+                    "title",
+                    step_to_process.get(
+                        "alert_title", step_name.replace("_", " ").title()
+                    ),
+                ),
+                "subtitle": step_to_process.get("subtitle", ""),
+                "bullet_points": step_to_process.get("bullet_points", []),
+            },
+            "narration_script": str(explicit_narration).strip(),
+        }
+        content = _enforce_recipient_separation(raw_content, recipient)
+    else:
+        content = await async_generate_step_content(
+            hass, step_to_process, recipient, ai_creds
+        )
+
+    card_data = dict(content.get("visual_card", {}))
+    for key in (
+        "image_path",
+        "icon_path",
+        "icon",
+        "layout",
+        "avatar_fallback",
+        "theme",
+        "badge",
+    ):
+        if key in step_to_process:
+            card_data[key] = step_to_process[key]
+    if "image_path" not in card_data and "image_asset" in step_to_process:
+        card_data["image_path"] = step_to_process["image_asset"]
+    if not card_data.get("title"):
+        if step_to_process.get("title"):
+            card_data["title"] = step_to_process["title"]
+        elif step_to_process.get("alert_title"):
+            card_data["title"] = step_to_process["alert_title"]
+        else:
+            card_data.setdefault("title", step_name.replace("_", " ").title())
+    if not card_data.get("subtitle") and step_to_process.get("subtitle"):
+        card_data["subtitle"] = step_to_process["subtitle"]
+
+    card_data.setdefault("step_name", step_name)
+    if weather_cond := _detect_step_weather_condition(hass, step_to_process):
+        card_data.setdefault("weather_condition", weather_cond)
+
+    narration_script = content.get("narration_script", "")
+    if not narration_script:
+        fallback_msg = (
+            step_to_process.get("context")
+            or card_data.get("title")
+            or step_name.replace("_", " ")
+        )
+        narration_script = str(fallback_msg)
+
+    voice = step_to_process.get("voice", DEFAULT_HOST_VOICE)
+    personality = (
+        step_to_process.get("voice_personality")
+        or step_to_process.get("personality")
+        or "news_anchor"
+    )
+
+    synth_audio_path = await async_synthesize_speech(
+        hass,
+        narration_script,
+        voice,
+        personality,
+        audio_target_path,
+        creds=ai_creds,
+    )
+    effective_audio_path = synth_audio_path or audio_target_path
+
+    step_duration_override = step_to_process.get("duration")
+    pad_seconds = 0.0
+    if step_duration_override is not None:
+        if is_visual:
+            pad_seconds = float(step_to_process.get("pad_seconds", 0.0))
+        duration = float(step_duration_override)
+    else:
+        raw_duration = await _async_run_in_executor(
+            hass,
+            get_audio_duration,
+            effective_audio_path,
+            fallback_text=narration_script,
+        )
+        if is_visual:
+            pad_seconds = float(step_to_process.get("pad_seconds", default_pad_seconds))
+            duration = round(raw_duration + pad_seconds, 2)
+        else:
+            duration = raw_duration
+
+    if is_visual and slide_target_path and clip_target_path:
+        phonetic = step_to_process.get("phonetic_name") or recipient.get(
+            "phonetic_name"
+        )
+        slide_img_path = await _async_run_in_executor(
+            hass,
+            render_slide,
+            card_data,
+            slide_target_path,
+            phonetic,
+        )
+        clip_cmd = build_slide_clip_command(
+            slide_img_path or slide_target_path,
+            effective_audio_path,
+            clip_target_path,
+            duration=duration,
+            pad_seconds=pad_seconds,
+        )
+        clip_ok = await async_run_ffmpeg(hass, clip_cmd)
+        if not clip_ok:
+            msg = f"FFmpeg clip compilation failed for step '{step_name}'"
+            raise GeneratorError(msg)
+
+    return effective_audio_path, duration, pad_seconds
+
+
+async def _async_finalize_routine_media(  # noqa: PLR0913
+    hass: HomeAssistant,
+    routine_name: str,
+    routine_config: dict[str, Any],
+    scratch_dir: str,
+    output_dir: str,
+    *,
+    is_visual: bool,
+    clip_paths: list[str],
+    audio_paths: list[str],
+    slide_timestamps: list[dict[str, Any]],
+    total_duration: float,
+) -> dict[str, Any]:
+    """Concatenate compiled clips or audio files and write companion metadata JSON."""
+    out_path = Path(output_dir)
+    await _async_run_in_executor(hass, _ensure_directory, out_path)
+
+    if is_visual:
+        final_video_path = str(out_path / f"{routine_name}.mp4")
+        concat_manifest = str(Path(scratch_dir) / "concat_list.txt")
+        await _async_run_in_executor(
+            hass, write_concat_file, clip_paths, concat_manifest
+        )
+        concat_cmd = build_concat_command(concat_manifest, final_video_path)
+        if not await async_run_ffmpeg(hass, concat_cmd):
+            msg = f"FFmpeg concatenation failed for routine '{routine_name}'"
+            raise GeneratorError(msg)
+
+        metadata: dict[str, Any] = {
+            "video_path": final_video_path,
+            "audio_path": None,
+            "duration": total_duration,
+            "slide_timestamps": slide_timestamps,
+        }
+    else:
+        audio_format = routine_config.get("audio_format", "mp3")
+        final_audio_path = str(out_path / f"{routine_name}.{audio_format}")
+        concat_manifest = str(Path(scratch_dir) / "concat_audio.txt")
+        await _async_run_in_executor(
+            hass, write_concat_file, audio_paths, concat_manifest
+        )
+        concat_cmd = build_audio_concat_command(concat_manifest, final_audio_path)
+        if not await async_run_ffmpeg(hass, concat_cmd):
+            msg = f"FFmpeg audio concatenation failed for routine '{routine_name}'"
+            raise GeneratorError(msg)
+
+        metadata = {
+            "video_path": None,
+            "audio_path": final_audio_path,
+            "duration": total_duration,
+            "slide_timestamps": slide_timestamps,
+        }
+
+    metadata_file = out_path / f"{routine_name}.metadata.json"
+    await _async_run_in_executor(hass, _write_json_file, metadata_file, metadata)
+    return metadata
+
+
+async def async_compile_routine_media(
     hass: HomeAssistant,
     routine_name: str,
     routine_config: dict[str, Any],
@@ -469,247 +819,99 @@ async def async_compile_routine_media(  # noqa: C901, PLR0912, PLR0915
 
     is_visual = routine_config.get("visuals", True)
     if is_visual:
-        steps_to_process = [s for s in all_steps if s.get("visual", False) is True]
-        if not steps_to_process:
+        if not [s for s in all_steps if s.get("visual", False) is True]:
             msg = f"No visual steps found in routine '{routine_name}' configuration"
             raise RoutineConfigError(msg)
-    else:
-        steps_to_process = [s for s in all_steps if not s.get("background_only", False)]
-        if not steps_to_process:
-            msg = f"No audio steps found in routine '{routine_name}' configuration"
-            raise RoutineConfigError(msg)
+    elif not [s for s in all_steps if not s.get("background_only", False)]:
+        msg = f"No audio steps found in routine '{routine_name}' configuration"
+        raise RoutineConfigError(msg)
 
-    # 1. Prune stale output files older than 24 hours
     try:
         await _async_run_in_executor(hass, prune_stale_files, output_dir)
     except Exception as err:  # noqa: BLE001
         LOGGER.warning("Stale file pruning failed in %s: %s", output_dir, err)
 
-    # 2. Allocate scratchpad directory
     scratch_base = routine_config.get("scratch_base")
     scratch_dir = await _async_run_in_executor(
         hass, get_routine_scratch_dir, routine_name, base_tmp=scratch_base
     )
 
     try:
-        # 3. Discover AI credentials
         ai_creds = await async_discover_ai_credentials(hass)
         if routine_config.get("conversation_agent"):
             ai_creds["agent_id"] = routine_config["conversation_agent"]
+
+        executable_steps = get_executable_steps(hass, routine_config, log_skipped=True)
+        if not executable_steps:
+            msg = f"No executable steps remained for routine '{routine_name}'"
+            raise RoutineConfigError(msg)
 
         slide_timestamps: list[dict[str, Any]] = []
         clip_paths: list[str] = []
         audio_paths: list[str] = []
         current_offset = 0.0
 
-        executable_steps: list[dict[str, Any]] = []
-        for raw_idx, step in enumerate(steps_to_process):
-            # Check for unconfigured optional entity steps
-            if _is_unconfigured_optional_step(hass, step):
-                LOGGER.info(
-                    "Skipping unconfigured optional step '%s'",
-                    step.get("name", f"step_{raw_idx:02d}"),
-                )
-                continue
-            executable_steps.append(step)
-
         for idx, step in enumerate(executable_steps):
             is_last_step = idx == len(executable_steps) - 1
             step_to_process = dict(step)
-            extracted_context = await async_extract_entity_context(
+            if extracted_context := await async_extract_entity_context(
                 hass, step_to_process
-            )
-            if extracted_context:
+            ):
                 step_to_process["context"] = extracted_context
 
             step_name = step_to_process.get("name", f"step_{idx:02d}")
-
-            # 4. Generate structured step content (or use explicit narration)
-            explicit_narration = (
-                step_to_process.get("narration")
-                or step_to_process.get("message")
-                or step_to_process.get("text")
+            default_pad = (
+                FINAL_SLIDE_PAD_SECONDS if is_last_step else DEFAULT_SLIDE_PAD_SECONDS
             )
-            if explicit_narration and str(explicit_narration).strip():
-                raw_content = {
-                    "visual_card": {
-                        "title": step_to_process.get(
-                            "title", step_name.replace("_", " ").title()
-                        ),
-                        "subtitle": step_to_process.get("subtitle", ""),
-                        "bullet_points": step_to_process.get("bullet_points", []),
-                    },
-                    "narration_script": str(explicit_narration).strip(),
-                }
-                content = _enforce_recipient_separation(raw_content, recipient)
-            else:
-                content = await async_generate_step_content(
-                    hass, step_to_process, recipient, ai_creds
-                )
+            step_clip_target = str(Path(scratch_dir) / f"clip_{idx:02d}.mp4")
 
-            card_data = dict(content.get("visual_card", {}))
-            for key in ("image_path", "icon_path", "icon", "layout", "avatar_fallback"):
-                if key in step_to_process:
-                    card_data[key] = step_to_process[key]
-            if not card_data.get("title") and step_to_process.get("title"):
-                card_data["title"] = step_to_process["title"]
-            if not card_data.get("subtitle") and step_to_process.get("subtitle"):
-                card_data["subtitle"] = step_to_process["subtitle"]
-
-            narration_script = content.get("narration_script", "")
-            if not narration_script:
-                fallback_msg = (
-                    step_to_process.get("context")
-                    or card_data.get("title")
-                    or step_name.replace("_", " ")
-                )
-                narration_script = str(fallback_msg)
-
-            # 5. Determine voice and personality conditioning
-            voice = step_to_process.get("voice", DEFAULT_HOST_VOICE)
-            personality = (
-                step_to_process.get("voice_personality")
-                or step_to_process.get("personality")
-                or "news_anchor"
-            )
-
-            # 6. Synthesize TTS speech
-            step_wav_path = str(Path(scratch_dir) / f"audio_{idx:02d}.wav")
-            synth_audio_path = await async_synthesize_speech(
+            effective_audio_path, duration, _ = await _async_compile_single_step(
                 hass,
-                narration_script,
-                voice,
-                personality,
-                step_wav_path,
-                creds=ai_creds,
+                step_to_process,
+                step_name,
+                recipient,
+                ai_creds,
+                is_visual=is_visual,
+                default_pad_seconds=default_pad,
+                audio_target_path=str(Path(scratch_dir) / f"audio_{idx:02d}.wav"),
+                slide_target_path=str(Path(scratch_dir) / f"slide_{idx:02d}.jpg"),
+                clip_target_path=step_clip_target,
             )
-            effective_audio_path = synth_audio_path or step_wav_path
 
-            # 7. Calculate step duration
-            step_duration_override = step_to_process.get("duration")
-            pad_seconds = 0.0
-            if step_duration_override is not None:
-                if is_visual:
-                    pad_seconds = float(step_to_process.get("pad_seconds", 0.0))
-                duration = float(step_duration_override)
-            else:
-                raw_duration = await _async_run_in_executor(
-                    hass,
-                    get_audio_duration,
-                    effective_audio_path,
-                    fallback_text=narration_script,
-                )
-                if is_visual:
-                    default_pad = (
-                        FINAL_SLIDE_PAD_SECONDS
-                        if is_last_step
-                        else DEFAULT_SLIDE_PAD_SECONDS
-                    )
-                    pad_seconds = float(step_to_process.get("pad_seconds", default_pad))
-                    duration = round(raw_duration + pad_seconds, 2)
-                else:
-                    duration = raw_duration
-
-            # 8. Record slide timestamp & display action binding
-            slide_info: dict[str, Any] = {
-                "name": step_name,
-                "step_name": step_name,
-                "timestamp": round(current_offset, 2),
-                "start_time": round(current_offset, 2),
-                "duration": round(duration, 2),
-                "end_time": round(current_offset + duration, 2),
-                "actions_on_display": step_to_process.get(
-                    "actions_on_display", step_to_process.get("actions", [])
-                ),
-            }
-            slide_timestamps.append(slide_info)
+            slide_timestamps.append(
+                {
+                    "name": step_name,
+                    "step_name": step_name,
+                    "timestamp": round(current_offset, 2),
+                    "start_time": round(current_offset, 2),
+                    "duration": round(duration, 2),
+                    "end_time": round(current_offset + duration, 2),
+                    "actions_on_display": step_to_process.get(
+                        "actions_on_display", step_to_process.get("actions", [])
+                    ),
+                }
+            )
             current_offset += duration
 
             if is_visual:
-                # 9a. Render visual slide via executor
-                slide_img_target = str(Path(scratch_dir) / f"slide_{idx:02d}.jpg")
-                slide_img_path = await _async_run_in_executor(
-                    hass,
-                    render_slide,
-                    card_data,
-                    slide_img_target,
-                    recipient.get("phonetic_name"),
-                )
-
-                # 9b. Compile slide clip MP4 with FFmpeg
-                step_clip_target = str(Path(scratch_dir) / f"clip_{idx:02d}.mp4")
-                clip_cmd = build_slide_clip_command(
-                    slide_img_path or slide_img_target,
-                    effective_audio_path,
-                    step_clip_target,
-                    duration=duration,
-                    pad_seconds=pad_seconds,
-                )
-                clip_ok = await async_run_ffmpeg(hass, clip_cmd)
-                if not clip_ok:
-                    msg = f"FFmpeg clip compilation failed for step '{step_name}'"
-                    raise GeneratorError(msg)
-
                 clip_paths.append(step_clip_target)
             else:
                 audio_paths.append(effective_audio_path)
 
-        if not slide_timestamps:
-            msg = f"No executable steps remained for routine '{routine_name}'"
-            raise RoutineConfigError(msg)
-
-        total_duration = round(current_offset, 2)
-        out_path = Path(output_dir)
-        await _async_run_in_executor(hass, _ensure_directory, out_path)
-
-        if is_visual:
-            # 10a. Concatenate clips into final MP4
-            final_video_path = str(out_path / f"{routine_name}.mp4")
-            concat_manifest = str(Path(scratch_dir) / "concat_list.txt")
-            await _async_run_in_executor(
-                hass, write_concat_file, clip_paths, concat_manifest
-            )
-            concat_cmd = build_concat_command(concat_manifest, final_video_path)
-            concat_ok = await async_run_ffmpeg(hass, concat_cmd)
-            if not concat_ok:
-                msg = f"FFmpeg concatenation failed for routine '{routine_name}'"
-                raise GeneratorError(msg)
-
-            metadata: dict[str, Any] = {
-                "video_path": final_video_path,
-                "audio_path": None,
-                "duration": total_duration,
-                "slide_timestamps": slide_timestamps,
-            }
-        else:
-            # 10b. Concatenate audio files into final audio
-            audio_format = routine_config.get("audio_format", "mp3")
-            final_audio_path = str(out_path / f"{routine_name}.{audio_format}")
-            concat_manifest = str(Path(scratch_dir) / "concat_audio.txt")
-            await _async_run_in_executor(
-                hass, write_concat_file, audio_paths, concat_manifest
-            )
-            concat_cmd = build_audio_concat_command(concat_manifest, final_audio_path)
-            concat_ok = await async_run_ffmpeg(hass, concat_cmd)
-            if not concat_ok:
-                msg = f"FFmpeg audio concatenation failed for routine '{routine_name}'"
-                raise GeneratorError(msg)
-
-            metadata = {
-                "video_path": None,
-                "audio_path": final_audio_path,
-                "duration": total_duration,
-                "slide_timestamps": slide_timestamps,
-            }
-
-        # 11. Write companion metadata JSON file
-        metadata_file = out_path / f"{routine_name}.metadata.json"
-        await _async_run_in_executor(hass, _write_json_file, metadata_file, metadata)
-
-        return metadata
+        return await _async_finalize_routine_media(
+            hass,
+            routine_name,
+            routine_config,
+            scratch_dir,
+            output_dir,
+            is_visual=is_visual,
+            clip_paths=clip_paths,
+            audio_paths=audio_paths,
+            slide_timestamps=slide_timestamps,
+            total_duration=round(current_offset, 2),
+        )
 
     finally:
-        # 12. Purge intermediate scratchpad files in finally block via executor
         await _async_run_in_executor(
             hass, cleanup_scratch_dir, routine_name, base_tmp=scratch_base
         )
@@ -749,6 +951,8 @@ def _prepare_static_card_data(
         "icon_path",
         "icon",
         "layout",
+        "theme",
+        "badge",
     )
     for key in card_keys:
         if key in step_config:
@@ -772,25 +976,7 @@ async def async_compile_static_clip(
     output_dir: str = DEFAULT_OUTPUT_DIR,
     scratch_base: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Compile a standalone, reusable static visual alert clip with companion metadata.
-
-    Args:
-        hass: HomeAssistant instance.
-        clip_name: Identifier for the static clip (e.g. 'freezer_door').
-        step_config: Step configuration with title, narration/message, voice, actions.
-        output_dir: Root output directory (clips stored under output_dir/static/).
-        scratch_base: Optional base path for scratch directory.
-
-    Returns:
-        Metadata dictionary for the compiled static clip.
-
-    Raises:
-        RoutineConfigError: If clip_name is empty, whitespace,
-            or invalid path traversal.
-        GeneratorError: If media generation or FFmpeg compilation fails.
-
-    """
+    """Compile a reusable static visual alert clip with companion metadata."""
     clean_clip_name = _validate_clip_name(clip_name)
 
     out_path = Path(output_dir)
@@ -809,79 +995,23 @@ async def async_compile_static_clip(
 
     try:
         ai_creds = await async_discover_ai_credentials(hass)
-
-        narration_script = (
-            step_config.get("narration")
-            or step_config.get("message")
-            or step_config.get("text")
-            or step_config.get("alert_message")
-        )
-
-        ai_card: dict[str, Any] = {}
-        if narration_script:
-            narration_script = str(narration_script).strip()
-        else:
-            ai_content = await async_generate_step_content(
-                hass, step_config, creds=ai_creds
-            )
-            narration_script = ai_content.get("narration_script", "")
-            ai_card = dict(ai_content.get("visual_card", {}))
-
-        card_data = _prepare_static_card_data(
-            clean_clip_name, step_config, ai_card_data=ai_card
-        )
-
-        if not narration_script:
-            narration_script = card_data.get("title", clean_clip_name)
-
-        voice = step_config.get("voice", DEFAULT_HOST_VOICE)
-        personality = (
-            step_config.get("voice_personality")
-            or step_config.get("personality")
-            or "news_anchor"
-        )
-
-        step_wav_path = str(Path(scratch_dir) / "audio.wav")
-        synth_audio = await async_synthesize_speech(
-            hass, narration_script, voice, personality, step_wav_path, creds=ai_creds
-        )
-        effective_audio_path = synth_audio or step_wav_path
-
-        step_duration_override = step_config.get("duration")
-        pad_seconds = float(step_config.get("pad_seconds", 0.0))
-        if step_duration_override is not None:
-            duration = float(step_duration_override)
-        else:
-            raw_duration = await _async_run_in_executor(
+        try:
+            _, duration, _ = await _async_compile_single_step(
                 hass,
-                get_audio_duration,
-                effective_audio_path,
-                fallback_text=narration_script,
+                step_config,
+                clean_clip_name,
+                {},
+                ai_creds,
+                is_visual=True,
+                default_pad_seconds=0.0,
+                audio_target_path=str(Path(scratch_dir) / "audio.wav"),
+                slide_target_path=str(Path(scratch_dir) / "slide.jpg"),
+                clip_target_path=final_video_path,
             )
-            duration = round(raw_duration + pad_seconds, 2)
-
-        slide_img_target = str(Path(scratch_dir) / "slide.jpg")
-        slide_img_path = await _async_run_in_executor(
-            hass,
-            render_slide,
-            card_data,
-            slide_img_target,
-            step_config.get("phonetic_name"),
-        )
-        effective_slide_path = slide_img_path or slide_img_target
-
-        clip_cmd = build_slide_clip_command(
-            effective_slide_path,
-            effective_audio_path,
-            final_video_path,
-            duration=duration,
-            pad_seconds=pad_seconds,
-        )
-        clip_ok = await async_run_ffmpeg(hass, clip_cmd)
-        if not clip_ok:
+        except GeneratorError as err:
             await _async_run_in_executor(hass, _unlink_file_if_exists, final_video_path)
             msg = f"FFmpeg clip compilation failed for static clip '{clean_clip_name}'"
-            raise GeneratorError(msg)
+            raise GeneratorError(msg) from err
 
         metadata: dict[str, Any] = {
             "clip_name": clean_clip_name,

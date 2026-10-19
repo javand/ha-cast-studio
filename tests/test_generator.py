@@ -1033,3 +1033,98 @@ def test_fun_fact_unavailable_entity_with_attributes_falls_back_to_default_promp
         context
         == "Share today's National Day holiday and an engaging, surprising morning fun fact."
     )
+
+
+@pytest.mark.asyncio
+async def test_async_extract_entity_context_weather_get_forecasts() -> None:
+    """Test async_extract_entity_context queries weather.get_forecasts (HA 2024.6+) for daily high/low."""
+    hass = MagicMock()
+    weather_state = MagicMock(
+        state="sunny",
+        attributes={"temperature": 68, "temperature_unit": "°F", "humidity": 45},
+    )
+    hass.states.get = MagicMock(return_value=weather_state)
+    hass.services.async_call = AsyncMock(
+        return_value={
+            "weather.home": {
+                "forecast": [
+                    {
+                        "condition": "sunny",
+                        "temperature": 80,
+                        "templow": 58,
+                        "precipitation_probability": 10,
+                    },
+                    {
+                        "condition": "partlycloudy",
+                        "temperature": 76,
+                        "templow": 55,
+                    },
+                ]
+            }
+        }
+    )
+
+    step = {"name": "weather", "entity_id": "weather.home"}
+    context = await async_extract_entity_context(hass, step)
+    assert "Weather (weather.home): Condition: sunny" in context
+    assert "Temperature: 68°F" in context
+    assert "High: 80°F" in context
+    assert "Low: 58°F" in context
+
+
+def test_extract_entity_context_multi_sensor_commute_comparison() -> None:
+    """Test _extract_entity_context compares multiple commute sensors and states which is faster."""
+    hass = MagicMock()
+    drive_state = MagicMock(
+        state="31",
+        attributes={
+            "unit_of_measurement": "min",
+            "friendly_name": "Drive to Work",
+        },
+    )
+    metro_state = MagicMock(
+        state="44",
+        attributes={
+            "unit_of_measurement": "min",
+            "friendly_name": "Metro",
+        },
+    )
+    state_map = {
+        "sensor.javan_commute_drive_to_work": drive_state,
+        "sensor.javan_commute_metro": metro_state,
+    }
+    hass.states.get = MagicMock(side_effect=state_map.get)
+
+    step = {
+        "name": "commute",
+        "entity_ids": [
+            "sensor.javan_commute_drive_to_work",
+            "sensor.javan_commute_metro",
+        ],
+    }
+    context = _extract_entity_context(hass, step)
+    assert "Drive to Work" in context
+    assert "Metro" in context
+    assert (
+        "Commute Comparison: Drive to Work (31 min) is 13 minutes faster than Metro (44 min)."
+        in context
+    )
+
+
+def test_get_executable_steps_public_helper() -> None:
+    """Test get_executable_steps filters non-visual and unconfigured optional steps."""
+    from custom_components.cast_studio.generator import get_executable_steps
+
+    hass = MagicMock()
+    hass.states.get = MagicMock(return_value=None)
+    cfg = {
+        "visuals": True,
+        "steps": [
+            {"name": "greeting", "visual": True},
+            {"name": "lights", "visual": False},
+            {"name": "fun_fact", "visual": True, "entity_id": ""},
+            {"name": "todo", "visual": True, "entity_id": ""},
+        ],
+    }
+    steps = get_executable_steps(hass, cfg)
+    assert [s["name"] for s in steps] == ["greeting", "fun_fact"]
