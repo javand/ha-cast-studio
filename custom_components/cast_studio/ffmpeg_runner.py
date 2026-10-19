@@ -79,6 +79,8 @@ def build_slide_clip_command(
         "-ar",
         "44100",
         "-shortest",
+        "-movflags",
+        "+faststart",
         str(output_clip_path),
     ]
 
@@ -121,6 +123,8 @@ def build_concat_command(
         str(concat_list_file),
         "-c",
         "copy",
+        "-movflags",
+        "+faststart",
         str(output_mp4_path),
     ]
 

@@ -31,6 +31,8 @@ def test_build_slide_clip_command():
     assert "libx264" in cmd
     assert "-pix_fmt" in cmd
     assert "yuv420p" in cmd
+    assert "-movflags" in cmd
+    assert "+faststart" in cmd
     assert cmd[-1] == "clip.mp4"
 
 
@@ -41,6 +43,8 @@ def test_build_concat_command():
     assert "concat" in cmd
     assert "-c" in cmd
     assert "copy" in cmd
+    assert "-movflags" in cmd
+    assert "+faststart" in cmd
     assert cmd[-1] == "final.mp4"
 
 

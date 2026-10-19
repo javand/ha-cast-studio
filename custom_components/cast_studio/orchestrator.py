@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 _ACTIVE_SYNC_TASKS: set[asyncio.Task[Any]] = set()
 _ROUTINE_SYNC_TASKS: dict[str, asyncio.Task[Any]] = {}
 
-DEFAULT_PLAYING_TIMEOUT = 15.0
+DEFAULT_PLAYING_TIMEOUT = 25.0
 
 
 class OrchestratorError(Exception):
@@ -349,7 +349,7 @@ def _create_task(
     return asyncio.create_task(coro, name=name)
 
 
-def _is_routine_media_playing(
+def _is_routine_media_playing(  # noqa: PLR0911
     state_obj: Any,
     expected_media_url: str | None = None,
     media_path: str | None = None,
@@ -357,15 +357,17 @@ def _is_routine_media_playing(
     """
     Check if the given state represents our routine media playing.
 
-    Returns False if the player is in any state other than 'playing', or if it is
-    displaying Lovelace Cast dashboard, or if it is actively playing unrelated media.
+    Returns False if the player is displaying Lovelace Cast dashboard, or playing
+    unrelated media. Accepts playing/buffering or receiver loading when media_content_id
+    matches our routine.
     """
-    if state_obj is None or getattr(state_obj, "state", None) != "playing":
+    if state_obj is None:
         return False
 
+    state_val = getattr(state_obj, "state", None)
     attrs = getattr(state_obj, "attributes", None)
     if not isinstance(attrs, dict):
-        return True
+        return state_val == "playing"
 
     # 1. Cast Lovelace receiver is NEVER routine media playback
     app_name = (attrs.get("app_name") or "").lower()
@@ -377,26 +379,36 @@ def _is_routine_media_playing(
     ):
         return False
 
-    # 2. If entity exposes media_content_id and we know our media target,
-    # verify it is not playing a different media stream (e.g. Spotify, radio)
+    # 2. Extract expected filename for comparison
+    expected_candidates: list[str] = []
+    if expected_media_url:
+        expected_candidates.append(
+            Path(expected_media_url.split("?")[0].rstrip("/")).name
+        )
+    if media_path:
+        expected_candidates.append(Path(media_path.replace("\\", "/").rstrip("/")).name)
+    valid_candidates = [c for c in expected_candidates if c]
+
+    # 3. Check media_content_id if available
     current_media_id = attrs.get("media_content_id")
-    if current_media_id and (expected_media_url or media_path):
+    if current_media_id and valid_candidates:
         current_clean = str(current_media_id).split("?")[0].rstrip("/")
-        expected_candidates: list[str] = []
-        if expected_media_url:
-            expected_clean = expected_media_url.split("?")[0].rstrip("/")
-            expected_candidates.append(Path(expected_clean).name)
-        if media_path:
-            norm_path = media_path.replace("\\", "/").rstrip("/")
-            expected_candidates.append(Path(norm_path).name)
+        if any(cand in current_clean for cand in valid_candidates):
+            # Actively loading or playing our specific routine media!
+            return state_val in ("playing", "buffering", "idle")
+        # Playing a completely different media stream (e.g. Spotify, radio)
+        return False
 
-        valid_candidates = [c for c in expected_candidates if c]
-        if valid_candidates and not any(
-            cand in current_clean for cand in valid_candidates
-        ):
-            return False
+    # 4. If Default Media Receiver is active and state is playing or buffering
+    if app_id == "CC1AD845" or "default media receiver" in app_name:
+        return state_val in ("playing", "buffering")
 
-    return True
+    # 5. Non-Cast or generic player playing state check
+    if state_val != "playing":
+        return False
+
+    # Filter out ambient / idle cast screens
+    return app_name not in ("backdrop", "ambient", "google cast", "homescreen")
 
 
 async def async_play_and_sync_routine(  # noqa: PLR0915
@@ -553,6 +565,8 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
                     remaining = duration - now
                     if remaining > 0:
                         await asyncio.sleep(remaining)
+            elif duration > 0:
+                await asyncio.sleep(duration)
         except asyncio.CancelledError:
             if not playing_future.done():
                 playing_future.cancel()

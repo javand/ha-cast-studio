@@ -383,6 +383,35 @@ def test_is_routine_media_playing_helper():
         media_path="/config/www/cast_studio/morning_briefing.mp4",
     )
 
+    # Receiver in idle or buffering state while loading our media
+    receiver_idle = MagicMock(
+        state="idle",
+        attributes={
+            "app_name": "Default Media Receiver",
+            "app_id": "CC1AD845",
+            "media_content_id": "http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        },
+    )
+    assert _is_routine_media_playing(
+        receiver_idle,
+        expected_media_url="http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        media_path="/config/www/cast_studio/morning_briefing.mp4",
+    )
+
+    receiver_buffering = MagicMock(
+        state="buffering",
+        attributes={
+            "app_name": "Default Media Receiver",
+            "app_id": "CC1AD845",
+            "media_content_id": "http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        },
+    )
+    assert _is_routine_media_playing(
+        receiver_buffering,
+        expected_media_url="http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        media_path="/config/www/cast_studio/morning_briefing.mp4",
+    )
+
     # Generic or mock state without conflicting attributes
     generic_state = MagicMock(state="playing", attributes={})
     assert _is_routine_media_playing(generic_state)
@@ -1251,6 +1280,7 @@ async def test_async_play_and_sync_routine_executes_post_actions_on_timeout():
         patch(
             "custom_components.cast_studio.orchestrator.async_call_later"
         ) as mock_call_later,
+        patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
     ):
         playback_task = await async_play_and_sync_routine(
             hass, "morning", "media_player.bathroom_display", metadata, []
@@ -1264,7 +1294,10 @@ async def test_async_play_and_sync_routine_executes_post_actions_on_timeout():
         # Await the playback lifecycle to complete
         await playback_task
 
-        # Verify that cast.show_lovelace_view was called despite timeout
+        # Verify fallback sleep was awaited for the full duration
+        mock_sleep.assert_awaited_with(5.0)
+
+        # Verify that cast.show_lovelace_view was called after timeout and duration sleep
         hass.services.async_call.assert_any_call(
             "cast",
             "show_lovelace_view",
