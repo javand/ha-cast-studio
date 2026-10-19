@@ -331,7 +331,10 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
             err,
         )
 
-    if not target_path.exists() or target_path.stat().st_size == 0:
+    def _is_empty_or_missing(p: Path) -> bool:
+        return not p.exists() or p.stat().st_size == 0
+
+    if await asyncio.to_thread(_is_empty_or_missing, target_path):
         await asyncio.to_thread(target_path.write_bytes, _generate_silent_wav())
 
     return output_wav_path

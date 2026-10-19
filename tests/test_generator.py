@@ -420,7 +420,7 @@ def test_extract_entity_context_all_domains():
         "todo.groceries": mock_todo,
         "sensor.power": mock_sensor,
     }
-    hass.states.get = MagicMock(side_effect=lambda eid: state_map.get(eid))
+    hass.states.get = MagicMock(side_effect=state_map.get)
 
     step = {
         "name": "daily_overview",

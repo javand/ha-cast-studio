@@ -276,6 +276,11 @@ def _write_json_file(file_path: Path, data: dict[str, Any]) -> None:
     file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _unlink_file_if_exists(file_path: str) -> None:
+    with contextlib.suppress(OSError):
+        Path(file_path).unlink(missing_ok=True)
+
+
 async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant,
     routine_name: str,
@@ -657,8 +662,7 @@ async def async_compile_static_clip(
         )
         clip_ok = await async_run_ffmpeg(hass, clip_cmd)
         if not clip_ok:
-            with contextlib.suppress(OSError):
-                Path(final_video_path).unlink(missing_ok=True)
+            await _async_run_in_executor(hass, _unlink_file_if_exists, final_video_path)
             msg = f"FFmpeg clip compilation failed for static clip '{clean_clip_name}'"
             raise GeneratorError(msg)
 

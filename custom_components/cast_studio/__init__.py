@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.const import Platform
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     CONF_PHONETIC_NAME,
@@ -51,6 +52,8 @@ if TYPE_CHECKING:
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
 ]
+
+CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 
 def _create_task(
