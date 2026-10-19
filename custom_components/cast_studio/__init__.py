@@ -8,7 +8,10 @@ background smart home actions.
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import json
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -596,6 +599,12 @@ async def async_reload(hass: HomeAssistant) -> None:
     domain_data = hass.data.get(DOMAIN, {})
     for sensor in domain_data.get("sensors", {}).values():
         sensor.update_state("idle", active_task=None)
+
+    if "pytest" not in sys.modules:
+        for mod_name in sorted(sys.modules.keys()):
+            if mod_name.startswith("custom_components.cast_studio."):
+                with contextlib.suppress(Exception):
+                    importlib.reload(sys.modules[mod_name])
 
     if hasattr(hass, "config_entries") and hasattr(
         hass.config_entries, "async_entries"
