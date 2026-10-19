@@ -33,6 +33,8 @@ SUBTITLE_COLOR = (56, 189, 248)  # Sky-400 accent
 DIVIDER_COLOR = (51, 65, 85, 180)  # Slate-700
 BULLET_TEXT_COLOR = (241, 245, 249)  # Slate-100
 BULLET_DOT_COLOR = (56, 189, 248)  # Sky-400 accent
+MIN_BADGE_WORD_LEN = 3
+
 
 SLIDE_THEMES: dict[str, dict[str, Any]] = {
     "default": {
@@ -84,12 +86,26 @@ SLIDE_THEMES: dict[str, dict[str, Any]] = {
         "card_border": (148, 210, 245, 200),
         "badge": "TODAY'S WEATHER",
     },
+    "national_day": {
+        "bg_top": (25, 12, 8),
+        "bg_bottom": (70, 30, 15),
+        "accent_color": (255, 170, 80),
+        "card_border": (200, 100, 40, 200),
+        "badge": "NATIONAL DAY",
+    },
     "fun_fact": {
         "bg_top": (15, 8, 35),
         "bg_bottom": (42, 18, 75),
         "accent_color": (255, 180, 100),
         "card_border": (126, 87, 194, 200),
-        "badge": "MORNING TRIVIA & FUN FACT",
+        "badge": "FUN FACT",
+    },
+    "agenda": {
+        "bg_top": (8, 22, 16),
+        "bg_bottom": (18, 48, 34),
+        "accent_color": (110, 231, 183),
+        "card_border": (52, 140, 100, 200),
+        "badge": "AGENDA",
     },
     "calendar": {
         "bg_top": (8, 22, 16),
@@ -382,8 +398,8 @@ def _render_card_overlay(
     overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
     if is_photo:
-        fill_col = (10, 16, 30, 95)
-        border_col = (255, 255, 255, 45)
+        fill_col = (10, 16, 30, 100)
+        border_col = (255, 255, 255, 50)
     else:
         fill_col = CARD_BG_COLOR
         border_col = (theme or {}).get("card_border", CARD_BORDER_COLOR)
@@ -616,16 +632,37 @@ def _draw_header(  # noqa: PLR0913
     """Draw optional category badge, title, subtitle, and divider line."""
     max_text_width = content_right - content_left
     accent_color = (theme or {}).get("accent_color", SUBTITLE_COLOR)
-    badge_text = str((theme or {}).get("badge") or card_data.get("badge") or "").strip()
-    title_font = _get_font(36, bold=True)
-    subtitle_font = _get_font(22, bold=False)
+    title = str(card_data.get("title", "")).strip()
+
+    raw_badge = str(card_data.get("badge") or (theme or {}).get("badge") or "").strip()
+    is_alert = (
+        bool(card_data.get("is_alert"))
+        or str(card_data.get("badge_type", "")).lower() == "alert"
+        or str(card_data.get("step_name", "")).lower() in ("alert", "warning")
+    )
+    show_badge = bool(card_data.get("show_badge", False))
+
+    badge_text = ""
+    if raw_badge:
+        lower_badge = raw_badge.lower()
+        lower_title = title.lower()
+        duplicates_title = any(
+            w in lower_title for w in lower_badge.split() if len(w) > MIN_BADGE_WORD_LEN
+        ) or any(
+            w in lower_badge for w in lower_title.split() if len(w) > MIN_BADGE_WORD_LEN
+        )
+        if is_alert or show_badge or (not duplicates_title and "badge" in card_data):
+            badge_text = raw_badge
+
+    title_font = _get_font(34, bold=True)
+    subtitle_font = _get_font(19, bold=False)
     curr_y = start_y
 
     if badge_text:
-        badge_font = _get_font(15, bold=True)
+        badge_font = _get_font(14, bold=True)
         b_bbox = draw.textbbox((0, 0), badge_text.upper(), font=badge_font)
-        b_w = (b_bbox[2] - b_bbox[0]) + 24
-        b_h = (b_bbox[3] - b_bbox[1]) + 10
+        b_w = (b_bbox[2] - b_bbox[0]) + 20
+        b_h = (b_bbox[3] - b_bbox[1]) + 8
         draw.rounded_rectangle(
             (content_left, curr_y, content_left + b_w, curr_y + b_h),
             radius=b_h // 2,
@@ -633,14 +670,13 @@ def _draw_header(  # noqa: PLR0913
             width=1,
         )
         draw.text(
-            (content_left + 12, curr_y + 4),
+            (content_left + 10, curr_y + 3),
             badge_text.upper(),
             font=badge_font,
             fill=accent_color,
         )
         curr_y += b_h + 10
 
-    title = str(card_data.get("title", "")).strip()
     if title:
         title_lines = _wrap_text(title, title_font, max_text_width, draw)
         for line in title_lines:
@@ -651,7 +687,7 @@ def _draw_header(  # noqa: PLR0913
 
     subtitle = str(card_data.get("subtitle", "")).strip()
     if subtitle:
-        curr_y += 4
+        curr_y += 2
         sub_lines = _wrap_text(subtitle, subtitle_font, max_text_width, draw)
         for line in sub_lines:
             bbox = draw.textbbox((content_left, curr_y), line, font=subtitle_font)
@@ -662,15 +698,146 @@ def _draw_header(  # noqa: PLR0913
             curr_y += line_height + 4
 
     if title or subtitle:
-        curr_y += 12
+        curr_y += 10
         draw.line(
             [(content_left, curr_y), (content_right, curr_y)],
             fill=DIVIDER_COLOR,
             width=1,
         )
-        curr_y += 20
+        curr_y += 16
 
     return curr_y
+
+
+def _draw_two_column_agenda(  # noqa: PLR0912, PLR0915
+    draw: ImageDraw.ImageDraw,
+    card_data: dict[str, Any],
+    start_y: int,
+    theme: dict[str, Any] | None = None,
+) -> int:
+    """Render 2-column side-by-side agenda: Schedule on the left, Tasks on the right."""
+    accent_left = (theme or {}).get("accent_color", (52, 211, 153))
+    accent_right = (251, 191, 36)
+
+    col_left_x0 = CONTENT_LEFT
+    col_left_x1 = 488
+    col_width = col_left_x1 - col_left_x0
+
+    divider_x = 512
+    col_right_x0 = 536
+    col_right_x1 = CONTENT_RIGHT
+
+    eyebrow_font = _get_font(15, bold=True)
+    time_font = _get_font(15, bold=True)
+    item_font = _get_font(18, bold=False)
+    sub_font = _get_font(14, bold=False)
+
+    curr_y = start_y + 4
+
+    # Draw Column Headers
+    draw.text((col_left_x0, curr_y), "SCHEDULE", font=eyebrow_font, fill=accent_left)
+    draw.text(
+        (col_right_x0, curr_y), "PRIORITY TASKS", font=eyebrow_font, fill=accent_right
+    )
+    curr_y += 24
+
+    body_start_y = curr_y
+
+    # Draw Center Vertical Rule
+    draw.line(
+        [(divider_x, body_start_y), (divider_x, CARD_Y1 - 25)],
+        fill=(255, 255, 255, 25),
+        width=1,
+    )
+
+    # 1. Left Column: Calendar Events (max 4)
+    cal_items = card_data.get("calendar_items") or []
+    cal_y = body_start_y
+    if not cal_items:
+        draw.text(
+            (col_left_x0, cal_y + 8),
+            "Schedule Clear",
+            font=item_font,
+            fill=(148, 163, 184),
+        )
+        draw.text(
+            (col_left_x0, cal_y + 32),
+            "No meetings scheduled for today.",
+            font=sub_font,
+            fill=(100, 116, 139),
+        )
+    else:
+        for item in cal_items[:4]:
+            if cal_y + 35 > CARD_Y1 - 20:
+                break
+            raw_text = str(item).strip()
+            time_part = ""
+            desc_part = raw_text
+            for sep in (" — ", " - ", " : "):
+                if sep in raw_text:
+                    parts = raw_text.split(sep, 1)
+                    time_part = parts[0].strip()
+                    desc_part = parts[1].strip()
+                    break
+
+            if time_part:
+                draw.text(
+                    (col_left_x0, cal_y), time_part, font=time_font, fill=(56, 189, 248)
+                )
+                text_x = col_left_x0 + 85
+                text_max_w = col_left_x1 - text_x
+            else:
+                text_x = col_left_x0
+                text_max_w = col_width
+
+            wrapped = _wrap_text(desc_part, item_font, text_max_w, draw)
+            for line in wrapped[:2]:
+                bbox = draw.textbbox((text_x, cal_y), line, font=item_font)
+                lh = bbox[3] - bbox[1]
+                draw.text((text_x, cal_y), line, font=item_font, fill=(241, 245, 249))
+                cal_y += lh + 4
+            cal_y += 8
+
+    # 2. Right Column: To-Do Tasks (max 4)
+    todo_items = card_data.get("todo_items") or []
+    todo_y = body_start_y
+    if not todo_items:
+        draw.text(
+            (col_right_x0, todo_y + 8),
+            "All Caught Up",
+            font=item_font,
+            fill=(148, 163, 184),
+        )
+        draw.text(
+            (col_right_x0, todo_y + 32),
+            "No pending tasks on your to-do list.",
+            font=sub_font,
+            fill=(100, 116, 139),
+        )
+    else:
+        for item in todo_items[:4]:
+            if todo_y + 30 > CARD_Y1 - 20:
+                break
+            raw_text = str(item).strip()
+            cb_size = 14
+            cb_y = todo_y + 3
+            draw.rounded_rectangle(
+                [(col_right_x0, cb_y), (col_right_x0 + cb_size, cb_y + cb_size)],
+                radius=3,
+                outline=(148, 163, 184),
+                width=1,
+            )
+            text_x = col_right_x0 + cb_size + 10
+            text_max_w = col_right_x1 - text_x
+            wrapped = _wrap_text(raw_text, item_font, text_max_w, draw)
+            for line in wrapped[:2]:
+                bbox = draw.textbbox((text_x, todo_y), line, font=item_font)
+                lh = bbox[3] - bbox[1]
+                draw.text((text_x, todo_y), line, font=item_font, fill=(241, 245, 249))
+                todo_y += lh + 4
+            todo_y += 8
+
+    return max(cal_y, todo_y)
 
 
 def _draw_bullets(  # noqa: PLR0913
@@ -775,17 +942,22 @@ def render_slide(
         theme=theme,
     )
 
-    # 5. Draw bullet points
-    raw_bullets = card_data.get("bullet_points")
-    if isinstance(raw_bullets, list):
-        _draw_bullets(
-            draw,
-            raw_bullets,
-            curr_y,
-            content_left=content_left,
-            content_right=content_right,
-            theme=theme,
-        )
+    # 5. Draw body content: 2-column agenda or standard bullet points
+    if card_data.get("layout") == "agenda_split" or (
+        "calendar_items" in card_data and "todo_items" in card_data
+    ):
+        _draw_two_column_agenda(draw, card_data, curr_y, theme=theme)
+    else:
+        raw_bullets = card_data.get("bullet_points")
+        if isinstance(raw_bullets, list):
+            _draw_bullets(
+                draw,
+                raw_bullets,
+                curr_y,
+                content_left=content_left,
+                content_right=content_right,
+                theme=theme,
+            )
 
     # 6. Ensure output directory exists and save RGB JPEG
     output_path = Path(output_jpeg_path).resolve()

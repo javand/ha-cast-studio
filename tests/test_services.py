@@ -987,7 +987,8 @@ async def test_run_routine_forwards_post_actions_to_metadata(
         "duration": 10.0,
         "slide_timestamps": [
             {"name": "greeting", "timestamp": 0.0},
-            {"name": "fun_fact", "timestamp": 5.0},
+            {"name": "national_day", "timestamp": 5.0},
+            {"name": "fun_fact", "timestamp": 10.0},
         ],
         "last_pregenerated": datetime.now(UTC).isoformat(),
     }
@@ -1143,7 +1144,8 @@ async def test_run_routine_auto_builds_default_morning_briefing_steps(
         "duration": DURATION_20_0,
         "slide_timestamps": [
             {"name": "greeting", "timestamp": 0.0},
-            {"name": "fun_fact", "timestamp": 8.0},
+            {"name": "national_day", "timestamp": 5.0},
+            {"name": "fun_fact", "timestamp": 10.0},
         ],
     }
     dummy_play_task = asyncio.create_task(asyncio.sleep(0.01))
@@ -1176,9 +1178,9 @@ async def test_run_routine_auto_builds_default_morning_briefing_steps(
         step_names = [s.get("name") for s in steps]
         assert "greeting" in step_names
         assert "weather" in step_names
+        assert "national_day" in step_names
         assert "fun_fact" in step_names
-        assert "calendar" in step_names
-        assert "todo" in step_names
+        assert "agenda" in step_names
         assert "commute" in step_names
         assert "scripture" in step_names
 
@@ -1283,6 +1285,19 @@ def test_discover_morning_entities_collects_multiple_commute_sensors(
     mock_hass.states.async_all = MagicMock(return_value=[s_drive, s_metro])
 
     cfg = _build_default_morning_routine_config(mock_hass, {"name": "Javan"})
+    assert [s["name"] for s in cfg["steps"]] == [
+        "greeting",
+        "weather",
+        "national_day",
+        "fun_fact",
+        "agenda",
+        "commute",
+        "scripture",
+    ]
+    agenda_step = next(s for s in cfg["steps"] if s["name"] == "agenda")
+    assert "calendar_entities" in agenda_step
+    assert "todo_entity" in agenda_step
+
     commute_step = next(s for s in cfg["steps"] if s["name"] == "commute")
     assert commute_step["entity_ids"] == [
         "sensor.javan_commute_drive_to_work",

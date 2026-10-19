@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import wave
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1009,10 +1010,7 @@ async def test_fun_fact_step_not_skipped_when_entity_unconfigured():
     assert not _is_unconfigured_optional_step(hass, step)
 
     context = await async_extract_entity_context(hass, step)
-    assert (
-        context
-        == "Share today's National Day holiday and an engaging, surprising morning fun fact."
-    )
+    assert context == "Share an engaging, surprising morning fun fact."
 
 
 def test_fun_fact_unavailable_entity_with_attributes_falls_back_to_default_prompt():
@@ -1026,10 +1024,38 @@ def test_fun_fact_unavailable_entity_with_attributes_falls_back_to_default_promp
 
     step = {"name": "fun_fact", "visual": True, "entity_id": "sensor.morning_trivia"}
     context = _extract_entity_context(hass, step)
-    assert (
-        context
-        == "Share today's National Day holiday and an engaging, surprising morning fun fact."
+    assert context == "Share an engaging, surprising morning fun fact."
+
+
+@pytest.mark.asyncio
+async def test_national_day_step_not_skipped_when_entity_unconfigured():
+    """Test national_day step is not skipped when entity_id is empty and injects default fallback prompt."""
+    hass = MagicMock()
+    hass.states.get = MagicMock(return_value=None)
+
+    step = {"name": "national_day", "visual": True, "entity_id": ""}
+    assert not _is_unconfigured_optional_step(hass, step)
+
+    context = await async_extract_entity_context(hass, step)
+    assert context == "Share today's official National Day celebration and its history."
+
+
+def test_national_day_unavailable_entity_with_attributes_falls_back_to_default_prompt():
+    """Test national_day step whose entity is unavailable with attributes falls back to default prompt."""
+    hass = MagicMock()
+    state_mock = MagicMock(
+        state="unavailable",
+        attributes={"friendly_name": "National Day Sensor"},
     )
+    hass.states.get = MagicMock(return_value=state_mock)
+
+    step = {
+        "name": "national_day",
+        "visual": True,
+        "entity_id": "sensor.national_day",
+    }
+    context = _extract_entity_context(hass, step)
+    assert context == "Share today's official National Day celebration and its history."
 
 
 @pytest.mark.asyncio
@@ -1352,3 +1378,346 @@ async def test_async_compile_single_step_verbatim_scripture_bypasses_llm(
         )
         assert rendered_card["image_path"] == "bible_scripture.jpg"
         assert rendered_card["layout"] == "photo"
+
+
+def test_is_step_image_dynamic_matrix() -> None:
+    """Verify is_step_image_dynamic rules for all slide types and explicit overrides."""
+    from custom_components.cast_studio.generator import is_step_image_dynamic
+
+    # 1. Default rule: scripture / daily_text / bible is static
+    assert is_step_image_dynamic({"name": "scripture"}, "scripture") is False
+    assert is_step_image_dynamic({"type": "daily_text"}, "step_05") is False
+    assert is_step_image_dynamic({"name": "bible"}, "bible") is False
+
+    # 2. Default rule: all non-scripture slides are dynamic
+    assert is_step_image_dynamic({"name": "greeting"}, "greeting") is True
+    assert is_step_image_dynamic({"name": "weather"}, "weather") is True
+    assert is_step_image_dynamic({"name": "national_day"}, "national_day") is True
+    assert is_step_image_dynamic({"name": "fun_fact"}, "fun_fact") is True
+    assert is_step_image_dynamic({"name": "agenda"}, "agenda") is True
+    assert is_step_image_dynamic({"name": "calendar"}, "calendar") is True
+    assert is_step_image_dynamic({"name": "todo"}, "todo") is True
+    assert is_step_image_dynamic({"name": "commute"}, "commute") is True
+
+    # 3. Explicit dynamic_image boolean overrides
+    assert (
+        is_step_image_dynamic({"name": "scripture", "dynamic_image": True}, "scripture")
+        is True
+    )
+    assert (
+        is_step_image_dynamic({"name": "greeting", "dynamic_image": False}, "greeting")
+        is False
+    )
+    assert (
+        is_step_image_dynamic({"name": "weather", "dynamic_image": False}, "weather")
+        is False
+    )
+
+    # 4. Explicit image_mode string overrides
+    assert (
+        is_step_image_dynamic(
+            {"name": "scripture", "image_mode": "dynamic"}, "scripture"
+        )
+        is True
+    )
+    assert (
+        is_step_image_dynamic({"name": "agenda", "image_mode": "static"}, "agenda")
+        is False
+    )
+
+    # 5. Explicit static / static_image boolean flags
+    assert (
+        is_step_image_dynamic({"name": "fun_fact", "static": True}, "fun_fact") is False
+    )
+    assert (
+        is_step_image_dynamic({"name": "commute", "static_image": True}, "commute")
+        is False
+    )
+
+    # 6. Explicit pre-existing local image_path
+    assert (
+        is_step_image_dynamic(
+            {"name": "greeting", "image_path": "assets/custom.jpg"}, "greeting"
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_resolve_step_visual_assets_dynamic_generation(
+    tmp_path: Path,
+) -> None:
+    """Verify dynamic AI image generation for non-scripture slides and static resolution for scripture."""
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    mock_hass = MagicMock()
+    ai_creds = {"platform": "gemini", "api_key": "test_key"}
+    scratch = str(tmp_path)
+
+    def _mock_gen_img(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    # 1. Greeting: dynamic generation via Gemini Imagen
+    card_greeting: dict[str, Any] = {}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(side_effect=_mock_gen_img),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            mock_hass,
+            {"name": "greeting"},
+            "greeting",
+            card_greeting,
+            ai_creds,
+            scratch_dir=scratch,
+        )
+        assert mock_gen.call_count == 1
+        assert "coffee" in mock_gen.call_args.args[1]
+        assert card_greeting["image_type"] == "dynamic"
+        assert card_greeting["dynamic_image"] is True
+        assert card_greeting["image_path"].endswith("bg_greeting.png")
+        assert card_greeting["layout"] == "photo"
+
+    # 2. Weather: dynamic generation with weather condition in prompt
+    card_weather: dict[str, Any] = {"weather_condition": "rainy"}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(side_effect=_mock_gen_img),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            mock_hass,
+            {"name": "weather"},
+            "weather",
+            card_weather,
+            ai_creds,
+            scratch_dir=scratch,
+        )
+        assert mock_gen.call_count == 1
+        assert "rainy" in mock_gen.call_args.args[1]
+        assert card_weather["image_type"] == "dynamic"
+        assert card_weather["dynamic_image"] is True
+        assert card_weather["image_path"].endswith("bg_weather.png")
+
+    # 3. Agenda: dynamic generation with planner workspace prompt
+    card_agenda: dict[str, Any] = {}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(side_effect=_mock_gen_img),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            mock_hass,
+            {"name": "agenda"},
+            "agenda",
+            card_agenda,
+            ai_creds,
+            scratch_dir=scratch,
+        )
+        assert mock_gen.call_count == 1
+        assert "planner" in mock_gen.call_args.args[1]
+        assert card_agenda["image_type"] == "dynamic"
+        assert card_agenda["dynamic_image"] is True
+        assert card_agenda["image_path"].endswith("bg_agenda.png")
+
+    # 4. Scripture: static asset without calling async_generate_ai_image
+    card_scripture: dict[str, Any] = {}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            mock_hass,
+            {"name": "scripture"},
+            "scripture",
+            card_scripture,
+            ai_creds,
+            scratch_dir=scratch,
+        )
+        mock_gen.assert_not_called()
+        assert card_scripture["image_type"] == "static"
+        assert card_scripture["dynamic_image"] is False
+        assert card_scripture["image_path"] == "bible_scripture.jpg"
+        assert card_scripture["layout"] == "photo"
+
+
+@pytest.mark.asyncio
+async def test_async_resolve_step_visual_assets_fallback_to_static_on_ai_failure(
+    tmp_path: Path,
+) -> None:
+    """Verify fallback to bundled static assets and image_type='static' when AI generation fails."""
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    mock_hass = MagicMock()
+    ai_creds = {"platform": "gemini", "api_key": "test_key"}
+    scratch = str(tmp_path)
+
+    # 1. Greeting falls back to greeting_coffee.jpg
+    card_greeting: dict[str, Any] = {}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(return_value=None),
+    ):
+        await _async_resolve_step_visual_assets(
+            mock_hass,
+            {"name": "greeting"},
+            "greeting",
+            card_greeting,
+            ai_creds,
+            scratch_dir=scratch,
+        )
+        assert card_greeting["image_type"] == "static"
+        assert card_greeting["dynamic_image"] is False
+        assert card_greeting["image_path"] == "greeting_coffee.jpg"
+
+    # 2. Weather falls back to condition asset (e.g. weather_rainy.jpg)
+    card_weather: dict[str, Any] = {"weather_condition": "rainy"}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(return_value=None),
+    ):
+        await _async_resolve_step_visual_assets(
+            mock_hass,
+            {"name": "weather"},
+            "weather",
+            card_weather,
+            ai_creds,
+            scratch_dir=scratch,
+        )
+        assert card_weather["image_type"] == "static"
+        assert card_weather["dynamic_image"] is False
+        assert card_weather["image_path"] == "weather_rainy.jpg"
+
+    # 3. Agenda falls back to calendar_agenda.jpg
+    card_agenda: dict[str, Any] = {}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(return_value=None),
+    ):
+        await _async_resolve_step_visual_assets(
+            mock_hass,
+            {"name": "agenda"},
+            "agenda",
+            card_agenda,
+            ai_creds,
+            scratch_dir=scratch,
+        )
+        assert card_agenda["image_type"] == "static"
+        assert card_agenda["dynamic_image"] is False
+        assert card_agenda["image_path"] == "calendar_agenda.jpg"
+
+
+@pytest.mark.asyncio
+async def test_agenda_step_extracts_both_calendar_and_todo_context() -> None:
+    """Verify agenda step extracts both calendar events and todo items."""
+    from custom_components.cast_studio.generator import async_extract_entity_context
+
+    def _mock_call(
+        domain: str, _service: Any, _data: Any, **_kwargs: Any
+    ) -> dict[str, Any]:
+        if domain == "calendar":
+            return {
+                "calendar.work": {
+                    "events": [{"summary": "Team Sync", "start": "10:00"}]
+                }
+            }
+        return {"todo.tasks": {"items": [{"summary": "Buy groceries"}]}}
+
+    mock_hass = MagicMock()
+    mock_hass.services.async_call = AsyncMock(side_effect=_mock_call)
+
+    agenda_step = {
+        "name": "agenda",
+        "calendar_entities": ["calendar.work"],
+        "todo_entity": "todo.tasks",
+    }
+    context = await async_extract_entity_context(mock_hass, agenda_step)
+    assert "Calendar (calendar.work):" in context
+    assert "Team Sync" in context
+    assert "To-do (todo.tasks):" in context
+    assert "Buy groceries" in context
+
+
+@pytest.mark.asyncio
+async def test_async_compile_routine_media_timestamps_include_image_type_and_dynamic_flag(
+    tmp_path: Path,
+) -> None:
+    """Verify slide_timestamps metadata records image_type, dynamic_image, and image_path per slide."""
+    from custom_components.cast_studio.generator import async_compile_routine_media
+
+    mock_hass = MagicMock()
+    mock_hass.states.get = MagicMock(return_value=None)
+    mock_hass.services.async_call = AsyncMock(return_value=None)
+
+    routine_config = {
+        "visuals": True,
+        "steps": [
+            {"name": "greeting", "visual": True},
+            {"name": "scripture", "visual": True},
+        ],
+    }
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    test_wav = str(tmp_path / "test.wav")
+    test_jpg = str(tmp_path / "test.jpg")
+
+    def _mock_gen_img(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "test_key"}),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_generate_step_content",
+            new=AsyncMock(
+                return_value={"narration_script": "Hello", "visual_card": {}}
+            ),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_generate_ai_image",
+            new=AsyncMock(side_effect=_mock_gen_img),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            new=AsyncMock(return_value=test_wav),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.get_audio_duration",
+            return_value=5.0,
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value=test_jpg,
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        meta = await async_compile_routine_media(
+            mock_hass,
+            "test_routine",
+            routine_config,
+            recipient,
+            output_dir=str(tmp_path),
+        )
+
+        slides = meta["slide_timestamps"]
+        assert len(slides) == 2
+
+        # 1. Greeting slide is dynamic
+        assert slides[0]["name"] == "greeting"
+        assert slides[0]["image_type"] == "dynamic"
+        assert slides[0]["dynamic_image"] is True
+        assert slides[0]["image_path"].endswith("bg_greeting.png")
+
+        # 2. Scripture slide is static
+        assert slides[1]["name"] == "scripture"
+        assert slides[1]["image_type"] == "static"
+        assert slides[1]["dynamic_image"] is False
+        assert slides[1]["image_path"] == "bible_scripture.jpg"

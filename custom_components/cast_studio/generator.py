@@ -60,7 +60,14 @@ class RoutineConfigError(GeneratorError, ValueError):
 def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
     """Extract ordered, deduplicated entity IDs configured for a step."""
     raw_ids: list[str] = []
-    for key in ("entity_id", "entity_ids"):
+    for key in (
+        "entity_id",
+        "entity_ids",
+        "calendar_entity",
+        "calendar_entities",
+        "todo_entity",
+        "todo_entities",
+    ):
         val = step.get(key)
         if isinstance(val, list):
             for item in val:
@@ -76,6 +83,32 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
             seen.add(eid)
             eids.append(eid)
     return eids
+
+
+def is_step_image_dynamic(step: dict[str, Any], step_name: str = "") -> bool:
+    """Determine whether a step should generate a dynamic AI image or static asset."""
+    # 1. Explicit dynamic_image boolean on step
+    if "dynamic_image" in step and step["dynamic_image"] is not None:
+        return bool(step["dynamic_image"])
+
+    # 2. Explicit image_mode string on step
+    if step.get("image_mode"):
+        return str(step["image_mode"]).strip().lower() == "dynamic"
+
+    # 3. Explicit static flag on step
+    if step.get("static") is True or step.get("static_image") is True:
+        return False
+
+    # 4. Explicit local image_path or icon_path configured on step
+    if step.get("image_path") or step.get("icon_path"):
+        return False
+
+    # 5. Default rule: scripture / daily_text / bible is static by default
+    step_key = (
+        str(step.get("type") or step_name or step.get("name") or "").strip().lower()
+    )
+    # 6. Non-scripture slides default to dynamic
+    return step_key not in ("scripture", "daily_text", "bible")
 
 
 def _format_weather_service_response(
@@ -341,6 +374,7 @@ def _extract_entity_context(
     step_name = str(step.get("name", "")).lower()
     step_type = str(step.get("type", "")).lower()
     is_fun_fact = step_name == "fun_fact" or step_type == "fun_fact"
+    is_national_day = step_name == "national_day" or step_type == "national_day"
     is_commute = step_name == "commute" or step_type == "commute"
     has_states_getter = hasattr(hass, "states") and hasattr(hass.states, "get")
     commute_candidates: list[tuple[str, float, str]] = []
@@ -358,7 +392,11 @@ def _extract_entity_context(
             continue
 
         state_val = getattr(state_obj, "state", "unknown")
-        if is_fun_fact and str(state_val).lower() in ("unknown", "unavailable", ""):
+        if (is_fun_fact or is_national_day) and str(state_val).lower() in (
+            "unknown",
+            "unavailable",
+            "",
+        ):
             continue
 
         entity_lines.append(
@@ -383,11 +421,10 @@ def _extract_entity_context(
         return entity_context_str
     if existing_context and str(existing_context).strip():
         return str(existing_context).strip()
+    if is_national_day:
+        return "Share today's official National Day celebration and its history."
     if is_fun_fact:
-        return (
-            "Share today's National Day holiday and an engaging, "
-            "surprising morning fun fact."
-        )
+        return "Share an engaging, surprising morning fun fact."
     return ""
 
 
@@ -485,13 +522,22 @@ async def async_extract_entity_context(
 
 def _is_unconfigured_optional_step(hass: HomeAssistant, step: dict[str, Any]) -> bool:
     """Check if an entity step is unconfigured or missing with no fallback."""
-    if (
-        str(step.get("name", "")).lower() == "fun_fact"
-        or str(step.get("type", "")).lower() == "fun_fact"
+    step_name = str(step.get("name", "")).lower()
+    step_type = str(step.get("type", "")).lower()
+    if step_name in ("fun_fact", "national_day") or step_type in (
+        "fun_fact",
+        "national_day",
     ):
         return False
 
-    has_entity_key = "entity_id" in step or "entity_ids" in step
+    has_entity_key = (
+        "entity_id" in step
+        or "entity_ids" in step
+        or "calendar_entity" in step
+        or "calendar_entities" in step
+        or "todo_entity" in step
+        or "todo_entities" in step
+    )
     if not has_entity_key:
         return False
 
@@ -645,7 +691,7 @@ def _detect_step_weather_condition(
     return None
 
 
-async def _async_resolve_step_visual_assets(  # noqa: PLR0911, PLR0912, PLR0913
+async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
     hass: HomeAssistant,
     step_to_process: dict[str, Any],
     step_name: str,
@@ -654,75 +700,56 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0911, PLR0912, PLR0913
     scratch_dir: str | None = None,
 ) -> None:
     """Resolve dynamic and AI-generated visual background assets for a visual slide."""
-    if (
-        card_data.get("image_path")
-        or card_data.get("icon")
-        or card_data.get("icon_path")
-    ):
+    is_dynamic = is_step_image_dynamic(step_to_process, step_name)
+
+    if card_data.get("image_path"):
+        card_data.setdefault("image_type", "dynamic" if is_dynamic else "static")
+        card_data.setdefault("dynamic_image", is_dynamic)
+        card_data.setdefault("layout", "photo")
         return
 
     step_key = str(step_to_process.get("type") or step_name or "").strip().lower()
     name_key = str(step_name or "").strip().lower()
 
-    # 1. Greeting / Welcome slide: generate dynamic AI background
+    # Determine fallback static asset and prompt per slide theme
     if step_key in ("greeting", "welcome") or name_key in ("greeting", "welcome"):
-        ai_img_path = (
-            str(Path(scratch_dir) / f"bg_{step_name}.png") if scratch_dir else None
+        fallback_asset = "greeting_coffee.jpg"
+        dynamic_prompt = (
+            "A peaceful morning scene with a warm ceramic mug of fresh coffee "
+            "on a wooden table, soft golden morning sunrise light streaming "
+            "through a window, cozy atmosphere, photorealistic cinematic 16:9"
         )
-        if (
-            ai_img_path
-            and ai_creds.get("platform") == "gemini"
-            and ai_creds.get("api_key")
-        ):
-            prompt = (
-                "A peaceful morning scene with a warm ceramic mug of fresh coffee "
-                "on a wooden table, soft golden morning sunrise light streaming "
-                "through a window, cozy atmosphere, photorealistic cinematic 16:9"
-            )
-            generated = await async_generate_ai_image(
-                hass, prompt, ai_img_path, ai_creds=ai_creds
-            )
-            if generated and Path(generated).is_file():
-                card_data["image_path"] = generated
-                card_data.setdefault("layout", "photo")
-                return
-        card_data["image_path"] = "weather_sunny.jpg"
-        card_data.setdefault("layout", "photo")
-        return
-
-    # 2. Fun Fact / Trivia slide: generate AI image matching fact topic
-    if step_key in ("fun_fact", "trivia") or name_key in ("fun_fact", "trivia"):
-        ai_img_path = (
-            str(Path(scratch_dir) / f"bg_{step_name}.png") if scratch_dir else None
+    elif step_key in ("national_day", "holiday", "observance") or name_key in (
+        "national_day",
+        "holiday",
+        "observance",
+    ):
+        fallback_asset = "fun_fact.jpg"
+        topic = (
+            card_data.get("subtitle")
+            or card_data.get("title")
+            or step_to_process.get("context")
+            or "National Day celebration"
         )
-        if (
-            ai_img_path
-            and ai_creds.get("platform") == "gemini"
-            and ai_creds.get("api_key")
-        ):
-            topic = (
-                card_data.get("title")
-                or card_data.get("subtitle")
-                or step_to_process.get("context")
-                or "morning fun fact"
-            )
-            prompt = (
-                f"A vibrant, cinematic photograph representing {topic}, "
-                "detailed, beautiful natural lighting, 16:9 widescreen aspect ratio"
-            )
-            generated = await async_generate_ai_image(
-                hass, prompt, ai_img_path, ai_creds=ai_creds
-            )
-            if generated and Path(generated).is_file():
-                card_data["image_path"] = generated
-                card_data.setdefault("layout", "photo")
-                return
-        card_data["image_path"] = "fun_fact.jpg"
-        card_data.setdefault("layout", "photo")
-        return
-
-    # 3. Weather slide: map to real condition photo
-    if step_key == "weather" or name_key == "weather":
+        dynamic_prompt = (
+            f"A vibrant, festive cinematic photograph celebrating {topic}, "
+            "holiday atmosphere, joyful, detailed, beautiful natural lighting, "
+            "16:9 widescreen aspect ratio"
+        )
+    elif step_key in ("fun_fact", "trivia") or name_key in ("fun_fact", "trivia"):
+        fallback_asset = "fun_fact.jpg"
+        topic = (
+            card_data.get("subtitle")
+            or card_data.get("title")
+            or step_to_process.get("context")
+            or "morning fun fact"
+        )
+        dynamic_prompt = (
+            f"An intriguing, cinematic photograph representing {topic}, "
+            "curious and fascinating, detailed, beautiful natural lighting, "
+            "16:9 widescreen aspect ratio"
+        )
+    elif step_key == "weather" or name_key == "weather":
         cond = str(
             card_data.get("weather_condition")
             or _detect_step_weather_condition(hass, step_to_process)
@@ -731,50 +758,107 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0911, PLR0912, PLR0913
         if any(
             w in cond for w in ("rain", "pour", "drizzle", "storm", "thunder", "shower")
         ):
-            card_data["image_path"] = "weather_rainy.jpg"
+            fallback_asset = "weather_rainy.jpg"
         elif any(
             w in cond for w in ("snow", "sleet", "hail", "ice", "blizzard", "winter")
         ):
-            card_data["image_path"] = "weather_snow.jpg"
+            fallback_asset = "weather_snow.jpg"
         elif any(
             w in cond for w in ("cloud", "overcast", "fog", "mist", "wind", "haze")
         ):
-            card_data["image_path"] = "weather_cloudy.jpg"
+            fallback_asset = "weather_cloudy.jpg"
         else:
-            card_data["image_path"] = "weather_sunny.jpg"
-        card_data.setdefault("layout", "photo")
-        return
-
-    # 4. Calendar and Todo: calendar/agenda planner background
-    if step_key in ("calendar", "schedule", "todo", "tasks") or name_key in (
+            fallback_asset = "weather_sunny.jpg"
+        dynamic_prompt = (
+            "A photorealistic cinematic 16:9 widescreen morning landscape in soft dawn "
+            f"light showing {cond or 'clear morning'} weather, realistic atmosphere, "
+            "8k resolution, beautiful natural lighting"
+        )
+    elif step_key in (
+        "agenda",
+        "calendar",
+        "schedule",
+        "todo",
+        "tasks",
+    ) or name_key in (
+        "agenda",
         "calendar",
         "schedule",
         "todo",
         "tasks",
     ):
-        card_data["image_path"] = "calendar_agenda.jpg"
-        card_data.setdefault("layout", "photo")
-        return
-
-    # 5. Commute: traffic / map background
-    if step_key in ("commute", "traffic", "transit") or name_key in (
+        fallback_asset = "calendar_agenda.jpg"
+        dynamic_prompt = (
+            "A clean, aesthetic morning workspace with an open daily planner "
+            "notebook and coffee cup on a modern desk bathed in warm morning "
+            "daylight, cinematic 16:9 widescreen"
+        )
+    elif step_key in ("commute", "traffic", "transit") or name_key in (
         "commute",
         "traffic",
         "transit",
     ):
-        card_data["image_path"] = "commute_traffic.jpg"
-        card_data.setdefault("layout", "photo")
-        return
-
-    # 6. Scripture: open Bible background
-    if step_key in ("scripture", "bible", "daily_text") or name_key in (
+        fallback_asset = "commute_traffic.jpg"
+        dynamic_prompt = (
+            "An aerial cinematic 16:9 widescreen view of morning highway traffic "
+            "and city skyline bathed in soft golden morning sunlight, "
+            "clear commute route"
+        )
+    elif step_key in ("scripture", "bible", "daily_text") or name_key in (
         "scripture",
         "bible",
         "daily_text",
     ):
-        card_data["image_path"] = "bible_scripture.jpg"
+        fallback_asset = "bible_scripture.jpg"
+        dynamic_prompt = (
+            "A peaceful morning Bible study scene with an open leather Bible on a "
+            "warm wooden table, soft morning window light, cinematic 16:9 widescreen"
+        )
+    else:
+        fallback_asset = "weather_sunny.jpg"
+        dynamic_prompt = str(
+            card_data.get("image_prompt")
+            or f"A beautiful cinematic morning photograph for {step_name}, 16:9"
+        )
+
+    if not is_dynamic:
+        card_data["image_path"] = fallback_asset
+        card_data["image_type"] = "static"
+        card_data["dynamic_image"] = False
         card_data.setdefault("layout", "photo")
         return
+
+    ai_img_path = (
+        str(Path(scratch_dir) / f"bg_{step_name}.png") if scratch_dir else None
+    )
+    if ai_img_path and ai_creds.get("platform") == "gemini" and ai_creds.get("api_key"):
+        try:
+            generated = await async_generate_ai_image(
+                hass, dynamic_prompt, ai_img_path, ai_creds=ai_creds
+            )
+            if generated and Path(generated).is_file():
+                card_data["image_path"] = generated
+                card_data["image_type"] = "dynamic"
+                card_data["dynamic_image"] = True
+                card_data.setdefault("layout", "photo")
+                return
+        except Exception as err:  # noqa: BLE001
+            LOGGER.warning(
+                "Dynamic AI image generation failed for step '%s': %s",
+                step_name,
+                err,
+            )
+
+    # Fallback to static asset if dynamic generation fails or credentials unavailable
+    card_data["image_path"] = fallback_asset
+    card_data["image_type"] = "static"
+    card_data["dynamic_image"] = False
+    card_data.setdefault("layout", "photo")
+    LOGGER.info(
+        "Using static fallback asset '%s' for step '%s'",
+        fallback_asset,
+        step_name,
+    )
 
 
 async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
@@ -959,7 +1043,13 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
             msg = f"FFmpeg clip compilation failed for step '{step_name}'"
             raise GeneratorError(msg)
 
-    return effective_audio_path, duration, pad_seconds
+    image_info = {
+        "image_type": card_data.get("image_type", "static"),
+        "dynamic_image": card_data.get("dynamic_image", False),
+        "image_path": card_data.get("image_path"),
+    }
+
+    return effective_audio_path, duration, pad_seconds, image_info
 
 
 async def _async_finalize_routine_media(  # noqa: PLR0913
@@ -1099,7 +1189,12 @@ async def async_compile_routine_media(
             )
             step_clip_target = str(Path(scratch_dir) / f"clip_{idx:02d}.mp4")
 
-            effective_audio_path, duration, _ = await _async_compile_single_step(
+            (
+                effective_audio_path,
+                duration,
+                _,
+                image_info,
+            ) = await _async_compile_single_step(
                 hass,
                 step_to_process,
                 step_name,
@@ -1123,6 +1218,9 @@ async def async_compile_routine_media(
                     "actions_on_display": step_to_process.get(
                         "actions_on_display", step_to_process.get("actions", [])
                     ),
+                    "image_type": image_info.get("image_type", "static"),
+                    "dynamic_image": image_info.get("dynamic_image", False),
+                    "image_path": image_info.get("image_path"),
                 }
             )
             current_offset += duration
@@ -1230,7 +1328,7 @@ async def async_compile_static_clip(
     try:
         ai_creds = await async_discover_ai_credentials(hass)
         try:
-            _, duration, _ = await _async_compile_single_step(
+            _, duration, _, _ = await _async_compile_single_step(
                 hass,
                 step_config,
                 clean_clip_name,

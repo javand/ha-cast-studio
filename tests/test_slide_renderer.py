@@ -382,6 +382,9 @@ def test_resolve_slide_theme_by_step_and_weather_condition() -> None:
     )
 
     assert "greeting" in SLIDE_THEMES
+    assert "national_day" in SLIDE_THEMES
+    assert "fun_fact" in SLIDE_THEMES
+    assert "agenda" in SLIDE_THEMES
     assert "commute" in SLIDE_THEMES
     assert "scripture" in SLIDE_THEMES
 
@@ -393,6 +396,12 @@ def test_resolve_slide_theme_by_step_and_weather_condition() -> None:
     )
     assert rain_theme["bg_top"] != sunny_theme["bg_top"]
     assert rain_theme["badge"] == "TODAY'S WEATHER"
+
+    nd_theme = resolve_slide_theme({"step_name": "national_day"})
+    assert nd_theme["badge"] == "NATIONAL DAY"
+
+    agenda_theme = resolve_slide_theme({"step_name": "agenda"})
+    assert agenda_theme["badge"] == "AGENDA"
 
     commute_theme = resolve_slide_theme({"step_name": "commute"})
     assert commute_theme["badge"] == "COMMUTE OVERVIEW"
@@ -437,3 +446,57 @@ def test_render_slide_photo_mode_uses_translucent_frosted_glass_scrim(
         assert center_rgb[0] >= 80, (
             f"Expected vibrant red channel >= 80, got {center_rgb[0]}"
         )
+
+
+def test_render_slide_two_column_agenda_layout(tmp_path: Path) -> None:
+    """Test render_slide renders 2-column layout for combined calendar and to-do agenda."""
+    output_path = str(tmp_path / "agenda_slide.jpg")
+    card_data = {
+        "title": "Today's Agenda",
+        "subtitle": "Thursday, October 19 • 2 Events • 2 Tasks",
+        "layout": "agenda_split",
+        "calendar_items": [
+            "09:00 AM — Architecture Planning",
+            "01:30 PM — Design Review",
+        ],
+        "todo_items": [
+            "Review CastStudio PR",
+            "Water office plants",
+        ],
+        "image_path": "calendar_agenda.jpg",
+    }
+    result = render_slide(card_data, output_path)
+    assert os.path.exists(result)
+    with Image.open(result) as img:
+        assert img.size == (1024, 600)
+        assert img.mode == "RGB"
+
+
+def test_render_slide_two_column_agenda_empty_states(tmp_path: Path) -> None:
+    """Test render_slide handles empty calendar and to-do lists in 2-column layout."""
+    output_path = str(tmp_path / "agenda_empty.jpg")
+    card_data = {
+        "title": "Today's Agenda",
+        "subtitle": "Thursday, October 19 • Schedule Clear",
+        "layout": "agenda_split",
+        "calendar_items": [],
+        "todo_items": [],
+        "image_path": "calendar_agenda.jpg",
+    }
+    result = render_slide(card_data, output_path)
+    assert os.path.exists(result)
+    with Image.open(result) as img:
+        assert img.size == (1024, 600)
+
+
+def test_draw_header_suppresses_redundant_badge_matching_title(tmp_path: Path) -> None:
+    """Test _draw_header suppresses redundant category pill when badge and title overlap."""
+    out_redundant = str(tmp_path / "redundant_badge.jpg")
+    card_data = {
+        "title": "Good Morning, Javan",
+        "subtitle": "Welcome to your day",
+        "step_name": "greeting",
+        # Theme has badge "GOOD MORNING"
+    }
+    result = render_slide(card_data, out_redundant)
+    assert os.path.exists(result)

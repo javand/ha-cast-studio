@@ -531,7 +531,12 @@ def test_build_prompt_includes_current_local_date_and_step_guidelines() -> None:
     fun_fact_prompt = _build_prompt(
         {"name": "fun_fact", "type": "fun_fact"}, {"name": "Javan"}
     )
-    assert "National Day" in fun_fact_prompt
+    assert "fun fact" in fun_fact_prompt.lower()
+
+    national_day_prompt = _build_prompt(
+        {"name": "national_day", "type": "national_day"}, {"name": "Javan"}
+    )
+    assert "National Day" in national_day_prompt
 
 
 def test_build_prompt_greeting_vs_intermediate_directives() -> None:
@@ -627,3 +632,59 @@ def test_enforce_recipient_separation_simplifies_intermediate_titles_and_narrati
     assert not result["narration_script"].lower().startswith("good morning")
     assert "Jay-ven" not in result["narration_script"]
     assert result["narration_script"].startswith("Sunny skies ahead")
+
+
+def test_build_prompt_agenda_guidelines() -> None:
+    """Verify _build_prompt includes combined agenda narration and 2-column card instructions."""
+    from custom_components.cast_studio.ai_client import _build_prompt
+
+    prompt = _build_prompt(
+        {"name": "agenda", "type": "agenda"},
+        {"name": "Javan", "phonetic_name": "Jay-ven"},
+    )
+    assert "AGENDA NARRATION & CARD" in prompt
+    assert "agenda_split" in prompt
+    assert "calendar_items" in prompt
+    assert "todo_items" in prompt
+
+
+def test_enforce_recipient_separation_preserves_custom_card_fields() -> None:
+    """Verify _enforce_recipient_separation preserves layout, calendar_items, and todo_items."""
+    from custom_components.cast_studio.ai_client import _enforce_recipient_separation
+
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    raw_content = {
+        "visual_card": {
+            "title": "Today's Agenda",
+            "subtitle": "Thursday",
+            "layout": "agenda_split",
+            "calendar_items": ["09:00 AM — Standup"],
+            "todo_items": ["Water plants"],
+            "bullet_points": ["Combined item"],
+        },
+        "narration_script": "You have Standup at 9:00 AM.",
+    }
+    result = _enforce_recipient_separation(raw_content, recipient)
+    card = result["visual_card"]
+    assert card["layout"] == "agenda_split"
+    assert card["calendar_items"] == ["09:00 AM — Standup"]
+    assert card["todo_items"] == ["Water plants"]
+
+
+def test_build_prompt_national_day_and_fun_fact_guidelines() -> None:
+    """Verify _build_prompt distinguishes national_day and fun_fact guidelines."""
+    from custom_components.cast_studio.ai_client import _build_prompt
+
+    nd_prompt = _build_prompt(
+        {"name": "national_day", "type": "national_day"},
+        {"name": "Javan", "phonetic_name": "Jay-ven"},
+    )
+    assert "NATIONAL DAY NARRATION" in nd_prompt
+    assert "Holiday Name" in nd_prompt
+
+    ff_prompt = _build_prompt(
+        {"name": "fun_fact", "type": "fun_fact"},
+        {"name": "Javan", "phonetic_name": "Jay-ven"},
+    )
+    assert "FUN FACT NARRATION" in ff_prompt
+    assert "Trivia Topic" in ff_prompt

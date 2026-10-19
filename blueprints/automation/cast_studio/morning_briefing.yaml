@@ -52,9 +52,18 @@ blueprint:
       selector:
         entity:
           domain: weather
+    national_day_entity:
+      name: National Day Entity (Optional)
+      description: Optional entity providing today's official National Day holiday or observance.
+      default: ""
+      selector:
+        entity:
+          domain:
+            - sensor
+            - input_text
     fun_fact_entity:
       name: Fun Fact Entity (Optional)
-      description: Optional entity providing a morning fun fact, trivia, or national day.
+      description: Optional entity providing a morning fun fact or trivia.
       default: ""
       selector:
         entity:
@@ -190,8 +199,6 @@ action:
                     visual: true
                     title: !input recipient_name
                     subtitle: "Good Morning"
-                    layout: "icon"
-                    icon: !input greeting_image
                     voice: !input host_voice
                     voice_personality: !input host_personality
                     context: "A cheerful, energizing morning greeting for {{ recipient_name }}."
@@ -200,19 +207,20 @@ action:
                     entity_id: !input weather_entity
                     voice: !input host_voice
                     voice_personality: !input host_personality
+                  - name: national_day
+                    visual: true
+                    entity_id: !input national_day_entity
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
                   - name: fun_fact
                     visual: true
                     entity_id: !input fun_fact_entity
                     voice: !input host_voice
                     voice_personality: !input host_personality
-                  - name: calendar
+                  - name: agenda
                     visual: true
-                    entity_ids: !input calendar_entities
-                    voice: !input host_voice
-                    voice_personality: !input host_personality
-                  - name: todo
-                    visual: true
-                    entity_id: !input todo_entity
+                    calendar_entities: !input calendar_entities
+                    todo_entity: !input todo_entity
                     voice: !input host_voice
                     voice_personality: !input host_personality
                   - name: commute
@@ -244,8 +252,6 @@ action:
                 visual: true
                 title: !input recipient_name
                 subtitle: "Good Morning"
-                layout: "icon"
-                icon: !input greeting_image
                 voice: !input host_voice
                 voice_personality: !input host_personality
                 context: "A cheerful, energizing morning greeting for {{ recipient_name }}."
@@ -254,19 +260,20 @@ action:
                 entity_id: !input weather_entity
                 voice: !input host_voice
                 voice_personality: !input host_personality
+              - name: national_day
+                visual: true
+                entity_id: !input national_day_entity
+                voice: !input host_voice
+                voice_personality: !input host_personality
               - name: fun_fact
                 visual: true
                 entity_id: !input fun_fact_entity
                 voice: !input host_voice
                 voice_personality: !input host_personality
-              - name: calendar
+              - name: agenda
                 visual: true
-                entity_ids: !input calendar_entities
-                voice: !input host_voice
-                voice_personality: !input host_personality
-              - name: todo
-                visual: true
-                entity_id: !input todo_entity
+                calendar_entities: !input calendar_entities
+                todo_entity: !input todo_entity
                 voice: !input host_voice
                 voice_personality: !input host_personality
               - name: commute

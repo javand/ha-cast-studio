@@ -186,6 +186,7 @@ def _count_expected_executable_steps(
 def _discover_morning_entities(hass: HomeAssistant) -> dict[str, Any]:
     """Discover available Home Assistant entities for default morning steps."""
     weather_entity = ""
+    national_day_entity = ""
     fun_fact_entity = ""
     calendar_entities: list[str] = []
     todo_entity = ""
@@ -220,11 +221,18 @@ def _discover_morning_entities(hass: HomeAssistant) -> dict[str, Any]:
                 scripture_sensor = eid
             elif "commute" in lower_eid or "travel_time" in lower_eid:
                 commute_sensors.append(eid)
-            elif not fun_fact_entity and "fun_fact" in lower_eid:
+            elif not national_day_entity and (
+                "national_day" in lower_eid or "holiday" in lower_eid
+            ):
+                national_day_entity = eid
+            elif not fun_fact_entity and (
+                "fun_fact" in lower_eid or "trivia" in lower_eid
+            ):
                 fun_fact_entity = eid
 
     return {
         "weather_entity": weather_entity,
+        "national_day_entity": national_day_entity,
         "fun_fact_entity": fun_fact_entity,
         "calendar_entities": calendar_entities,
         "todo_entity": todo_entity,
@@ -250,8 +258,6 @@ def _build_default_morning_routine_config(
                 "visual": True,
                 "title": recipient_name,
                 "subtitle": "Good Morning",
-                "layout": "icon",
-                "icon": "welcome_avatar.png",
                 "voice": DEFAULT_HOST_VOICE,
                 "voice_personality": "news_anchor",
                 "context": greeting_ctx,
@@ -264,6 +270,13 @@ def _build_default_morning_routine_config(
                 "voice_personality": "news_anchor",
             },
             {
+                "name": "national_day",
+                "visual": True,
+                "entity_id": discovered["national_day_entity"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
                 "name": "fun_fact",
                 "visual": True,
                 "entity_id": discovered["fun_fact_entity"],
@@ -271,16 +284,14 @@ def _build_default_morning_routine_config(
                 "voice_personality": "news_anchor",
             },
             {
-                "name": "calendar",
+                "name": "agenda",
                 "visual": True,
-                "entity_ids": discovered["calendar_entities"],
-                "voice": DEFAULT_HOST_VOICE,
-                "voice_personality": "news_anchor",
-            },
-            {
-                "name": "todo",
-                "visual": True,
-                "entity_id": discovered["todo_entity"],
+                "calendar_entities": discovered["calendar_entities"],
+                "todo_entity": discovered["todo_entity"],
+                "entity_ids": [
+                    *discovered["calendar_entities"],
+                    *([discovered["todo_entity"]] if discovered["todo_entity"] else []),
+                ],
                 "voice": DEFAULT_HOST_VOICE,
                 "voice_personality": "news_anchor",
             },

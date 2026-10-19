@@ -31,10 +31,18 @@ STEP_PROMPT_GUIDELINES: dict[str, str] = {
         "then highlight today's expected high/low forecast and any rain or wind "
         "outlook.\n"
     ),
+    "national_day": (
+        "4. NATIONAL DAY NARRATION: Announce today's official National Day holiday "
+        "observance for the current date. Mention 1-2 interesting traditions "
+        "or reasons for the celebration in an engaging tone.\n"
+        "   - In 'visual_card', set 'title': 'National Day', "
+        "'subtitle': '<Holiday Name>', and 1-2 festive bullet points.\n"
+    ),
     "fun_fact": (
-        "4. FUN FACT & NATIONAL DAY: Announce today's National Day holiday "
-        "observance for the current date and share a concise, surprising 1-2 "
-        "sentence morning fun fact.\n"
+        "4. FUN FACT NARRATION: Share an engaging, mind-blowing, and surprising "
+        "morning fun fact or trivia. Keep it concise (1-2 sentences) and intriguing.\n"
+        "   - In 'visual_card', set 'title': 'Fun Fact', "
+        "'subtitle': '<Trivia Topic>', and 1-2 fascinating bullet points.\n"
     ),
     "calendar": (
         "4. SCHEDULE NARRATION: Summarize today's scheduled events chronologically "
@@ -44,6 +52,20 @@ STEP_PROMPT_GUIDELINES: dict[str, str] = {
     "todo": (
         "4. TASKS NARRATION: State how many tasks are pending on the to-do list and "
         "call out the top priority task items clearly.\n"
+    ),
+    "agenda": (
+        "4. AGENDA NARRATION & CARD: Combine today's scheduled meetings and "
+        "priority to-do tasks into a single briefing.\n"
+        "   - In 'narration_script', summarize today's calendar events chronologically "
+        "with start times (or confirm schedule is clear), then transition smoothly "
+        "into the key priority tasks to tackle.\n"
+        "   - In 'visual_card', return a unified 2-column agenda layout:\n"
+        "     'title': 'Today\\'s Agenda',\n"
+        "     'subtitle': '<X Events • Y Tasks Pending>',\n"
+        "     'layout': 'agenda_split',\n"
+        "     'calendar_items': ['<Time> — <Event Name>', ...],\n"
+        "     'todo_items': ['<Task Description>', ...],\n"
+        "     'bullet_points': ['<Combined fallback items>']\n"
     ),
     "commute": (
         "4. COMMUTE COMPARISON: Report current travel times for all available "
@@ -253,6 +275,7 @@ def _enforce_recipient_separation(
 
     return {
         "visual_card": {
+            **visual_card,
             "title": title,
             "subtitle": subtitle,
             "bullet_points": bullet_points,
