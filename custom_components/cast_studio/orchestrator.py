@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 _ACTIVE_SYNC_TASKS: set[asyncio.Task[Any]] = set()
 _ROUTINE_SYNC_TASKS: dict[str, asyncio.Task[Any]] = {}
 
-DEFAULT_PLAYING_TIMEOUT = 10.0
+DEFAULT_PLAYING_TIMEOUT = 15.0
 
 
 class OrchestratorError(Exception):
@@ -349,6 +349,56 @@ def _create_task(
     return asyncio.create_task(coro, name=name)
 
 
+def _is_routine_media_playing(
+    state_obj: Any,
+    expected_media_url: str | None = None,
+    media_path: str | None = None,
+) -> bool:
+    """
+    Check if the given state represents our routine media playing.
+
+    Returns False if the player is in any state other than 'playing', or if it is
+    displaying Lovelace Cast dashboard, or if it is actively playing unrelated media.
+    """
+    if state_obj is None or getattr(state_obj, "state", None) != "playing":
+        return False
+
+    attrs = getattr(state_obj, "attributes", None)
+    if not isinstance(attrs, dict):
+        return True
+
+    # 1. Cast Lovelace receiver is NEVER routine media playback
+    app_name = (attrs.get("app_name") or "").lower()
+    app_id = (attrs.get("app_id") or "").upper()
+    if (
+        "lovelace" in app_name
+        or app_name in ("home assistant", "home assistant cast")
+        or app_id in ("A078F6B0", "B12CE3C8")
+    ):
+        return False
+
+    # 2. If entity exposes media_content_id and we know our media target,
+    # verify it is not playing a different media stream (e.g. Spotify, radio)
+    current_media_id = attrs.get("media_content_id")
+    if current_media_id and (expected_media_url or media_path):
+        current_clean = str(current_media_id).split("?")[0].rstrip("/")
+        expected_candidates: list[str] = []
+        if expected_media_url:
+            expected_clean = expected_media_url.split("?")[0].rstrip("/")
+            expected_candidates.append(Path(expected_clean).name)
+        if media_path:
+            norm_path = media_path.replace("\\", "/").rstrip("/")
+            expected_candidates.append(Path(norm_path).name)
+
+        valid_candidates = [c for c in expected_candidates if c]
+        if valid_candidates and not any(
+            cand in current_clean for cand in valid_candidates
+        ):
+            return False
+
+    return True
+
+
 async def async_play_and_sync_routine(  # noqa: PLR0915
     hass: HomeAssistant,
     routine_name: str,
@@ -420,7 +470,7 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
 
     # 2. Check if player is already 'playing' at call time
     current_state = hass.states.get(target_player)
-    if current_state is not None and getattr(current_state, "state", None) == "playing":
+    if _is_routine_media_playing(current_state, resolved_media_url, media_path):
         LOGGER.debug(
             "Player '%s' is already in 'playing' state; starting sync",
             target_player,
@@ -466,7 +516,7 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
         @callback
         def _handle_state_changed(event: Event) -> asyncio.Task[Any] | None:
             new_state = event.data.get("new_state")
-            if new_state is not None and getattr(new_state, "state", None) == "playing":
+            if _is_routine_media_playing(new_state, resolved_media_url, media_path):
                 LOGGER.debug(
                     "Player '%s' entered 'playing'; starting slide sync for '%s'",
                     target_player,
