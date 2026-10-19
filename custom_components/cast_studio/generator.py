@@ -42,6 +42,9 @@ if TYPE_CHECKING:
 
     from homeassistant.core import HomeAssistant
 
+DEFAULT_SLIDE_PAD_SECONDS = 0.5
+FINAL_SLIDE_PAD_SECONDS = 2.5
+
 
 class GeneratorError(Exception):
     """Base exception for generator operations."""
@@ -285,7 +288,7 @@ def _unlink_file_if_exists(file_path: str) -> None:
         Path(file_path).unlink(missing_ok=True)
 
 
-async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
+async def async_compile_routine_media(  # noqa: C901, PLR0912, PLR0915
     hass: HomeAssistant,
     routine_name: str,
     routine_config: dict[str, Any],
@@ -350,15 +353,19 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
         audio_paths: list[str] = []
         current_offset = 0.0
 
-        for idx, step in enumerate(steps_to_process):
+        executable_steps: list[dict[str, Any]] = []
+        for raw_idx, step in enumerate(steps_to_process):
             # Check for unconfigured optional entity steps
             if _is_unconfigured_optional_step(hass, step):
                 LOGGER.info(
                     "Skipping unconfigured optional step '%s'",
-                    step.get("name", f"step_{idx:02d}"),
+                    step.get("name", f"step_{raw_idx:02d}"),
                 )
                 continue
+            executable_steps.append(step)
 
+        for idx, step in enumerate(executable_steps):
+            is_last_step = idx == len(executable_steps) - 1
             step_to_process = dict(step)
             extracted_context = _extract_entity_context(hass, step_to_process)
             if extracted_context:
@@ -429,15 +436,28 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
 
             # 7. Calculate step duration
             step_duration_override = step_to_process.get("duration")
+            pad_seconds = 0.0
             if step_duration_override is not None:
+                if is_visual:
+                    pad_seconds = float(step_to_process.get("pad_seconds", 0.0))
                 duration = float(step_duration_override)
             else:
-                duration = await _async_run_in_executor(
+                raw_duration = await _async_run_in_executor(
                     hass,
                     get_audio_duration,
                     effective_audio_path,
                     fallback_text=narration_script,
                 )
+                if is_visual:
+                    default_pad = (
+                        FINAL_SLIDE_PAD_SECONDS
+                        if is_last_step
+                        else DEFAULT_SLIDE_PAD_SECONDS
+                    )
+                    pad_seconds = float(step_to_process.get("pad_seconds", default_pad))
+                    duration = round(raw_duration + pad_seconds, 2)
+                else:
+                    duration = raw_duration
 
             # 8. Record slide timestamp & display action binding
             slide_info: dict[str, Any] = {
@@ -471,6 +491,8 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
                     slide_img_path or slide_img_target,
                     effective_audio_path,
                     step_clip_target,
+                    duration=duration,
+                    pad_seconds=pad_seconds,
                 )
                 clip_ok = await async_run_ffmpeg(hass, clip_cmd)
                 if not clip_ok:
@@ -699,6 +721,8 @@ async def async_compile_static_clip(
             effective_slide_path,
             effective_audio_path,
             final_video_path,
+            duration=duration,
+            pad_seconds=float(step_config.get("pad_seconds", 0.0)),
         )
         clip_ok = await async_run_ffmpeg(hass, clip_cmd)
         if not clip_ok:

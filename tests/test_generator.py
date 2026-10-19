@@ -852,3 +852,71 @@ async def test_compile_routine_media_explicit_narration_and_layout(tmp_path: Pat
         assert rendered_card["subtitle"] == "Javan"
         assert rendered_card["layout"] == "icon"
         assert rendered_card["icon"] == "welcome_avatar.png"
+
+
+@pytest.mark.asyncio
+async def test_compile_routine_media_visual_slide_padding_and_duration(tmp_path: Path):
+    """Test visual slides apply intermediate (0.5s) and final (2.5s) padding and pass duration/pad_seconds to build_slide_clip_command."""
+    hass = MagicMock()
+    hass.states.get = MagicMock(return_value=None)
+    routine_config = {
+        "visuals": True,
+        "steps": [
+            {"name": "greeting", "visual": True, "narration": "Hello there."},
+            {"name": "outro", "visual": True, "narration": "Have a great day."},
+            {"name": "unconfigured_tail", "visual": True, "entity_id": None},
+        ],
+    }
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            new=AsyncMock(return_value="audio.wav"),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.get_audio_duration",
+            return_value=4.0,
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value="slide.jpg",
+        ),
+        patch(
+            "custom_components.cast_studio.generator.build_slide_clip_command",
+            return_value=["ffmpeg"],
+        ) as mock_build_clip,
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        result = await async_compile_routine_media(
+            hass, "morning", routine_config, recipient, str(tmp_path)
+        )
+
+    assert len(result["slide_timestamps"]) == TWO_STEPS
+    assert result["slide_timestamps"][0]["name"] == "greeting"
+    assert result["slide_timestamps"][0]["duration"] == 4.5
+    assert result["slide_timestamps"][0]["start_time"] == 0.0
+    assert result["slide_timestamps"][0]["end_time"] == 4.5
+
+    assert result["slide_timestamps"][1]["name"] == "outro"
+    assert result["slide_timestamps"][1]["duration"] == 6.5
+    assert result["slide_timestamps"][1]["start_time"] == 4.5
+    assert result["slide_timestamps"][1]["end_time"] == 11.0
+    assert result["duration"] == 11.0
+
+    assert mock_build_clip.call_count == TWO_STEPS
+    assert mock_build_clip.call_args_list[0].kwargs == {
+        "duration": 4.5,
+        "pad_seconds": 0.5,
+    }
+    assert mock_build_clip.call_args_list[1].kwargs == {
+        "duration": 6.5,
+        "pad_seconds": 2.5,
+    }
