@@ -16,6 +16,7 @@ from custom_components.cast_studio.generator import (
     _is_unconfigured_optional_step,
     async_compile_routine_media,
     async_compile_static_clip,
+    async_extract_entity_context,
     get_audio_duration,
 )
 
@@ -920,3 +921,98 @@ async def test_compile_routine_media_visual_slide_padding_and_duration(tmp_path:
         "duration": 6.5,
         "pad_seconds": 2.5,
     }
+
+
+@pytest.mark.asyncio
+async def test_async_extract_entity_context_calendar_get_events():
+    """Test async_extract_entity_context fetches today's events via calendar.get_events even when calendar state is off."""
+    hass = MagicMock()
+    cal_state = MagicMock(state="off", attributes={})
+    hass.states.get = MagicMock(return_value=cal_state)
+    hass.services.async_call = AsyncMock(
+        return_value={
+            "calendar.personal": {
+                "events": [
+                    {
+                        "summary": "Team Standup",
+                        "start": "2026-10-19T09:00:00",
+                    }
+                ]
+            }
+        }
+    )
+
+    step = {"name": "calendar", "entity_id": "calendar.personal"}
+    context = await async_extract_entity_context(hass, step)
+    assert "Team Standup" in context
+    assert "2026-10-19T09:00:00" in context
+    assert "No scheduled meetings today" not in context
+
+
+@pytest.mark.asyncio
+async def test_async_extract_entity_context_todo_get_items():
+    """Test async_extract_entity_context fetches pending task summaries via todo.get_items."""
+    hass = MagicMock()
+    todo_state = MagicMock(state="2", attributes={})
+    hass.states.get = MagicMock(return_value=todo_state)
+    hass.services.async_call = AsyncMock(
+        return_value={
+            "todo.javan_s_list": {
+                "items": [
+                    {"summary": "50 push-ups"},
+                    {"summary": "Pay rent"},
+                ]
+            }
+        }
+    )
+
+    step = {"name": "todo", "entity_id": "todo.javan_s_list"}
+    context = await async_extract_entity_context(hass, step)
+    assert "50 push-ups" in context
+    assert "Pay rent" in context
+    assert "2 tasks pending" in context
+
+
+def test_extract_entity_context_daily_text_companion_commentary():
+    """Test _extract_entity_context includes companion _comment sensor text for Daily Text."""
+    hass = MagicMock()
+    main_state = MagicMock(
+        state="2026-10-19",
+        attributes={
+            "scripture": "Proverbs 3:5",
+            "text": "Trust in Jehovah",
+        },
+    )
+    comment_state = MagicMock(
+        state="2026-10-19",
+        attributes={
+            "text": "When we rely on Jehovah's wisdom...",
+        },
+    )
+    state_map = {
+        "sensor.jw_library_daily_text_today": main_state,
+        "sensor.jw_library_daily_text_today_comment": comment_state,
+    }
+    hass.states.get = MagicMock(side_effect=state_map.get)
+
+    step = {"name": "scripture", "entity_id": "sensor.jw_library_daily_text_today"}
+    context = _extract_entity_context(hass, step)
+    assert "Proverbs 3:5" in context
+    assert "Trust in Jehovah" in context
+    assert "Commentary: When we rely on Jehovah's wisdom..." in context
+
+
+@pytest.mark.asyncio
+async def test_fun_fact_step_not_skipped_when_entity_unconfigured():
+    """Test fun_fact step is not skipped when entity_id is empty and injects default fallback prompt."""
+    hass = MagicMock()
+    hass.states.get = MagicMock(return_value=None)
+
+    step = {"name": "fun_fact", "visual": True, "entity_id": ""}
+    assert not _is_unconfigured_optional_step(hass, step)
+
+    context = await async_extract_entity_context(hass, step)
+    assert (
+        context
+        == "Share today's National Day holiday and an engaging, surprising morning fun fact."
+    )

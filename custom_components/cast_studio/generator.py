@@ -14,6 +14,7 @@ import functools
 import inspect
 import json
 import wave
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -75,72 +76,144 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
     return eids
 
 
+def _format_calendar_service_response(eid: str, events: list[Any]) -> str:
+    """Format calendar.get_events response list into context string."""
+    event_strs: list[str] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        summary = (
+            ev.get("summary")
+            or ev.get("message")
+            or ev.get("description")
+            or "Scheduled Event"
+        )
+        parts = [f"Summary: {summary}"]
+        if start := ev.get("start"):
+            parts.append(f"Start: {start}")
+        if end := ev.get("end"):
+            parts.append(f"End: {end}")
+        if location := ev.get("location"):
+            parts.append(f"Location: {location}")
+        event_strs.append(", ".join(parts))
+
+    if not event_strs:
+        return (
+            f"Calendar ({eid}): No scheduled meetings today. "
+            "The user's schedule is completely clear."
+        )
+    return f"Calendar ({eid}): {'; '.join(event_strs)}"
+
+
+def _format_todo_service_response(eid: str, items: list[Any]) -> str:
+    """Format todo.get_items response list into context string."""
+    summaries = [
+        str(item.get("summary")).strip()
+        for item in items
+        if isinstance(item, dict)
+        and item.get("summary")
+        and str(item.get("summary")).strip()
+    ]
+    if summaries:
+        return f"To-do ({eid}): {len(summaries)} tasks pending: {', '.join(summaries)}"
+    return f"To-do ({eid}): 0 tasks pending"
+
+
 def _extract_entity_context(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant,
     step: dict[str, Any],
+    service_overrides: dict[str, str] | None = None,
 ) -> str:
     """Extract live state context for configured entity IDs from Home Assistant."""
     eids = _get_step_entity_ids(step)
     entity_lines: list[str] = []
+    is_fun_fact = (
+        str(step.get("name", "")).lower() == "fun_fact"
+        or str(step.get("type", "")).lower() == "fun_fact"
+    )
+    has_states_getter = hasattr(hass, "states") and hasattr(hass.states, "get")
 
-    if hasattr(hass, "states") and hasattr(hass.states, "get"):
-        for eid in eids:
-            state_obj = hass.states.get(eid)
-            if state_obj is None:
-                continue
+    for eid in eids:
+        if service_overrides and eid in service_overrides:
+            entity_lines.append(service_overrides[eid])
+            continue
 
-            state_val = getattr(state_obj, "state", "unknown")
-            attrs = getattr(state_obj, "attributes", {}) or {}
+        if not has_states_getter:
+            continue
 
-            if eid.startswith("weather."):
-                temp = attrs.get("temperature")
-                unit = attrs.get("temperature_unit") or "°"
-                line_parts = [f"Weather ({eid}): Condition: {state_val}"]
-                if temp is not None:
-                    line_parts.append(f"Temperature: {temp}{unit}")
-                if forecast := attrs.get("forecast"):
-                    if isinstance(forecast, list):
-                        line_parts.append(f"Forecast: {forecast[:3]}")
-                    else:
-                        line_parts.append(f"Forecast: {forecast}")
+        state_obj = hass.states.get(eid)
+        if state_obj is None:
+            continue
+
+        state_val = getattr(state_obj, "state", "unknown")
+        attrs = getattr(state_obj, "attributes", {}) or {}
+
+        if (
+            is_fun_fact
+            and str(state_val).lower() in ("unknown", "unavailable", "")
+            and not attrs
+        ):
+            continue
+
+        if eid.startswith("weather."):
+            temp = attrs.get("temperature")
+            unit = attrs.get("temperature_unit") or "°"
+            line_parts = [f"Weather ({eid}): Condition: {state_val}"]
+            if temp is not None:
+                line_parts.append(f"Temperature: {temp}{unit}")
+            if forecast := attrs.get("forecast"):
+                if isinstance(forecast, list):
+                    line_parts.append(f"Forecast: {forecast[:3]}")
+                else:
+                    line_parts.append(f"Forecast: {forecast}")
+            entity_lines.append(", ".join(line_parts))
+
+        elif eid.startswith("calendar."):
+            summary = (
+                attrs.get("message") or attrs.get("summary") or attrs.get("description")
+            )
+            start_time = attrs.get("start_time")
+            if state_val == "off" and not summary:
+                entity_lines.append(
+                    f"Calendar ({eid}): No scheduled meetings today. "
+                    "The user's schedule is completely clear."
+                )
+            else:
+                line_parts = [f"Calendar ({eid}): State: {state_val}"]
+                if summary:
+                    line_parts.append(f"Summary: {summary}")
+                if start_time:
+                    line_parts.append(f"Start: {start_time}")
                 entity_lines.append(", ".join(line_parts))
 
-            elif eid.startswith("calendar."):
-                summary = (
-                    attrs.get("message")
-                    or attrs.get("summary")
-                    or attrs.get("description")
+        elif eid.startswith("todo."):
+            entity_lines.append(f"To-do ({eid}): {state_val} tasks pending")
+
+        elif any(k.lower() in ("scripture", "text", "commentary") for k in attrs):
+            lower_attrs = {str(k).lower(): v for k, v in attrs.items()}
+            parts = [f"Daily Scripture ({eid}):"]
+            if ref := lower_attrs.get("scripture"):
+                parts.append(f"Citation: {ref}")
+            if txt := (lower_attrs.get("text") or lower_attrs.get("commentary")):
+                parts.append(f"Text: {txt}")
+            if lower_attrs.get("text") and lower_attrs.get("commentary"):
+                parts.append(f"Commentary: {lower_attrs['commentary']}")
+            elif not lower_attrs.get("commentary") and eid.endswith(
+                "_daily_text_today"
+            ):
+                comment_obj = hass.states.get(f"{eid}_comment")
+                comment_attrs = getattr(comment_obj, "attributes", None) or {}
+                comment_text = (
+                    comment_attrs.get("text") if hasattr(comment_attrs, "get") else None
                 )
-                start_time = attrs.get("start_time")
-                if state_val == "off" and not summary:
-                    entity_lines.append(
-                        f"Calendar ({eid}): No scheduled meetings today. "
-                        "The user's schedule is completely clear."
-                    )
-                else:
-                    line_parts = [f"Calendar ({eid}): State: {state_val}"]
-                    if summary:
-                        line_parts.append(f"Summary: {summary}")
-                    if start_time:
-                        line_parts.append(f"Start: {start_time}")
-                    entity_lines.append(", ".join(line_parts))
+                if comment_text and comment_text != lower_attrs.get("text"):
+                    parts.append(f"Commentary: {comment_text}")
+            entity_lines.append("\n".join(parts))
 
-            elif eid.startswith("todo."):
-                entity_lines.append(f"To-do ({eid}): {state_val} tasks pending")
-
-            elif any(k.lower() in ("scripture", "text", "commentary") for k in attrs):
-                lower_attrs = {str(k).lower(): v for k, v in attrs.items()}
-                parts = [f"Daily Scripture ({eid}):"]
-                if ref := lower_attrs.get("scripture"):
-                    parts.append(f"Citation: {ref}")
-                if txt := (lower_attrs.get("text") or lower_attrs.get("commentary")):
-                    parts.append(f"Text: {txt}")
-                entity_lines.append("\n".join(parts))
-
-            else:
-                unit = attrs.get("unit_of_measurement", "")
-                suffix = f" {unit}" if unit else ""
-                entity_lines.append(f"Sensor ({eid}): {state_val}{suffix}".strip())
+        else:
+            unit = attrs.get("unit_of_measurement", "")
+            suffix = f" {unit}" if unit else ""
+            entity_lines.append(f"Sensor ({eid}): {state_val}{suffix}".strip())
 
     entity_context_str = "\n".join(entity_lines)
     existing_context = step.get("context")
@@ -149,11 +222,91 @@ def _extract_entity_context(  # noqa: PLR0912, PLR0915
         return f"{str(existing_context).strip()}\n{entity_context_str}"
     if entity_context_str:
         return entity_context_str
-    return str(existing_context).strip() if existing_context else ""
+    if existing_context and str(existing_context).strip():
+        return str(existing_context).strip()
+    if is_fun_fact:
+        return (
+            "Share today's National Day holiday and an engaging, "
+            "surprising morning fun fact."
+        )
+    return ""
+
+
+async def async_extract_entity_context(
+    hass: HomeAssistant,
+    step: dict[str, Any],
+) -> str:
+    """Asynchronously extract entity context, querying calendar and todo services."""
+    eids = _get_step_entity_ids(step)
+    service_overrides: dict[str, str] = {}
+
+    services = getattr(hass, "services", None)
+    async_call = getattr(services, "async_call", None) if services else None
+
+    if callable(async_call):
+        now = datetime.now().astimezone()
+        start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        end_dt = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
+
+        for eid in eids:
+            if eid.startswith("calendar."):
+                try:
+                    res = async_call(
+                        "calendar",
+                        "get_events",
+                        {
+                            "entity_id": eid,
+                            "start_date_time": start_dt,
+                            "end_date_time": end_dt,
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
+                    if inspect.isawaitable(res):
+                        res = await res
+                    if isinstance(res, dict) and isinstance(res.get(eid), dict):
+                        events = res[eid].get("events")
+                        if isinstance(events, list):
+                            service_overrides[eid] = _format_calendar_service_response(
+                                eid, events
+                            )
+                except Exception as err:  # noqa: BLE001
+                    LOGGER.debug("Failed to fetch calendar events for %s: %s", eid, err)
+
+            elif eid.startswith("todo."):
+                try:
+                    res = async_call(
+                        "todo",
+                        "get_items",
+                        {
+                            "entity_id": eid,
+                            "status": ["needs_action"],
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
+                    if inspect.isawaitable(res):
+                        res = await res
+                    if isinstance(res, dict) and isinstance(res.get(eid), dict):
+                        items = res[eid].get("items")
+                        if isinstance(items, list):
+                            service_overrides[eid] = _format_todo_service_response(
+                                eid, items
+                            )
+                except Exception as err:  # noqa: BLE001
+                    LOGGER.debug("Failed to fetch todo items for %s: %s", eid, err)
+
+    return _extract_entity_context(hass, step, service_overrides=service_overrides)
 
 
 def _is_unconfigured_optional_step(hass: HomeAssistant, step: dict[str, Any]) -> bool:
     """Check if an entity step is unconfigured or missing with no fallback."""
+    if (
+        str(step.get("name", "")).lower() == "fun_fact"
+        or str(step.get("type", "")).lower() == "fun_fact"
+    ):
+        return False
+
     has_entity_key = "entity_id" in step or "entity_ids" in step
     if not has_entity_key:
         return False
@@ -367,7 +520,9 @@ async def async_compile_routine_media(  # noqa: C901, PLR0912, PLR0915
         for idx, step in enumerate(executable_steps):
             is_last_step = idx == len(executable_steps) - 1
             step_to_process = dict(step)
-            extracted_context = _extract_entity_context(hass, step_to_process)
+            extracted_context = await async_extract_entity_context(
+                hass, step_to_process
+            )
             if extracted_context:
                 step_to_process["context"] = extracted_context
 
@@ -697,15 +852,17 @@ async def async_compile_static_clip(
         effective_audio_path = synth_audio or step_wav_path
 
         step_duration_override = step_config.get("duration")
+        pad_seconds = float(step_config.get("pad_seconds", 0.0))
         if step_duration_override is not None:
             duration = float(step_duration_override)
         else:
-            duration = await _async_run_in_executor(
+            raw_duration = await _async_run_in_executor(
                 hass,
                 get_audio_duration,
                 effective_audio_path,
                 fallback_text=narration_script,
             )
+            duration = round(raw_duration + pad_seconds, 2)
 
         slide_img_target = str(Path(scratch_dir) / "slide.jpg")
         slide_img_path = await _async_run_in_executor(
@@ -722,7 +879,7 @@ async def async_compile_static_clip(
             effective_audio_path,
             final_video_path,
             duration=duration,
-            pad_seconds=float(step_config.get("pad_seconds", 0.0)),
+            pad_seconds=pad_seconds,
         )
         clip_ok = await async_run_ffmpeg(hass, clip_cmd)
         if not clip_ok:
