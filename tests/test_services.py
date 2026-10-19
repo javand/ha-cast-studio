@@ -985,7 +985,10 @@ async def test_run_routine_forwards_post_actions_to_metadata(
     meta_content = {
         "video_path": str(video_file),
         "duration": 10.0,
-        "slide_timestamps": [],
+        "slide_timestamps": [
+            {"name": "greeting", "timestamp": 0.0},
+            {"name": "fun_fact", "timestamp": 5.0},
+        ],
         "last_pregenerated": datetime.now(UTC).isoformat(),
     }
     meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
@@ -1180,3 +1183,53 @@ async def test_run_routine_auto_builds_default_morning_briefing_steps(
         assert "scripture" in step_names
 
         await dummy_play_task
+
+
+@pytest.mark.asyncio
+async def test_run_routine_zero_config_invalidates_stale_single_slide_cache(
+    mock_hass: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Verify async_run_routine with no routine_config invalidates a 1-slide cached morning_briefing.metadata.json and recompiles."""
+    await async_setup(mock_hass, {DOMAIN: {}})
+
+    video_file = tmp_path / "morning_briefing.mp4"
+    video_file.write_bytes(b"stale_mp4")
+    meta_file = tmp_path / "morning_briefing.metadata.json"
+    stale_meta = {
+        "video_path": str(video_file),
+        "duration": 10.0,
+        "slide_timestamps": [{"name": "greeting", "timestamp": 0.0}],
+        "last_pregenerated": datetime.now(UTC).isoformat(),
+    }
+    meta_file.write_text(json.dumps(stale_meta), encoding="utf-8")
+
+    fresh_metadata = {
+        "video_path": str(video_file),
+        "audio_path": None,
+        "duration": DURATION_20_0,
+        "slide_timestamps": [
+            {"name": "greeting", "timestamp": 0.0},
+            {"name": "fun_fact", "timestamp": 8.0},
+        ],
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=AsyncMock(return_value=fresh_metadata),
+        ) as mock_compile,
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+    ):
+        result = await async_run_routine(
+            mock_hass,
+            "morning_briefing",
+            output_dir=str(tmp_path),
+        )
+
+        mock_compile.assert_awaited_once()
+        assert result["duration"] == DURATION_20_0
+        assert len(result["slide_timestamps"]) == 2

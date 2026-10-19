@@ -148,11 +148,7 @@ def _extract_entity_context(  # noqa: PLR0912, PLR0915
         state_val = getattr(state_obj, "state", "unknown")
         attrs = getattr(state_obj, "attributes", {}) or {}
 
-        if (
-            is_fun_fact
-            and str(state_val).lower() in ("unknown", "unavailable", "")
-            and not attrs
-        ):
+        if is_fun_fact and str(state_val).lower() in ("unknown", "unavailable", ""):
             continue
 
         if eid.startswith("weather."):

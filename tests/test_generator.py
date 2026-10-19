@@ -1016,3 +1016,20 @@ async def test_fun_fact_step_not_skipped_when_entity_unconfigured():
         context
         == "Share today's National Day holiday and an engaging, surprising morning fun fact."
     )
+
+
+def test_fun_fact_unavailable_entity_with_attributes_falls_back_to_default_prompt():
+    """Test fun_fact step whose entity is unavailable with attributes (e.g. friendly_name) falls back to default fun fact prompt."""
+    hass = MagicMock()
+    state_mock = MagicMock(
+        state="unavailable",
+        attributes={"friendly_name": "Morning Trivia"},
+    )
+    hass.states.get = MagicMock(return_value=state_mock)
+
+    step = {"name": "fun_fact", "visual": True, "entity_id": "sensor.morning_trivia"}
+    context = _extract_entity_context(hass, step)
+    assert (
+        context
+        == "Share today's National Day holiday and an engaging, surprising morning fun fact."
+    )

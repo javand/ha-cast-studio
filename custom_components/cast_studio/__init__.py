@@ -489,6 +489,12 @@ async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
         recipient = domain_data.get(
             "recipient", {"name": "User", "phonetic_name": "User"}
         )
+    if not routine_config.get("steps") and not routine_config.get("static"):
+        default_cfg = _build_default_routine_config(hass, routine_name, recipient)
+        if default_cfg:
+            routine_config = {**default_cfg, **routine_config}
+            if not routine_config.get("steps") and default_cfg.get("steps"):
+                routine_config["steps"] = default_cfg["steps"]
     if output_dir is None:
         output_dir = routine_config.get("output_dir", DEFAULT_OUTPUT_DIR)
     if target_player is None:
@@ -515,12 +521,6 @@ async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
 
     # 2. If not ready/missing or stale, compile on-demand
     if not is_ready or metadata is None:
-        if not routine_config.get("steps") and not routine_config.get("static"):
-            default_cfg = _build_default_routine_config(hass, routine_name, recipient)
-            if default_cfg:
-                routine_config = {**default_cfg, **routine_config}
-                if not routine_config.get("steps") and default_cfg.get("steps"):
-                    routine_config["steps"] = default_cfg["steps"]
         sensor.update_state("generating", active_task="run_routine")
         try:
             if routine_config.get("static"):
