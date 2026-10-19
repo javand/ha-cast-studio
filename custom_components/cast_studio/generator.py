@@ -759,20 +759,42 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
             w in cond for w in ("rain", "pour", "drizzle", "storm", "thunder", "shower")
         ):
             fallback_asset = "weather_rainy.jpg"
+            sky_desc = "dramatic rainy skies with visible rainfall"
         elif any(
             w in cond for w in ("snow", "sleet", "hail", "ice", "blizzard", "winter")
         ):
             fallback_asset = "weather_snow.jpg"
+            sky_desc = "wintry overcast sky with gentle falling snow"
         elif any(
             w in cond for w in ("cloud", "overcast", "fog", "mist", "wind", "haze")
         ):
             fallback_asset = "weather_cloudy.jpg"
+            sky_desc = "dramatic partly cloudy atmospheric morning skies"
         else:
             fallback_asset = "weather_sunny.jpg"
+            sky_desc = "bright clear sunny blue morning skies with soft golden sunlight"
+
+        weather_summary = (
+            card_data.get("subtitle")
+            or card_data.get("title")
+            or cond
+            or "clear morning"
+        )
+        bullets = card_data.get("bullet_points") or []
+        bullet_text = (
+            ", ".join(str(b) for b in bullets) if isinstance(bullets, list) else ""
+        )
+        weather_details = f"{weather_summary}. {bullet_text}".strip(". ")
+
         dynamic_prompt = (
-            "A photorealistic cinematic 16:9 widescreen morning landscape in soft dawn "
-            f"light showing {cond or 'clear morning'} weather, realistic atmosphere, "
-            "8k resolution, beautiful natural lighting"
+            "A professional television weather broadcast background graphic, "
+            "modern Weather Channel style visual outlook, "
+            "photorealistic depiction of current weather conditions: "
+            f"{sky_desc}, {weather_details}. "
+            "Atmospheric skies matching real-time weather conditions, "
+            "modern broadcast studio digital weather backdrop, "
+            "cinematic studio lighting, 16:9 widescreen aspect ratio, "
+            "ultra-high resolution, no text, no words, no numbers, no typography"
         )
     elif step_key in (
         "agenda",
@@ -788,10 +810,21 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
         "tasks",
     ):
         fallback_asset = "calendar_agenda.jpg"
+        cal_items = card_data.get("calendar_items") or []
+        todo_items = card_data.get("todo_items") or []
+        cal_summary = (
+            f"{len(cal_items)} calendar events" if cal_items else "clear schedule"
+        )
+        todo_summary = (
+            f"{len(todo_items)} pending tasks" if todo_items else "tasks completed"
+        )
         dynamic_prompt = (
-            "A clean, aesthetic morning workspace with an open daily planner "
-            "notebook and coffee cup on a modern desk bathed in warm morning "
-            "daylight, cinematic 16:9 widescreen"
+            "A sleek modern digital calendar and schedule visual background, "
+            f"illustrating a structured morning schedule with {cal_summary} "
+            f"and {todo_summary}, aesthetic modern minimalist office desk "
+            "with a live calendar and planner layout, warm ambient morning lighting, "
+            "high contrast, elegant dark slate theme, 16:9 widescreen, "
+            "clean cinematic composition, no gibberish text"
         )
     elif step_key in ("commute", "traffic", "transit") or name_key in (
         "commute",
@@ -1104,6 +1137,14 @@ async def _async_finalize_routine_media(  # noqa: PLR0913
             "duration": total_duration,
             "slide_timestamps": slide_timestamps,
         }
+
+    post_routine_actions = (
+        routine_config.get("post_routine_actions")
+        or routine_config.get("post_briefing_actions")
+        or routine_config.get("post_actions")
+    )
+    if post_routine_actions:
+        metadata["post_routine_actions"] = post_routine_actions
 
     metadata_file = out_path / f"{routine_name}.metadata.json"
     await _async_run_in_executor(hass, _write_json_file, metadata_file, metadata)

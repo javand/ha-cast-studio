@@ -714,9 +714,10 @@ def _draw_two_column_agenda(  # noqa: PLR0912, PLR0915
     card_data: dict[str, Any],
     start_y: int,
     theme: dict[str, Any] | None = None,
+    canvas: Image.Image | None = None,
 ) -> int:
     """Render 2-column side-by-side agenda: Schedule on the left, Tasks on the right."""
-    accent_left = (theme or {}).get("accent_color", (52, 211, 153))
+    accent_left = (theme or {}).get("accent_color", (56, 189, 248))
     accent_right = (251, 191, 36)
 
     col_left_x0 = CONTENT_LEFT
@@ -727,21 +728,64 @@ def _draw_two_column_agenda(  # noqa: PLR0912, PLR0915
     col_right_x0 = 536
     col_right_x1 = CONTENT_RIGHT
 
-    eyebrow_font = _get_font(15, bold=True)
-    time_font = _get_font(15, bold=True)
-    item_font = _get_font(18, bold=False)
+    eyebrow_font = _get_font(14, bold=True)
+    time_font = _get_font(14, bold=True)
+    item_font = _get_font(17, bold=False)
     sub_font = _get_font(14, bold=False)
 
     curr_y = start_y + 4
+    body_start_y = curr_y + 28
 
-    # Draw Column Headers
-    draw.text((col_left_x0, curr_y), "SCHEDULE", font=eyebrow_font, fill=accent_left)
+    # Draw Frosted High-Contrast Panels for both columns when canvas is available
+    if canvas is not None:
+        panel_overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+        d_panel = ImageDraw.Draw(panel_overlay)
+        # Left Schedule Panel (Slate-950 at ~88% opacity)
+        d_panel.rounded_rectangle(
+            (col_left_x0 - 15, start_y, col_left_x1 + 10, CARD_Y1 - 20),
+            radius=16,
+            fill=(10, 16, 30, 225),
+            outline=(51, 65, 85, 180),
+            width=1,
+        )
+        # Right Priority Tasks Panel (Slate-950 at ~88% opacity)
+        d_panel.rounded_rectangle(
+            (col_right_x0 - 10, start_y, col_right_x1 + 15, CARD_Y1 - 20),
+            radius=16,
+            fill=(10, 16, 30, 225),
+            outline=(51, 65, 85, 180),
+            width=1,
+        )
+        # Translucent pill badges for column headers
+        d_panel.rounded_rectangle(
+            [(col_left_x0 - 4, curr_y - 2), (col_left_x0 + 105, curr_y + 24)],
+            radius=13,
+            fill=(56, 189, 248, 40),
+            outline=(56, 189, 248, 160),
+            width=1,
+        )
+        d_panel.rounded_rectangle(
+            [(col_right_x0 - 4, curr_y - 2), (col_right_x0 + 135, curr_y + 24)],
+            radius=13,
+            fill=(251, 191, 36, 40),
+            outline=(251, 191, 36, 160),
+            width=1,
+        )
+        comp = Image.alpha_composite(canvas.convert("RGBA"), panel_overlay).convert(
+            "RGB"
+        )
+        canvas.paste(comp)
+
+    # Draw Column Headers text
     draw.text(
-        (col_right_x0, curr_y), "PRIORITY TASKS", font=eyebrow_font, fill=accent_right
+        (col_left_x0 + 12, curr_y + 3), "SCHEDULE", font=eyebrow_font, fill=accent_left
     )
-    curr_y += 24
-
-    body_start_y = curr_y
+    draw.text(
+        (col_right_x0 + 12, curr_y + 3),
+        "PRIORITY TASKS",
+        font=eyebrow_font,
+        fill=accent_right,
+    )
 
     # Draw Center Vertical Rule
     draw.line(
@@ -781,10 +825,20 @@ def _draw_two_column_agenda(  # noqa: PLR0912, PLR0915
                     break
 
             if time_part:
-                draw.text(
-                    (col_left_x0, cal_y), time_part, font=time_font, fill=(56, 189, 248)
+                draw.rounded_rectangle(
+                    [(col_left_x0, cal_y), (col_left_x0 + 85, cal_y + 24)],
+                    radius=6,
+                    fill=(30, 41, 59),
+                    outline=(71, 85, 105),
+                    width=1,
                 )
-                text_x = col_left_x0 + 85
+                draw.text(
+                    (col_left_x0 + 8, cal_y + 4),
+                    time_part,
+                    font=time_font,
+                    fill=(56, 189, 248),
+                )
+                text_x = col_left_x0 + 95
                 text_max_w = col_left_x1 - text_x
             else:
                 text_x = col_left_x0
@@ -794,7 +848,9 @@ def _draw_two_column_agenda(  # noqa: PLR0912, PLR0915
             for line in wrapped[:2]:
                 bbox = draw.textbbox((text_x, cal_y), line, font=item_font)
                 lh = bbox[3] - bbox[1]
-                draw.text((text_x, cal_y), line, font=item_font, fill=(241, 245, 249))
+                draw.text(
+                    (text_x, cal_y + 2), line, font=item_font, fill=(248, 250, 252)
+                )
                 cal_y += lh + 4
             cal_y += 8
 
@@ -819,21 +875,23 @@ def _draw_two_column_agenda(  # noqa: PLR0912, PLR0915
             if todo_y + 30 > CARD_Y1 - 20:
                 break
             raw_text = str(item).strip()
-            cb_size = 14
+            cb_size = 16
             cb_y = todo_y + 3
             draw.rounded_rectangle(
                 [(col_right_x0, cb_y), (col_right_x0 + cb_size, cb_y + cb_size)],
-                radius=3,
+                radius=4,
                 outline=(148, 163, 184),
                 width=1,
             )
-            text_x = col_right_x0 + cb_size + 10
+            text_x = col_right_x0 + cb_size + 12
             text_max_w = col_right_x1 - text_x
             wrapped = _wrap_text(raw_text, item_font, text_max_w, draw)
             for line in wrapped[:2]:
                 bbox = draw.textbbox((text_x, todo_y), line, font=item_font)
                 lh = bbox[3] - bbox[1]
-                draw.text((text_x, todo_y), line, font=item_font, fill=(241, 245, 249))
+                draw.text(
+                    (text_x, todo_y + 2), line, font=item_font, fill=(241, 245, 249)
+                )
                 todo_y += lh + 4
             todo_y += 8
 
@@ -946,7 +1004,7 @@ def render_slide(
     if card_data.get("layout") == "agenda_split" or (
         "calendar_items" in card_data and "todo_items" in card_data
     ):
-        _draw_two_column_agenda(draw, card_data, curr_y, theme=theme)
+        _draw_two_column_agenda(draw, card_data, curr_y, theme=theme, canvas=canvas)
     else:
         raw_bullets = card_data.get("bullet_points")
         if isinstance(raw_bullets, list):

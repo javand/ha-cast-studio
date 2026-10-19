@@ -197,6 +197,42 @@ def extract_actions(steps_or_actions: list[dict[str, Any]]) -> list[dict[str, An
     return actions
 
 
+def _bind_target_player_to_post_actions(
+    post_actions: list[dict[str, Any]],
+    target_player: str | None,
+) -> list[dict[str, Any]]:
+    """Bind target_player to post-routine actions targeting media players or Cast."""
+    if not target_player:
+        return post_actions
+
+    resolved: list[dict[str, Any]] = []
+    for act in post_actions:
+        act_copy = dict(act)
+        act_name = str(act_copy.get("action") or act_copy.get("service") or "")
+        if act_name.startswith(("cast.", "media_player.")):
+            has_target = bool(
+                isinstance(act_copy.get("target"), dict)
+                and (
+                    act_copy["target"].get("entity_id")
+                    or act_copy["target"].get("device_id")
+                    or act_copy["target"].get("area_id")
+                )
+            )
+            has_data_entity = bool(
+                isinstance(act_copy.get("data"), dict)
+                and act_copy["data"].get("entity_id")
+            )
+            if not has_target and not has_data_entity:
+                act_data = dict(
+                    act_copy.get("data") or act_copy.get("service_data") or {}
+                )
+                act_data["entity_id"] = target_player
+                act_copy["data"] = act_data
+                act_copy["target"] = {"entity_id": target_player}
+        resolved.append(act_copy)
+    return resolved
+
+
 async def _async_execute_single_action(
     hass: HomeAssistant,
     action_def: dict[str, Any],
@@ -610,8 +646,11 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
                             await hass.services.async_call(
                                 "media_player", "turn_on", {"entity_id": target_player}
                             )
+                    resolved_post_actions = _bind_target_player_to_post_actions(
+                        post_actions, target_player
+                    )
                     await asyncio.shield(
-                        async_execute_background_actions(hass, post_actions)
+                        async_execute_background_actions(hass, resolved_post_actions)
                     )
                 except Exception as err:  # noqa: BLE001
                     LOGGER.error("Error executing post-routine actions: %s", err)

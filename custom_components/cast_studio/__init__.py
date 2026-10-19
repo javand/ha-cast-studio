@@ -314,6 +314,15 @@ def _build_default_morning_routine_config(
                 "voice_personality": "life_coach",
             },
         ],
+        "post_routine_actions": [
+            {
+                "action": "cast.show_lovelace_view",
+                "data": {
+                    "dashboard_path": "nest-display",
+                    "view_path": "morning",
+                },
+            }
+        ],
     }
 
 
@@ -362,6 +371,18 @@ def _resolve_routine_invocation(
     if not eff_config.get("steps") and not eff_config.get("static"):
         default_cfg = _build_default_routine_config(hass, routine_name, eff_recipient)
         if default_cfg:
+            has_user_post_actions = any(
+                k in eff_config
+                for k in (
+                    "post_routine_actions",
+                    "post_briefing_actions",
+                    "post_actions",
+                )
+            )
+            if has_user_post_actions and "post_routine_actions" in default_cfg:
+                default_cfg = {
+                    k: v for k, v in default_cfg.items() if k != "post_routine_actions"
+                }
             eff_config = {**default_cfg, **eff_config}
             if not eff_config.get("steps") and default_cfg.get("steps"):
                 eff_config["steps"] = default_cfg["steps"]
