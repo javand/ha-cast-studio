@@ -562,11 +562,11 @@ async def async_setup_entry(
     phonetic_name = entry.options.get(
         CONF_PHONETIC_NAME, entry.data.get(CONF_PHONETIC_NAME, DEFAULT_PHONETIC_NAME)
     )
-    domain_data.setdefault(
-        "recipient", {"name": recipient_name, "phonetic_name": phonetic_name}
-    )
+    domain_data["recipient"] = {
+        "name": recipient_name,
+        "phonetic_name": phonetic_name,
+    }
 
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -577,13 +577,3 @@ async def async_unload_entry(
 ) -> bool:
     """Handle removal of an entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
-
-async def async_reload_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-) -> bool:
-    """Reload config entry."""
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
-    return True

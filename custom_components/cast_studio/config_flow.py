@@ -84,27 +84,14 @@ class CastStudioFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
+        config_entry: config_entries.ConfigEntry,  # noqa: ARG004
     ) -> CastStudioOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return CastStudioOptionsFlowHandler(config_entry)
+        return CastStudioOptionsFlowHandler()
 
 
-class CastStudioOptionsFlowHandler(config_entries.OptionsFlow):
+class CastStudioOptionsFlowHandler(config_entries.OptionsFlowWithReload):
     """Handle options flow for CastStudio."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry | None = None) -> None:
-        """Initialize options flow."""
-        super().__init__()
-        if config_entry is not None:
-            self._custom_config_entry = config_entry
-
-    @property
-    def config_entry(self) -> config_entries.ConfigEntry:
-        """Return the config entry."""
-        if hasattr(self, "_custom_config_entry"):
-            return self._custom_config_entry
-        return super().config_entry
 
     async def async_step_init(
         self,
