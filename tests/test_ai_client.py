@@ -599,6 +599,46 @@ async def test_async_generate_ai_image_success(tmp_path: Path) -> None:
         assert Path(target_path).read_bytes() == fake_png_bytes
 
 
+@pytest.mark.asyncio
+async def test_query_gemini_image_api_retries_on_rate_limit_429() -> None:
+    """Test that _query_gemini_image_api retries when encountering HTTP 429."""
+    from custom_components.cast_studio.ai_client import _query_gemini_image_api
+
+    mock_hass = MagicMock()
+    mock_resp_429 = MagicMock()
+    mock_resp_429.status = 429
+
+    mock_resp_200 = MagicMock()
+    mock_resp_200.status = 200
+    mock_resp_200.json = AsyncMock(
+        return_value={"candidates": [{"content": {"parts": []}}]}
+    )
+
+    mock_session = MagicMock()
+    # First call returns 429 context manager, second call returns 200 context manager
+    cm_429 = MagicMock()
+    cm_429.__aenter__ = AsyncMock(return_value=mock_resp_429)
+    cm_429.__aexit__ = AsyncMock(return_value=None)
+
+    cm_200 = MagicMock()
+    cm_200.__aenter__ = AsyncMock(return_value=mock_resp_200)
+    cm_200.__aexit__ = AsyncMock(return_value=None)
+
+    mock_session.post.side_effect = [cm_429, cm_200]
+
+    with (
+        patch(
+            "custom_components.cast_studio.ai_client.async_get_clientsession",
+            return_value=mock_session,
+        ),
+        patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
+    ):
+        result = await _query_gemini_image_api(mock_hass, "A test prompt", "fake_key")
+        assert result == {"candidates": [{"content": {"parts": []}}]}
+        assert mock_session.post.call_count == 2
+        mock_sleep.assert_called_once()
+
+
 def test_build_prompt_intermediate_steps_forbid_repeating_recipient_name() -> None:
     """Verify intermediate step prompt strictly forbids naming recipient on card or in speech."""
     weather_prompt = _build_prompt(

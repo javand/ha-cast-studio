@@ -344,7 +344,7 @@ async def _query_gemini_image_api(
     api_key: str,
     model: str = "models/gemini-2.5-flash-image",
 ) -> dict[str, Any]:
-    """Query Gemini multimodal image generation API."""
+    """Query Gemini multimodal image generation API with 429 retry."""
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent"
         f"?key={api_key}"
@@ -354,15 +354,46 @@ async def _query_gemini_image_api(
         "generationConfig": {"responseModalities": ["IMAGE"]},
     }
     session = async_get_clientsession(hass)
-    async with asyncio.timeout(30):
-        async with session.post(url, json=payload) as resp:
-            if resp.status != HTTPStatus.OK:
-                err_text = await resp.text()
-                msg = (
-                    f"Gemini Image API returned status {resp.status}: {err_text[:120]}"
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with asyncio.timeout(30):
+                async with session.post(url, json=payload) as resp:
+                    if (
+                        resp.status == HTTPStatus.TOO_MANY_REQUESTS
+                        and attempt < max_retries - 1
+                    ):
+                        LOGGER.warning(
+                            "Gemini Image API rate limit (429) hit, "
+                            "retrying in %ds (attempt %d/%d)",
+                            attempt + 2,
+                            attempt + 1,
+                            max_retries,
+                        )
+                        await asyncio.sleep(float(attempt + 2))
+                        continue
+                    if resp.status != HTTPStatus.OK:
+                        err_text = await resp.text()
+                        truncated = err_text[:120]
+                        msg = (
+                            f"Gemini Image API returned status {resp.status}: "
+                            f"{truncated}"
+                        )
+                        raise AIClientError(msg)
+                    return await resp.json()  # type: ignore[no-any-return]
+        except TimeoutError:
+            if attempt < max_retries - 1:
+                LOGGER.warning(
+                    "Gemini Image API timeout, retrying (attempt %d/%d)",
+                    attempt + 1,
+                    max_retries,
                 )
-                raise AIClientError(msg)
-            return await resp.json()  # type: ignore[no-any-return]
+                await asyncio.sleep(1.0)
+                continue
+            msg = "Timeout while communicating with Gemini Image API"
+            raise AIClientError(msg) from None
+    msg = "Failed to query Gemini Image API after retries"
+    raise AIClientError(msg)
 
 
 async def async_generate_ai_image(

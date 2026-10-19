@@ -724,7 +724,7 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
         "holiday",
         "observance",
     ):
-        fallback_asset = "fun_fact.jpg"
+        fallback_asset = "national_day.jpg"
         topic = (
             card_data.get("subtitle")
             or card_data.get("title")
