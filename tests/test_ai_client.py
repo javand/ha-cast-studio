@@ -469,3 +469,45 @@ def test_build_prompt_scripture_includes_uplifting_thought() -> None:
         {"name": "weather", "type": "weather"}, {"name": "Javan"}
     )
     assert "4. SCRIPTURE NARRATION" not in weather_prompt
+
+
+@pytest.mark.asyncio
+async def test_auto_detect_mappingproxy_config_entry() -> None:
+    """Test auto-discovery handles MappingProxyType used by real Home Assistant ConfigEntry."""
+    from types import MappingProxyType
+
+    hass = MagicMock()
+    mock_entry = MagicMock()
+    mock_entry.domain = "google_generative_ai_conversation"
+    mock_entry.data = MappingProxyType({"api_key": "mappingproxy_secret_key"})
+    mock_entry.options = MappingProxyType({})
+    hass.config_entries.async_entries.return_value = [mock_entry]
+
+    creds = await async_discover_ai_credentials(hass)
+    assert creds["platform"] == "gemini"
+    assert creds["api_key"] == "mappingproxy_secret_key"
+
+
+@pytest.mark.asyncio
+async def test_query_conversation_agent_ignores_intent_error_response() -> None:
+    """Test _query_conversation_agent_structured suppresses intent errors and echoed JSON prompts."""
+    hass = MagicMock()
+    error_payload = {
+        "response": {
+            "response_type": "error",
+            "data": {"code": "no_valid_targets"},
+            "speech": {
+                "plain": {
+                    "speech": (
+                        "Sorry, I am not aware of any device called You are generating content "
+                        '{ "visual card" { "title" "<Short title for screen display>" } '
+                    )
+                }
+            },
+        }
+    }
+    hass.services.async_call = AsyncMock(return_value=error_payload)
+
+    result = await _query_conversation_agent_structured(hass, "Test Prompt")
+    assert result["narration_script"] == ""
+    assert result["visual_card"]["bullet_points"] == []

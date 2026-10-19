@@ -150,7 +150,7 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
     output_wav_path: str,
     api_key: str,
     session: aiohttp.ClientSession | None = None,
-    model: str = "gemini-2.0-flash",
+    model: str = "gemini-2.5-flash-preview-tts",
 ) -> str:
     """Synthesize speech using Gemini audio generation API with conditioning."""
     target_path = Path(output_wav_path)

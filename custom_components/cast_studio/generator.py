@@ -17,7 +17,11 @@ import wave
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .ai_client import async_discover_ai_credentials, async_generate_step_content
+from .ai_client import (
+    _enforce_recipient_separation,
+    async_discover_ai_credentials,
+    async_generate_step_content,
+)
 from .const import DEFAULT_HOST_VOICE, DEFAULT_OUTPUT_DIR, LOGGER
 from .ffmpeg_runner import (
     async_run_ffmpeg,
@@ -338,6 +342,8 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
     try:
         # 3. Discover AI credentials
         ai_creds = await async_discover_ai_credentials(hass)
+        if routine_config.get("conversation_agent"):
+            ai_creds["agent_id"] = routine_config["conversation_agent"]
 
         slide_timestamps: list[dict[str, Any]] = []
         clip_paths: list[str] = []
@@ -360,12 +366,46 @@ async def async_compile_routine_media(  # noqa: PLR0912, PLR0915
 
             step_name = step_to_process.get("name", f"step_{idx:02d}")
 
-            # 4. Generate structured step content
-            content = await async_generate_step_content(
-                hass, step_to_process, recipient, ai_creds
+            # 4. Generate structured step content (or use explicit narration)
+            explicit_narration = (
+                step_to_process.get("narration")
+                or step_to_process.get("message")
+                or step_to_process.get("text")
             )
-            card_data = content.get("visual_card", {})
+            if explicit_narration and str(explicit_narration).strip():
+                raw_content = {
+                    "visual_card": {
+                        "title": step_to_process.get(
+                            "title", step_name.replace("_", " ").title()
+                        ),
+                        "subtitle": step_to_process.get("subtitle", ""),
+                        "bullet_points": step_to_process.get("bullet_points", []),
+                    },
+                    "narration_script": str(explicit_narration).strip(),
+                }
+                content = _enforce_recipient_separation(raw_content, recipient)
+            else:
+                content = await async_generate_step_content(
+                    hass, step_to_process, recipient, ai_creds
+                )
+
+            card_data = dict(content.get("visual_card", {}))
+            for key in ("image_path", "icon_path", "icon", "layout", "avatar_fallback"):
+                if key in step_to_process:
+                    card_data[key] = step_to_process[key]
+            if not card_data.get("title") and step_to_process.get("title"):
+                card_data["title"] = step_to_process["title"]
+            if not card_data.get("subtitle") and step_to_process.get("subtitle"):
+                card_data["subtitle"] = step_to_process["subtitle"]
+
             narration_script = content.get("narration_script", "")
+            if not narration_script:
+                fallback_msg = (
+                    step_to_process.get("context")
+                    or card_data.get("title")
+                    or step_name.replace("_", " ")
+                )
+                narration_script = str(fallback_msg)
 
             # 5. Determine voice and personality conditioning
             voice = step_to_process.get("voice", DEFAULT_HOST_VOICE)

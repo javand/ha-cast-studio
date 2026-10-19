@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Mapping
 from contextlib import suppress
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
@@ -185,6 +186,33 @@ async def _query_gemini_structured(
         raise AIClientError(msg) from err
 
 
+def _extract_conversation_speech(response: Any) -> tuple[str, bool]:
+    """Extract spoken text and error flag from conversation.process response."""
+    if isinstance(response, Mapping):
+        resp_inner = response.get("response", {})
+        is_err = (
+            isinstance(resp_inner, Mapping)
+            and resp_inner.get("response_type") == "error"
+        )
+        speech = (
+            resp_inner.get("speech", {}).get("plain", {}).get("speech", "")
+            if isinstance(resp_inner, Mapping)
+            else ""
+        )
+        if speech:
+            return str(speech), is_err
+        if "text" in response:
+            return str(response["text"]), is_err
+        if "speech" in response:
+            return str(response["speech"]), is_err
+        return json.dumps(dict(response)), is_err
+
+    if isinstance(response, str):
+        return response, False
+
+    return "", False
+
+
 async def _query_conversation_agent_structured(
     hass: HomeAssistant,
     prompt: str,
@@ -207,24 +235,22 @@ async def _query_conversation_agent_structured(
         msg = f"Failed to call conversation.process service: {err}"
         raise AIClientError(msg) from err
 
-    raw_text = ""
-    if isinstance(response, dict):
-        speech = (
-            response.get("response", {})
-            .get("speech", {})
-            .get("plain", {})
-            .get("speech", "")
+    raw_text, is_error_response = _extract_conversation_speech(response)
+    if is_error_response or raw_text.startswith(
+        ("Sorry, I am not aware", "Sorry, I couldn't understand")
+    ):
+        LOGGER.warning(
+            "Conversation agent returned intent error instead of generated content: %s",
+            raw_text[:120],
         )
-        if speech:
-            raw_text = speech
-        elif "text" in response:
-            raw_text = str(response["text"])
-        elif "speech" in response:
-            raw_text = str(response["speech"])
-        else:
-            raw_text = json.dumps(response)
-    elif isinstance(response, str):
-        raw_text = response
+        return {
+            "visual_card": {
+                "title": "Daily Briefing",
+                "subtitle": "",
+                "bullet_points": [],
+            },
+            "narration_script": "",
+        }
 
     clean_text = _clean_json_text(raw_text)
     try:
@@ -234,14 +260,19 @@ async def _query_conversation_agent_structured(
     except (json.JSONDecodeError, TypeError):
         pass
 
+    # Avoid leaking broken JSON fragments if regex matched partial braces
+    fallback_text = raw_text.strip()
+    if fallback_text.startswith("{") or '"visual_card"' in fallback_text:
+        fallback_text = ""
+
     # Fallback to structured wrapper if plain text returned
     return {
         "visual_card": {
             "title": "Daily Briefing",
             "subtitle": "",
-            "bullet_points": [clean_text] if clean_text else [],
+            "bullet_points": [fallback_text] if fallback_text else [],
         },
-        "narration_script": clean_text,
+        "narration_script": fallback_text,
     }
 
 
@@ -261,10 +292,10 @@ def _extract_entry_api_key(entry: Any) -> str | None:
     if _is_entry_disabled(entry):
         return None
 
-    data = getattr(entry, "data", {})
-    options = getattr(entry, "options", {})
-    data_dict = data if isinstance(data, dict) else {}
-    options_dict = options if isinstance(options, dict) else {}
+    data = getattr(entry, "data", None)
+    options = getattr(entry, "options", None)
+    data_dict = data if isinstance(data, Mapping) else {}
+    options_dict = options if isinstance(options, Mapping) else {}
 
     key = options_dict.get("api_key") or data_dict.get("api_key")
     if isinstance(key, str):
@@ -344,6 +375,7 @@ async def async_generate_step_content(
     effective_creds = creds if creds is not None else (ai_creds or {})
     platform = effective_creds.get("platform", "conversation_agent")
     api_key = effective_creds.get("api_key")
+    agent_id = effective_creds.get("agent_id") or step_config.get("conversation_agent")
 
     if platform == "gemini" and api_key:
         try:
@@ -361,13 +393,13 @@ async def async_generate_step_content(
             raw_content = await _query_conversation_agent_structured(
                 hass=hass,
                 prompt=prompt,
-                agent_id=ai_creds.get("agent_id"),
+                agent_id=agent_id,
             )
     else:
         raw_content = await _query_conversation_agent_structured(
             hass=hass,
             prompt=prompt,
-            agent_id=ai_creds.get("agent_id"),
+            agent_id=agent_id,
         )
 
-    return _enforce_recipient_separation(raw_content, recipient)
+    return _enforce_recipient_separation(raw_content, rec)

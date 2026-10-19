@@ -794,3 +794,61 @@ def test_extract_entity_context_empty_calendar():
         in context
     )
     assert "State: off" not in context
+
+
+@pytest.mark.asyncio
+async def test_compile_routine_media_explicit_narration_and_layout(tmp_path: Path):
+    """Test routine step with explicit narration bypasses AI and preserves icon layout."""
+    hass = MagicMock()
+    routine_config = {
+        "visuals": True,
+        "steps": [
+            {
+                "name": "greeting",
+                "visual": True,
+                "title": "Good Morning",
+                "subtitle": "Javan",
+                "layout": "icon",
+                "icon": "welcome_avatar.png",
+                "narration": "Good morning Javan! Today is a great day.",
+            }
+        ],
+    }
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+
+    mock_ai = AsyncMock()
+    mock_synth = AsyncMock(return_value="audio.wav")
+    mock_render = MagicMock(return_value="slide.jpg")
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_generate_step_content",
+            mock_ai,
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            mock_synth,
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            mock_render,
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        await async_compile_routine_media(
+            hass, "morning", routine_config, recipient, str(tmp_path)
+        )
+        mock_ai.assert_not_called()
+        assert "Jay-ven" in mock_synth.call_args.args[1]
+        rendered_card = mock_render.call_args.args[0]
+        assert rendered_card["title"] == "Good Morning"
+        assert rendered_card["subtitle"] == "Javan"
+        assert rendered_card["layout"] == "icon"
+        assert rendered_card["icon"] == "welcome_avatar.png"
