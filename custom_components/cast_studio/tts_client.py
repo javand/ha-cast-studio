@@ -39,6 +39,93 @@ OPENAI_KNOWN_VOICES: set[str] = {
     "shimmer",
 }
 
+PERSONALITY_PROMPTS: dict[str, str] = {
+    "news_anchor": (
+        "# AUDIO PROFILE: Broadcast Meteorologist & Anchor (news_anchor)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Crisp, articulate, authoritative yet friendly morning broadcast.\n"
+        "Pacing: Steady, rhythmic, emphasizing key numbers and temperatures."
+    ),
+    "cheerful": (
+        "# AUDIO PROFILE: Warm Morning Companion (cheerful)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Upbeat, warm, genuinely welcoming, smiling tone.\n"
+        "Pacing: Natural, clear, energetic morning cadence."
+    ),
+    "upbeat_energetic": (
+        "# AUDIO PROFILE: Upbeat Morning Host (upbeat_energetic)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: High-energy, enthusiastic, bright, motivating.\n"
+        "Pacing: Lively and engaging."
+    ),
+    "conversational": (
+        "# AUDIO PROFILE: Friendly Conversational Host (conversational)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Natural, relaxed, warm, relatable.\n"
+        "Pacing: Easygoing conversational flow."
+    ),
+    "curious": (
+        "# AUDIO PROFILE: Enthusiastic Storyteller (curious)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Fascinated, playful, engaging, conversational.\n"
+        "Pacing: Dynamic with natural curiosity."
+    ),
+    "executive_assistant": (
+        "# AUDIO PROFILE: Executive Chief of Staff (executive_assistant)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Organized, reassuring, sharp, focused, supportive.\n"
+        "Pacing: Clear, structured delivery."
+    ),
+    "traffic_reporter": (
+        "# AUDIO PROFILE: Live Traffic & Transit Correspondent (traffic_reporter)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Action-oriented, helpful, punchy, decisive.\n"
+        "Pacing: Brisk and clear."
+    ),
+    "life_coach": (
+        "# AUDIO PROFILE: Mindful Life Coach & Reader (life_coach)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Peaceful, grounded, warm, reflective, encouraging.\n"
+        "Pacing: Unhurried, deliberate, with gentle pauses between sentences."
+    ),
+    "contemplative": (
+        "# AUDIO PROFILE: Calm Mindful Reader (contemplative)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Peaceful, grounded, warm, reflective, unhurried.\n"
+        "Pacing: Slow, deliberate, with gentle pauses between sentences."
+    ),
+    "reverent": (
+        "# AUDIO PROFILE: Reverent Scripture Reader (reverent)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Calm, respectful, warm, heartfelt.\n"
+        "Pacing: Measured and clear."
+    ),
+    "warm_uplifting": (
+        "# AUDIO PROFILE: Warm Uplifting Encourager (warm_uplifting)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Encouraging, compassionate, bright, reassuring.\n"
+        "Pacing: Smooth and uplifting."
+    ),
+}
+
+
+def _build_gemini_tts_prompt(script: str, personality: str) -> str:
+    """Build structured Gemini 2.5 TTS director prompt with transcript delimiter."""
+    profile = PERSONALITY_PROMPTS.get(
+        personality,
+        (
+            f"# AUDIO PROFILE: Narrator ({personality})\n"
+            "### DIRECTOR'S NOTES\n"
+            f"Style: {personality}, natural, clear, and expressive."
+        ),
+    )
+    return (
+        f"{profile}\n\n"
+        "Speak only the transcript below. "
+        "Do not read any headers or instructions aloud.\n"
+        f"#### TRANSCRIPT\n{script}"
+    )
+
 
 class TTSClientError(Exception):
     """Base exception for TTS client operations."""
@@ -160,10 +247,7 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         f"?key={api_key}"
     )
-    prompt_text = (
-        f"Please speak the following narration text with a {personality} "
-        f"personality and style.\n\n{script}"
-    )
+    prompt_text = _build_gemini_tts_prompt(script, personality)
     payload = {
         "contents": [
             {
@@ -301,16 +385,31 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
     target_engine: str | None = None,
 ) -> str:
     """Fallback speech synthesis using Home Assistant TTS media source."""
-    del voice, personality  # Reserved for future engine-specific options
+    del personality  # Reserved for future engine-specific options
     target_path = Path(output_wav_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        media_source_id = ha_tts.generate_media_source_id(
-            hass,
-            script,
-            engine=target_engine,
-        )
+        if voice:
+            try:
+                media_source_id = ha_tts.generate_media_source_id(
+                    hass,
+                    script,
+                    engine=target_engine,
+                    options={"voice": voice},
+                )
+            except (HomeAssistantError, TypeError):
+                media_source_id = ha_tts.generate_media_source_id(
+                    hass,
+                    script,
+                    engine=target_engine,
+                )
+        else:
+            media_source_id = ha_tts.generate_media_source_id(
+                hass,
+                script,
+                engine=target_engine,
+            )
         extension, data = await ha_tts.async_get_media_source_audio(
             hass, media_source_id
         )
@@ -350,6 +449,10 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
         return not p.exists() or p.stat().st_size == 0
 
     if await asyncio.to_thread(_is_empty_or_missing, target_path):
+        LOGGER.error(
+            "All TTS engines failed for %s; writing silent fallback WAV",
+            output_wav_path,
+        )
         await asyncio.to_thread(target_path.write_bytes, _generate_silent_wav())
 
     return output_wav_path
