@@ -48,12 +48,14 @@ blueprint:
     weather_entity:
       name: Weather Entity
       description: Weather entity to summarize in the forecast slide.
+      default: ""
       selector:
         entity:
           domain: weather
     fun_fact_entity:
       name: Fun Fact Entity (Optional)
       description: Optional entity providing a morning fun fact, trivia, or national day.
+      default: ""
       selector:
         entity:
           domain:
@@ -62,6 +64,7 @@ blueprint:
     calendar_entities:
       name: Calendar Entities
       description: Calendar entities to query and summarize in the agenda slide.
+      default: []
       selector:
         entity:
           domain: calendar
@@ -69,18 +72,21 @@ blueprint:
     todo_entity:
       name: Todo Entity (Optional)
       description: Task or to-do list entity to summarize in the morning briefing.
+      default: ""
       selector:
         entity:
           domain: todo
     commute_sensor:
       name: Commute Sensor (Optional)
       description: Optional sensor entity providing traffic or transit commute status.
+      default: ""
       selector:
         entity:
           domain: sensor
     scripture_sensor:
       name: Scripture Sensor (Optional)
       description: Sensor entity providing daily scripture or morning inspirational thought.
+      default: ""
       selector:
         entity:
           domain: sensor
@@ -127,6 +133,7 @@ blueprint:
     conversation_agent:
       name: Conversation Agent (Optional)
       description: Specific Home Assistant conversation agent entity for AI script generation.
+      default: ""
       selector:
         conversation_agent: {}
     background_actions:

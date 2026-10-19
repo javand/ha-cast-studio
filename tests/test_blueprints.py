@@ -114,12 +114,14 @@ def test_morning_briefing_blueprint_structure():
     assert "sensor" in str(inputs["commute_sensor"]["selector"])
     assert "sensor" in str(inputs["scripture_sensor"]["selector"])
 
-    # Optional entity selectors should not have empty-string default
-    assert "default" not in inputs["fun_fact_entity"]
-    assert "default" not in inputs["todo_entity"]
-    assert "default" not in inputs["commute_sensor"]
-    assert "default" not in inputs["scripture_sensor"]
-    assert "default" not in inputs["conversation_agent"]
+    # Optional entity selectors define defaults so blueprint runs without every optional entity configured
+    assert inputs["weather_entity"]["default"] == ""
+    assert inputs["fun_fact_entity"]["default"] == ""
+    assert inputs["calendar_entities"]["default"] == []
+    assert inputs["todo_entity"]["default"] == ""
+    assert inputs["commute_sensor"]["default"] == ""
+    assert inputs["scripture_sensor"]["default"] == ""
+    assert inputs["conversation_agent"]["default"] == ""
 
     assert inputs["host_voice"]["default"] == "Pulcherrima"
     assert inputs["host_personality"]["default"] == "news_anchor"
@@ -130,6 +132,26 @@ def test_morning_briefing_blueprint_structure():
     assert inputs["background_actions"]["default"] == []
     assert "action" in inputs["post_briefing_actions"]["selector"]
     assert inputs["post_briefing_actions"]["default"] == []
+
+
+def test_morning_briefing_optional_inputs_have_defaults():
+    """Verify optional inputs in morning_briefing.yaml define defaults."""
+    bp = _load_yaml(MORNING_BRIEFING_PATH)
+    inputs = bp["blueprint"]["input"]
+
+    for key in (
+        "weather_entity",
+        "fun_fact_entity",
+        "todo_entity",
+        "commute_sensor",
+        "scripture_sensor",
+        "conversation_agent",
+    ):
+        assert "default" in inputs[key], f"Missing default for {key}"
+        assert inputs[key]["default"] == ""
+
+    assert "default" in inputs["calendar_entities"]
+    assert inputs["calendar_entities"]["default"] == []
 
 
 def test_morning_briefing_triggers_and_actions():

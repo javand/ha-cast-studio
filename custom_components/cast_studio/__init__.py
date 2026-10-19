@@ -23,13 +23,16 @@ from homeassistant.helpers import config_validation as cv
 from .const import (
     CONF_PHONETIC_NAME,
     CONF_RECIPIENT_NAME,
+    DEFAULT_HOST_VOICE,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PHONETIC_NAME,
     DEFAULT_RECIPIENT_NAME,
+    DEFAULT_SCRIPTURE_VOICE,
     DOMAIN,
     LOGGER,
 )
 from .generator import (
+    _is_unconfigured_optional_step,
     async_compile_routine_media,
     async_compile_static_clip,
 )
@@ -133,12 +136,13 @@ def _check_static_media(
     return False, None
 
 
-def _is_media_ready_and_fresh(
+def _is_media_ready_and_fresh(  # noqa: PLR0911, PLR0912
     output_dir: str,
     routine_name: str,
     max_age_seconds: int = 86400,
     *,
     is_static: bool = False,
+    expected_step_count: int | None = None,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Check if media or companion metadata exists and is not stale."""
     out_path = Path(output_dir)
@@ -162,6 +166,10 @@ def _is_media_ready_and_fresh(
             mtime = metadata_file.stat().st_mtime
             if now - mtime < max_age_seconds:
                 meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+                if expected_step_count is not None and expected_step_count > 0:
+                    slides = meta.get("slide_timestamps", [])
+                    if len(slides) != expected_step_count:
+                        return False, None
                 vpath = meta.get("video_path")
                 apath = meta.get("audio_path")
                 vpath_fresh = (
@@ -184,6 +192,8 @@ def _is_media_ready_and_fresh(
             )
 
     if video_file.is_file():
+        if expected_step_count is not None and expected_step_count > 0:
+            return False, None
         try:
             mtime = video_file.stat().st_mtime
             if now - mtime < max_age_seconds:
@@ -198,6 +208,158 @@ def _is_media_ready_and_fresh(
             LOGGER.warning("Failed to inspect video file %s: %s", video_file, err)
 
     return False, None
+
+
+def _count_expected_executable_steps(
+    hass: HomeAssistant,
+    routine_config: dict[str, Any],
+) -> int | None:
+    """Count visual or audio steps that are executable."""
+    all_steps = routine_config.get("steps")
+    if not all_steps or not isinstance(all_steps, list):
+        return None
+
+    is_visual = routine_config.get("visuals", True)
+    if is_visual:
+        steps_to_process = [s for s in all_steps if s.get("visual", False) is True]
+    else:
+        steps_to_process = [s for s in all_steps if not s.get("background_only", False)]
+
+    count = sum(
+        1 for s in steps_to_process if not _is_unconfigured_optional_step(hass, s)
+    )
+    return count if count > 0 else None
+
+
+def _discover_morning_entities(hass: HomeAssistant) -> dict[str, Any]:
+    """Discover available Home Assistant entities for default morning steps."""
+    weather_entity = ""
+    fun_fact_entity = ""
+    calendar_entities: list[str] = []
+    todo_entity = ""
+    commute_sensor = ""
+    scripture_sensor = ""
+
+    entity_ids: list[str] = []
+    if hasattr(hass, "states") and hasattr(hass.states, "async_all"):
+        try:
+            all_states = hass.states.async_all()
+            if isinstance(all_states, (list, tuple)):
+                entity_ids = [
+                    str(getattr(s, "entity_id", ""))
+                    for s in all_states
+                    if getattr(s, "entity_id", None)
+                ]
+        except Exception:  # noqa: BLE001
+            entity_ids = []
+
+    for eid in entity_ids:
+        if eid.startswith("weather.") and not weather_entity:
+            weather_entity = eid
+        elif eid.startswith("calendar."):
+            calendar_entities.append(eid)
+        elif eid.startswith("todo.") and not todo_entity:
+            todo_entity = eid
+        elif eid.startswith("sensor."):
+            lower_eid = eid.lower()
+            if not scripture_sensor and (
+                "daily_text" in lower_eid or "scripture" in lower_eid
+            ):
+                scripture_sensor = eid
+            elif not commute_sensor and (
+                "commute" in lower_eid or "travel_time" in lower_eid
+            ):
+                commute_sensor = eid
+            elif not fun_fact_entity and "fun_fact" in lower_eid:
+                fun_fact_entity = eid
+
+    return {
+        "weather_entity": weather_entity,
+        "fun_fact_entity": fun_fact_entity,
+        "calendar_entities": calendar_entities,
+        "todo_entity": todo_entity,
+        "commute_sensor": commute_sensor,
+        "scripture_sensor": scripture_sensor,
+    }
+
+
+def _build_default_morning_routine_config(
+    hass: HomeAssistant,
+    recipient: dict[str, Any],
+) -> dict[str, Any]:
+    """Build standard morning routine config with discovered or optional entities."""
+    discovered = _discover_morning_entities(hass)
+    recipient_name = recipient.get("name", DEFAULT_RECIPIENT_NAME)
+    greeting_ctx = f"A cheerful, energizing morning greeting for {recipient_name}."
+    return {
+        "visuals": True,
+        "steps": [
+            {
+                "name": "greeting",
+                "visual": True,
+                "title": recipient_name,
+                "subtitle": "Good Morning",
+                "layout": "icon",
+                "icon": "welcome_avatar.png",
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+                "context": greeting_ctx,
+            },
+            {
+                "name": "weather",
+                "visual": True,
+                "entity_id": discovered["weather_entity"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "fun_fact",
+                "visual": True,
+                "entity_id": discovered["fun_fact_entity"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "calendar",
+                "visual": True,
+                "entity_ids": discovered["calendar_entities"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "todo",
+                "visual": True,
+                "entity_id": discovered["todo_entity"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "commute",
+                "visual": True,
+                "entity_id": discovered["commute_sensor"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "scripture",
+                "visual": True,
+                "entity_id": discovered["scripture_sensor"],
+                "voice": DEFAULT_SCRIPTURE_VOICE,
+                "voice_personality": "life_coach",
+            },
+        ],
+    }
+
+
+def _build_default_routine_config(
+    hass: HomeAssistant,
+    routine_name: str,
+    recipient: dict[str, Any],
+) -> dict[str, Any]:
+    """Build default routine configuration when none is explicitly configured."""
+    if routine_name in ("morning_briefing", "morning"):
+        return _build_default_morning_routine_config(hass, recipient)
+    return {}
 
 
 async def async_pregenerate_routine(  # noqa: PLR0913
@@ -220,6 +382,12 @@ async def async_pregenerate_routine(  # noqa: PLR0913
         recipient = domain_data.get(
             "recipient", {"name": "User", "phonetic_name": "User"}
         )
+    if not routine_config.get("steps") and not routine_config.get("static"):
+        default_cfg = _build_default_routine_config(hass, routine_name, recipient)
+        if default_cfg:
+            routine_config = {**default_cfg, **routine_config}
+            if not routine_config.get("steps") and default_cfg.get("steps"):
+                routine_config["steps"] = default_cfg["steps"]
     if output_dir is None:
         output_dir = routine_config.get("output_dir", DEFAULT_OUTPUT_DIR)
 
@@ -329,6 +497,7 @@ async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
     sensor = async_get_or_create_sensor(hass, routine_name)
 
     # 1. Check if media exists and is fresh (<24h) unless force_regenerate is requested
+    expected_steps = _count_expected_executable_steps(hass, routine_config)
     force_reg = force_regenerate or bool(routine_config.get("force_regenerate", False))
     if force_reg:
         is_ready, metadata = False, None
@@ -341,10 +510,17 @@ async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
             routine_name,
             86400,
             is_static=is_static_routine,
+            expected_step_count=expected_steps,
         )
 
     # 2. If not ready/missing or stale, compile on-demand
     if not is_ready or metadata is None:
+        if not routine_config.get("steps") and not routine_config.get("static"):
+            default_cfg = _build_default_routine_config(hass, routine_name, recipient)
+            if default_cfg:
+                routine_config = {**default_cfg, **routine_config}
+                if not routine_config.get("steps") and default_cfg.get("steps"):
+                    routine_config["steps"] = default_cfg["steps"]
         sensor.update_state("generating", active_task="run_routine")
         try:
             if routine_config.get("static"):

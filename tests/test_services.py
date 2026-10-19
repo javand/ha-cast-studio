@@ -15,6 +15,7 @@ from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import ServiceCall
 
 from custom_components.cast_studio import (
+    _is_media_ready_and_fresh,
     async_compile_clip,
     async_pregenerate_routine,
     async_reload,
@@ -1047,7 +1048,7 @@ async def test_run_routine_service_call_forwards_top_level_post_routine_actions(
     meta_content = {
         "video_path": str(video_file),
         "duration": 10.0,
-        "slide_timestamps": [],
+        "slide_timestamps": [{"timestamp": 0.0}],
         "last_pregenerated": datetime.now(UTC).isoformat(),
     }
     meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
@@ -1089,5 +1090,93 @@ async def test_run_routine_service_call_forwards_top_level_post_routine_actions(
         mock_play.assert_awaited_once()
         passed_metadata = mock_play.await_args[0][3]
         assert passed_metadata.get("post_routine_actions") == [post_action]
+
+        await dummy_play_task
+
+
+def test_is_media_ready_and_fresh_invalidates_mismatched_slide_count(
+    tmp_path: Path,
+) -> None:
+    """Verify _is_media_ready_and_fresh returns (False, None) when slide count mismatches expected_step_count."""
+    video_file = tmp_path / "morning_briefing.mp4"
+    video_file.write_bytes(b"mp4")
+    meta_file = tmp_path / "morning_briefing.metadata.json"
+    meta_content = {
+        "video_path": str(video_file),
+        "duration": 10.0,
+        "slide_timestamps": [{"name": "greeting", "timestamp": 0.0}],
+    }
+    meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
+
+    is_ready, meta = _is_media_ready_and_fresh(
+        str(tmp_path),
+        "morning_briefing",
+        expected_step_count=6,
+    )
+    assert is_ready is False
+    assert meta is None
+
+    is_ready_match, meta_match = _is_media_ready_and_fresh(
+        str(tmp_path),
+        "morning_briefing",
+        expected_step_count=1,
+    )
+    assert is_ready_match is True
+    assert meta_match is not None
+
+
+@pytest.mark.asyncio
+async def test_run_routine_auto_builds_default_morning_briefing_steps(
+    mock_hass: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Verify async_run_routine auto-populates default morning steps when routines dict is empty."""
+    await async_setup(mock_hass, {DOMAIN: {}})
+    assert mock_hass.data[DOMAIN]["routines"] == {}
+
+    mock_metadata = {
+        "video_path": str(tmp_path / "morning_briefing.mp4"),
+        "audio_path": None,
+        "duration": DURATION_20_0,
+        "slide_timestamps": [
+            {"name": "greeting", "timestamp": 0.0},
+            {"name": "fun_fact", "timestamp": 8.0},
+        ],
+    }
+    dummy_play_task = asyncio.create_task(asyncio.sleep(0.01))
+
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=AsyncMock(return_value=mock_metadata),
+        ) as mock_compile,
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_play_and_sync_routine",
+            new=AsyncMock(return_value=dummy_play_task),
+        ),
+    ):
+        await async_run_routine(
+            mock_hass,
+            routine_name="morning_briefing",
+            target_player="media_player.bathroom_display",
+            output_dir=str(tmp_path),
+        )
+
+        mock_compile.assert_awaited_once()
+        compiled_config = mock_compile.await_args.kwargs["routine_config"]
+        steps = compiled_config.get("steps", [])
+        assert len(steps) > 0
+        step_names = [s.get("name") for s in steps]
+        assert "greeting" in step_names
+        assert "weather" in step_names
+        assert "fun_fact" in step_names
+        assert "calendar" in step_names
+        assert "todo" in step_names
+        assert "commute" in step_names
+        assert "scripture" in step_names
 
         await dummy_play_task
