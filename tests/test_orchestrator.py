@@ -1294,8 +1294,8 @@ async def test_async_play_and_sync_routine_executes_post_actions_on_timeout():
         # Await the playback lifecycle to complete
         await playback_task
 
-        # Verify fallback sleep was awaited for the full duration
-        mock_sleep.assert_awaited_with(5.0)
+        # Verify fallback sleep was awaited for the remaining duration
+        mock_sleep.assert_awaited_with(pytest.approx(5.0, rel=1e-2))
 
         # Verify that cast.show_lovelace_view was called after timeout and duration sleep
         hass.services.async_call.assert_any_call(
@@ -1303,4 +1303,69 @@ async def test_async_play_and_sync_routine_executes_post_actions_on_timeout():
             "show_lovelace_view",
             service_data={"dashboard_path": "nest-display", "view_path": "morning"},
             target={"entity_id": "media_player.bathroom_display"},
+        )
+
+
+def test_is_routine_media_playing_default_media_receiver_proxy_stream() -> None:
+    """Test _is_routine_media_playing recognizes Cast Default Media Receiver playing even with proxy URL."""
+    from custom_components.cast_studio.orchestrator import _is_routine_media_playing
+
+    state_obj = MagicMock()
+    state_obj.state = "playing"
+    state_obj.attributes = {
+        "app_id": "CC1AD845",
+        "app_name": "Default Media Receiver",
+        "media_content_id": "http://192.168.1.50:8123/api/media_player_proxy/123456",
+    }
+    # Even though /api/media_player_proxy does not match morning.mp4, CC1AD845 playing is recognized
+    assert (
+        _is_routine_media_playing(
+            state_obj, expected_media_url="http://192.168.1.50:8123/local/morning.mp4"
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_coordinate_playback_lifecycle_wakes_player_for_post_actions() -> None:
+    """Verify player turn_on is called to ensure display is awake before post-routine actions."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    mock_state = MagicMock()
+    mock_state.state = "idle"
+    hass.states.get.return_value = mock_state
+
+    metadata = {
+        "video_path": "/local/morning.mp4",
+        "prepare_player": True,
+        "duration": 0.01,
+        "slide_timestamps": [],
+        "post_routine_actions": [
+            {
+                "service": "cast.show_lovelace_view",
+                "target": {"entity_id": "media_player.bathroom_display"},
+                "data": {"dashboard_path": "nest-display", "view_path": "morning"},
+            }
+        ],
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ) as mock_track,
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        playback_task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        state_cb = mock_track.call_args[0][2]
+        event_playing = MagicMock()
+        event_playing.data = {"new_state": MagicMock(state="playing")}
+        state_cb(event_playing)
+
+        await playback_task
+
+        # Verify media_player.turn_on was called for target_player
+        hass.services.async_call.assert_any_call(
+            "media_player", "turn_on", {"entity_id": "media_player.bathroom_display"}
         )

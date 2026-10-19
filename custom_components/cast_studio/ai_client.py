@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 from collections.abc import Mapping
 from contextlib import suppress
 from datetime import datetime
 from http import HTTPStatus
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -132,6 +134,26 @@ def _build_prompt(
     if guideline:
         prompt += guideline
 
+    if "is_first_step" in step_config:
+        is_first = bool(step_config["is_first_step"])
+    else:
+        is_first = step_key in ("greeting", "welcome") or name_key in (
+            "greeting",
+            "welcome",
+        )
+    if is_first:
+        prompt += (
+            "5. GREETING DIRECTIVE: This is the opening slide of the briefing. "
+            "Welcome the recipient warmly with an energizing morning greeting.\n"
+        )
+    else:
+        prompt += (
+            "5. RE-GREETING DIRECTIVE: This is an intermediate slide in an ongoing "
+            "briefing routine. CRITICAL: DO NOT say 'Good morning', do NOT greet the "
+            "recipient by name again, and do NOT use opening pleasantries or filler. "
+            "Jump directly into narrating the content immediately.\n"
+        )
+
     return prompt
 
 
@@ -226,6 +248,63 @@ async def _query_gemini_structured(
     except aiohttp.ClientError as err:
         msg = f"Network error while communicating with Gemini API: {err}"
         raise AIClientError(msg) from err
+
+
+async def _query_gemini_image_api(
+    hass: HomeAssistant,
+    prompt: str,
+    api_key: str,
+    model: str = "models/gemini-2.5-flash-image",
+) -> dict[str, Any]:
+    """Query Gemini multimodal image generation API."""
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent"
+        f"?key={api_key}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseModalities": ["IMAGE"]},
+    }
+    session = async_get_clientsession(hass)
+    async with asyncio.timeout(30):
+        async with session.post(url, json=payload) as resp:
+            if resp.status != HTTPStatus.OK:
+                err_text = await resp.text()
+                msg = (
+                    f"Gemini Image API returned status {resp.status}: {err_text[:120]}"
+                )
+                raise AIClientError(msg)
+            return await resp.json()  # type: ignore[no-any-return]
+
+
+async def async_generate_ai_image(
+    hass: HomeAssistant,
+    prompt: str,
+    target_image_path: str,
+    ai_creds: dict[str, Any] | None = None,
+) -> str | None:
+    """Generate an image using Gemini, saving to target_image_path."""
+    creds = ai_creds or await async_discover_ai_credentials(hass)
+    if creds.get("platform") != "gemini" or not creds.get("api_key"):
+        return None
+
+    try:
+        data = await _query_gemini_image_api(hass, prompt, creds["api_key"])
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return None
+        parts = candidates[0].get("content", {}).get("parts", [])
+        for part in parts:
+            inline = part.get("inlineData")
+            if inline and "data" in inline:
+                img_bytes = base64.b64decode(inline["data"])
+                out_path = Path(target_image_path)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_bytes(img_bytes)
+                return str(out_path)
+    except Exception as err:  # noqa: BLE001
+        LOGGER.warning("AI image generation failed for '%s': %s", prompt[:60], err)
+    return None
 
 
 def _extract_conversation_speech(response: Any) -> tuple[str, bool]:

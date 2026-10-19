@@ -386,8 +386,9 @@ def _is_routine_media_playing(  # noqa: PLR0911
         if any(cand in current_clean for cand in valid_candidates):
             # Actively loading or playing our specific routine media!
             return state_val in ("playing", "buffering", "idle")
-        # Playing a completely different media stream (e.g. Spotify, radio)
-        return False
+        # Check if proxy or internal stream from Default Media Receiver
+        is_dmr = app_id == "CC1AD845" or "default media receiver" in app_name
+        return is_dmr and state_val in ("playing", "buffering")
 
     # 4. If Default Media Receiver is active and state is playing or buffering
     if app_id == "CC1AD845" or "default media receiver" in app_name:
@@ -401,7 +402,7 @@ def _is_routine_media_playing(  # noqa: PLR0911
     return app_name not in ("backdrop", "ambient", "google cast", "homescreen")
 
 
-async def async_play_and_sync_routine(  # noqa: PLR0915
+async def async_play_and_sync_routine(  # noqa: C901, PLR0915
     hass: HomeAssistant,
     routine_name: str,
     target_player: str,
@@ -556,7 +557,10 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
                     if remaining > 0:
                         await asyncio.sleep(remaining)
             elif duration > 0:
-                await asyncio.sleep(duration)
+                elapsed = loop.time() - start_time[0]
+                remaining = max(0.0, duration - elapsed)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
         except asyncio.CancelledError:
             if not playing_future.done():
                 playing_future.cancel()
@@ -571,6 +575,11 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
                 if isinstance(post_actions, dict):
                     post_actions = [post_actions]
                 try:
+                    if metadata.get("prepare_player", True) and target_player:
+                        with contextlib.suppress(Exception):
+                            await hass.services.async_call(
+                                "media_player", "turn_on", {"entity_id": target_player}
+                            )
                     await asyncio.shield(
                         async_execute_background_actions(hass, post_actions)
                     )

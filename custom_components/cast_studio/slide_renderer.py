@@ -424,11 +424,13 @@ def _resolve_image_path(raw_path: Any) -> Path | None:  # noqa: PLR0911
             if candidate.is_file():
                 return candidate
 
-    # Check direct name, filename, and .png stem inside bundled assets
+    # Check direct name, filename, and .png/.jpg/.jpeg stems inside bundled assets
     candidates = (
         BUNDLED_ASSETS_DIR / p_str,
         BUNDLED_ASSETS_DIR / path_obj.name,
         BUNDLED_ASSETS_DIR / f"{path_obj.stem}.png",
+        BUNDLED_ASSETS_DIR / f"{path_obj.stem}.jpg",
+        BUNDLED_ASSETS_DIR / f"{path_obj.stem}.jpeg",
     )
     for candidate in candidates:
         if candidate.is_file():

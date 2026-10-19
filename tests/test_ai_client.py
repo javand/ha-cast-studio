@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -531,3 +532,63 @@ def test_build_prompt_includes_current_local_date_and_step_guidelines() -> None:
         {"name": "fun_fact", "type": "fun_fact"}, {"name": "Javan"}
     )
     assert "National Day" in fun_fact_prompt
+
+
+def test_build_prompt_greeting_vs_intermediate_directives() -> None:
+    """Verify greeting prompt welcomes user while intermediate steps forbid repeating good morning."""
+    greeting_prompt = _build_prompt(
+        {"name": "greeting", "type": "greeting", "is_first_step": True},
+        {"name": "Javan", "phonetic_name": "Jay-ven"},
+    )
+    assert "GREETING DIRECTIVE" in greeting_prompt
+    assert "Welcome the recipient warmly" in greeting_prompt
+
+    weather_prompt = _build_prompt(
+        {"name": "weather", "type": "weather", "is_first_step": False},
+        {"name": "Javan", "phonetic_name": "Jay-ven"},
+    )
+    assert "RE-GREETING DIRECTIVE" in weather_prompt
+    assert "DO NOT say 'Good morning'" in weather_prompt
+    assert "Jump directly into narrating" in weather_prompt
+
+
+@pytest.mark.asyncio
+async def test_async_generate_ai_image_success(tmp_path: Path) -> None:
+    """Verify async_generate_ai_image decodes base64 inlineData and writes image."""
+    import base64
+
+    from custom_components.cast_studio.ai_client import async_generate_ai_image
+
+    fake_png_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    )
+    b64_data = base64.b64encode(fake_png_bytes).decode("ascii")
+
+    mock_resp = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"inlineData": {"mimeType": "image/png", "data": b64_data}}
+                    ]
+                }
+            }
+        ]
+    }
+
+    mock_hass = MagicMock()
+    target_path = str(tmp_path / "ai_generated.png")
+
+    with patch(
+        "custom_components.cast_studio.ai_client._query_gemini_image_api",
+        new=AsyncMock(return_value=mock_resp),
+    ):
+        result = await async_generate_ai_image(
+            mock_hass,
+            "A steaming cup of coffee",
+            target_path,
+            ai_creds={"platform": "gemini", "api_key": "fake_key"},
+        )
+        assert result == target_path
+        assert Path(target_path).is_file()
+        assert Path(target_path).read_bytes() == fake_png_bytes

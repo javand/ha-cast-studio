@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from .ai_client import (
     _enforce_recipient_separation,
     async_discover_ai_credentials,
+    async_generate_ai_image,
     async_generate_step_content,
 )
 from .const import DEFAULT_HOST_VOICE, DEFAULT_OUTPUT_DIR, LOGGER
@@ -590,6 +591,138 @@ def _detect_step_weather_condition(
     return None
 
 
+async def _async_resolve_step_visual_assets(  # noqa: PLR0911, PLR0912, PLR0913
+    hass: HomeAssistant,
+    step_to_process: dict[str, Any],
+    step_name: str,
+    card_data: dict[str, Any],
+    ai_creds: dict[str, Any],
+    scratch_dir: str | None = None,
+) -> None:
+    """Resolve dynamic and AI-generated visual background assets for a visual slide."""
+    if (
+        card_data.get("image_path")
+        or card_data.get("icon")
+        or card_data.get("icon_path")
+    ):
+        return
+
+    step_key = str(step_to_process.get("type") or step_name or "").strip().lower()
+    name_key = str(step_name or "").strip().lower()
+
+    # 1. Greeting / Welcome slide: generate dynamic AI background
+    if step_key in ("greeting", "welcome") or name_key in ("greeting", "welcome"):
+        ai_img_path = (
+            str(Path(scratch_dir) / f"bg_{step_name}.png") if scratch_dir else None
+        )
+        if (
+            ai_img_path
+            and ai_creds.get("platform") == "gemini"
+            and ai_creds.get("api_key")
+        ):
+            prompt = (
+                "A peaceful morning scene with a warm ceramic mug of fresh coffee "
+                "on a wooden table, soft golden morning sunrise light streaming "
+                "through a window, cozy atmosphere, photorealistic cinematic 16:9"
+            )
+            generated = await async_generate_ai_image(
+                hass, prompt, ai_img_path, ai_creds=ai_creds
+            )
+            if generated and Path(generated).is_file():
+                card_data["image_path"] = generated
+                card_data.setdefault("layout", "photo")
+                return
+        card_data["image_path"] = "weather_sunny.jpg"
+        card_data.setdefault("layout", "photo")
+        return
+
+    # 2. Fun Fact / Trivia slide: generate AI image matching fact topic
+    if step_key in ("fun_fact", "trivia") or name_key in ("fun_fact", "trivia"):
+        ai_img_path = (
+            str(Path(scratch_dir) / f"bg_{step_name}.png") if scratch_dir else None
+        )
+        if (
+            ai_img_path
+            and ai_creds.get("platform") == "gemini"
+            and ai_creds.get("api_key")
+        ):
+            topic = (
+                card_data.get("title")
+                or card_data.get("subtitle")
+                or step_to_process.get("context")
+                or "morning fun fact"
+            )
+            prompt = (
+                f"A vibrant, cinematic photograph representing {topic}, "
+                "detailed, beautiful natural lighting, 16:9 widescreen aspect ratio"
+            )
+            generated = await async_generate_ai_image(
+                hass, prompt, ai_img_path, ai_creds=ai_creds
+            )
+            if generated and Path(generated).is_file():
+                card_data["image_path"] = generated
+                card_data.setdefault("layout", "photo")
+                return
+        card_data["image_path"] = "fun_fact.jpg"
+        card_data.setdefault("layout", "photo")
+        return
+
+    # 3. Weather slide: map to real condition photo
+    if step_key == "weather" or name_key == "weather":
+        cond = str(
+            card_data.get("weather_condition")
+            or _detect_step_weather_condition(hass, step_to_process)
+            or ""
+        ).lower()
+        if any(
+            w in cond for w in ("rain", "pour", "drizzle", "storm", "thunder", "shower")
+        ):
+            card_data["image_path"] = "weather_rainy.jpg"
+        elif any(
+            w in cond for w in ("snow", "sleet", "hail", "ice", "blizzard", "winter")
+        ):
+            card_data["image_path"] = "weather_snow.jpg"
+        elif any(
+            w in cond for w in ("cloud", "overcast", "fog", "mist", "wind", "haze")
+        ):
+            card_data["image_path"] = "weather_cloudy.jpg"
+        else:
+            card_data["image_path"] = "weather_sunny.jpg"
+        card_data.setdefault("layout", "photo")
+        return
+
+    # 4. Calendar and Todo: calendar/agenda planner background
+    if step_key in ("calendar", "schedule", "todo", "tasks") or name_key in (
+        "calendar",
+        "schedule",
+        "todo",
+        "tasks",
+    ):
+        card_data["image_path"] = "calendar_agenda.jpg"
+        card_data.setdefault("layout", "photo")
+        return
+
+    # 5. Commute: traffic / map background
+    if step_key in ("commute", "traffic", "transit") or name_key in (
+        "commute",
+        "traffic",
+        "transit",
+    ):
+        card_data["image_path"] = "commute_traffic.jpg"
+        card_data.setdefault("layout", "photo")
+        return
+
+    # 6. Scripture: open Bible background
+    if step_key in ("scripture", "bible", "daily_text") or name_key in (
+        "scripture",
+        "bible",
+        "daily_text",
+    ):
+        card_data["image_path"] = "bible_scripture.jpg"
+        card_data.setdefault("layout", "photo")
+        return
+
+
 async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
     hass: HomeAssistant,
     step_to_process: dict[str, Any],
@@ -657,6 +790,17 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
     card_data.setdefault("step_name", step_name)
     if weather_cond := _detect_step_weather_condition(hass, step_to_process):
         card_data.setdefault("weather_condition", weather_cond)
+
+    if is_visual:
+        scratch_dir = str(Path(slide_target_path).parent) if slide_target_path else None
+        await _async_resolve_step_visual_assets(
+            hass,
+            step_to_process,
+            step_name,
+            card_data,
+            ai_creds,
+            scratch_dir=scratch_dir,
+        )
 
     narration_script = content.get("narration_script", "")
     if not narration_script:
@@ -854,6 +998,7 @@ async def async_compile_routine_media(
         for idx, step in enumerate(executable_steps):
             is_last_step = idx == len(executable_steps) - 1
             step_to_process = dict(step)
+            step_to_process["is_first_step"] = idx == 0
             if extracted_context := await async_extract_entity_context(
                 hass, step_to_process
             ):

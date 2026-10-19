@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import wave
-from typing import TYPE_CHECKING
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,9 +19,6 @@ from custom_components.cast_studio.generator import (
     async_extract_entity_context,
     get_audio_duration,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 TWO_STEPS = 2
 MIN_FALLBACK_DURATION = 3.0
@@ -1128,3 +1125,132 @@ def test_get_executable_steps_public_helper() -> None:
     }
     steps = get_executable_steps(hass, cfg)
     assert [s["name"] for s in steps] == ["greeting", "fun_fact"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_step_visual_assets_weather_conditions() -> None:
+    """Test weather step maps condition strings to respective bundled photos."""
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    hass = MagicMock()
+    ai_creds = {"platform": "conversation_agent"}
+
+    # Rainy condition
+    card_rain = {"weather_condition": "rainy"}
+    await _async_resolve_step_visual_assets(
+        hass, {"type": "weather"}, "weather", card_rain, ai_creds
+    )
+    assert card_rain["image_path"] == "weather_rainy.jpg"
+    assert card_rain["layout"] == "photo"
+
+    # Snowy condition
+    card_snow = {"weather_condition": "snow"}
+    await _async_resolve_step_visual_assets(
+        hass, {"type": "weather"}, "weather", card_snow, ai_creds
+    )
+    assert card_snow["image_path"] == "weather_snow.jpg"
+
+    # Cloudy condition
+    card_cloud = {"weather_condition": "partlycloudy"}
+    await _async_resolve_step_visual_assets(
+        hass, {"type": "weather"}, "weather", card_cloud, ai_creds
+    )
+    assert card_cloud["image_path"] == "weather_cloudy.jpg"
+
+    # Sunny / clear default
+    card_sunny = {"weather_condition": "sunny"}
+    await _async_resolve_step_visual_assets(
+        hass, {"type": "weather"}, "weather", card_sunny, ai_creds
+    )
+    assert card_sunny["image_path"] == "weather_sunny.jpg"
+
+
+@pytest.mark.asyncio
+async def test_resolve_step_visual_assets_standard_morning_topics() -> None:
+    """Test standard morning topics map to bundled photo assets."""
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    hass = MagicMock()
+    ai_creds = {"platform": "conversation_agent"}
+
+    card_cal = {}
+    await _async_resolve_step_visual_assets(
+        hass, {"type": "calendar"}, "calendar", card_cal, ai_creds
+    )
+    assert card_cal["image_path"] == "calendar_agenda.jpg"
+    assert card_cal["layout"] == "photo"
+
+    card_todo = {}
+    await _async_resolve_step_visual_assets(
+        hass, {"type": "todo"}, "todo", card_todo, ai_creds
+    )
+    assert card_todo["image_path"] == "calendar_agenda.jpg"
+
+    card_commute = {}
+    await _async_resolve_step_visual_assets(
+        hass, {"type": "commute"}, "commute", card_commute, ai_creds
+    )
+    assert card_commute["image_path"] == "commute_traffic.jpg"
+
+    card_scripture = {}
+    await _async_resolve_step_visual_assets(
+        hass, {"type": "scripture"}, "scripture", card_scripture, ai_creds
+    )
+    assert card_scripture["image_path"] == "bible_scripture.jpg"
+
+
+@pytest.mark.asyncio
+async def test_resolve_step_visual_assets_ai_image_generation_and_fallback(
+    tmp_path: Path,
+) -> None:
+    """Test AI image generation for greeting and fun fact with fallback on error."""
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    hass = MagicMock()
+    ai_creds = {"platform": "gemini", "api_key": "test_key"}
+    scratch_dir = str(tmp_path)
+
+    # Greeting with successful AI image generation
+    generated_path = str(tmp_path / "bg_greeting.png")
+    Path(generated_path).write_bytes(b"fake_image_bytes")
+
+    card_greeting = {}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(return_value=generated_path),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            hass,
+            {"type": "greeting"},
+            "greeting",
+            card_greeting,
+            ai_creds,
+            scratch_dir=scratch_dir,
+        )
+        assert mock_gen.call_count == 1
+        assert "coffee" in mock_gen.call_args.args[1]
+        assert card_greeting["image_path"] == generated_path
+        assert card_greeting["layout"] == "photo"
+
+    # Fun fact with fallback when AI generation returns None
+    card_fun_fact = {"title": "National Pancake Day"}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(return_value=None),
+    ):
+        await _async_resolve_step_visual_assets(
+            hass,
+            {"type": "fun_fact"},
+            "fun_fact",
+            card_fun_fact,
+            ai_creds,
+            scratch_dir=scratch_dir,
+        )
+        assert card_fun_fact["image_path"] == "fun_fact.jpg"
+        assert card_fun_fact["layout"] == "photo"
