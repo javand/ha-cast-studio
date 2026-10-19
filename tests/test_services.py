@@ -1296,3 +1296,72 @@ def test_sensor_unrecorded_attributes() -> None:
 
     assert "video_path" in CastStudioRoutineSensor._unrecorded_attributes
     assert "audio_path" in CastStudioRoutineSensor._unrecorded_attributes
+
+
+@pytest.mark.asyncio
+async def test_run_routine_accepts_media_player_and_entity_id_aliases(
+    mock_hass: MagicMock, sample_config: dict[str, Any], tmp_path: Path
+) -> None:
+    """Verify run_routine service call accepts 'media_player' and 'entity_id' as target_player aliases."""
+    await async_setup(mock_hass, sample_config)
+
+    calls = mock_hass.services.async_register.call_args_list
+    run_handler = next(c.args[2] for c in calls if c.args[1] == "run_routine")
+
+    video_file = tmp_path / "morning.mp4"
+    video_file.write_bytes(b"video")
+    meta_file = tmp_path / "morning.metadata.json"
+    meta_content = {
+        "video_path": str(video_file),
+        "duration": 10.0,
+        "slide_timestamps": [{"timestamp": 0.0}],
+        "last_pregenerated": datetime.now(UTC).isoformat(),
+    }
+    meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
+
+    dummy_play_task = asyncio.create_task(asyncio.sleep(0.01))
+
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_play_and_sync_routine",
+            new=AsyncMock(return_value=dummy_play_task),
+        ) as mock_play,
+    ):
+        service_call_1 = ServiceCall(
+            mock_hass,
+            DOMAIN,
+            "run_routine",
+            {
+                "routine_name": "morning",
+                "media_player": "media_player.bathroom_display",
+                "output_dir": str(tmp_path),
+            },
+        )
+        await run_handler(service_call_1)
+        mock_play.assert_awaited_once()
+        assert mock_play.await_args[0][2] == "media_player.bathroom_display"
+        mock_play.reset_mock()
+
+        service_call_2 = ServiceCall(
+            mock_hass,
+            DOMAIN,
+            "run_routine",
+            {
+                "routine_name": "morning",
+                "entity_id": ["media_player.kitchen_display"],
+                "output_dir": str(tmp_path),
+            },
+        )
+        await run_handler(service_call_2)
+        mock_play.assert_awaited_once()
+        assert mock_play.await_args[0][2] == "media_player.kitchen_display"
+
+        await dummy_play_task

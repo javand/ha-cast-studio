@@ -314,6 +314,14 @@ def _build_default_routine_config(
     return {}
 
 
+def _extract_target_player(data: dict[str, Any]) -> str | None:
+    """Extract and normalize target player entity ID from data supporting aliases."""
+    raw = data.get("target_player") or data.get("media_player") or data.get("entity_id")
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else None
+    return str(raw).strip() if raw and str(raw).strip() else None
+
+
 def _resolve_routine_invocation(
     hass: HomeAssistant,
     routine_name: str,
@@ -328,6 +336,10 @@ def _resolve_routine_invocation(
         if routine_config is not None
         else domain_data.get("routines", {}).get(routine_name, {})
     )
+    if "target_player" not in eff_config:
+        resolved_tp = _extract_target_player(eff_config)
+        if resolved_tp:
+            eff_config["target_player"] = resolved_tp
     eff_recipient = (
         recipient
         if recipient is not None
@@ -454,8 +466,9 @@ async def async_run_routine(  # noqa: PLR0913, PLR0915
     routine_config, recipient, output_dir = _resolve_routine_invocation(
         hass, routine_name, routine_config, recipient, output_dir
     )
-    if target_player is None:
-        target_player = routine_config.get("target_player")
+    target_player = _extract_target_player(
+        {"target_player": target_player}
+    ) or _extract_target_player(routine_config)
 
     sensor = async_get_or_create_sensor(hass, routine_name)
 
@@ -632,10 +645,11 @@ async def async_setup(
             msg = "Missing or empty required service parameter 'routine_name'"
             raise ValueError(msg)
         routine_config = _merge_service_post_actions(hass, routine_name, data)
+        target = _extract_target_player(data)
         await async_pregenerate_routine(
             hass,
             routine_name=routine_name,
-            target_player=data.get("target_player"),
+            target_player=target,
             routine_config=routine_config,
             recipient=data.get("recipient"),
             output_dir=data.get("output_dir"),
@@ -648,10 +662,11 @@ async def async_setup(
             msg = "Missing or empty required service parameter 'routine_name'"
             raise ValueError(msg)
         routine_config = _merge_service_post_actions(hass, routine_name, data)
+        target = _extract_target_player(data)
         await async_run_routine(
             hass,
             routine_name=routine_name,
-            target_player=data.get("target_player"),
+            target_player=target,
             routine_config=routine_config,
             recipient=data.get("recipient"),
             output_dir=data.get("output_dir"),
