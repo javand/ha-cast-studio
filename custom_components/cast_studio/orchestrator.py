@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.network import get_url
 
@@ -339,6 +340,28 @@ async def _async_sync_slides(
 _create_task = create_task
 
 
+def _is_cast_player(hass: HomeAssistant, entity_id: str) -> bool:
+    """Check if target media player entity is a Google Cast device."""
+    if not entity_id:
+        return False
+    with contextlib.suppress(Exception):
+        registry = er.async_get(hass)
+        entry = registry.async_get(entity_id)
+        if entry and getattr(entry, "platform", None) == "cast":
+            return True
+    if hasattr(hass, "states") and hasattr(hass.states, "get"):
+        state_obj = hass.states.get(entity_id)
+        if state_obj:
+            attrs = getattr(state_obj, "attributes", None) or {}
+            if isinstance(attrs, dict) and (
+                attrs.get("app_id")
+                or attrs.get("app_name")
+                or "cast" in str(attrs.get("device_class", "")).lower()
+            ):
+                return True
+    return False
+
+
 def _is_routine_media_playing(  # noqa: PLR0911
     state_obj: Any,
     expected_media_url: str | None = None,
@@ -359,11 +382,13 @@ def _is_routine_media_playing(  # noqa: PLR0911
     if not isinstance(attrs, dict):
         return state_val == "playing"
 
-    # 1. Cast Lovelace receiver is NEVER routine media playback
+    # 1. Cast Lovelace receiver and HA Cast splash are NEVER routine media playback
     app_name = (attrs.get("app_name") or "").lower()
     app_id = (attrs.get("app_id") or "").upper()
+    media_content_id_str = str(attrs.get("media_content_id") or "").lower()
     if (
-        "lovelace" in app_name
+        "splash.png" in media_content_id_str
+        or "lovelace" in app_name
         or app_name in ("home assistant", "home assistant cast")
         or app_id in ("A078F6B0", "B12CE3C8")
     ):
@@ -435,10 +460,11 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
 
     # 0. Wake up, unmute, and initialize volume if configured
     if metadata.get("prepare_player", True) and target_player:
-        with contextlib.suppress(Exception):
-            await hass.services.async_call(
-                "media_player", "turn_on", {"entity_id": target_player}
-            )
+        if not _is_cast_player(hass, target_player):
+            with contextlib.suppress(Exception):
+                await hass.services.async_call(
+                    "media_player", "turn_on", {"entity_id": target_player}
+                )
         if metadata.get("unmute", True):
             with contextlib.suppress(Exception):
                 await hass.services.async_call(
@@ -575,7 +601,11 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
                 if isinstance(post_actions, dict):
                     post_actions = [post_actions]
                 try:
-                    if metadata.get("prepare_player", True) and target_player:
+                    if (
+                        metadata.get("prepare_player", True)
+                        and target_player
+                        and not _is_cast_player(hass, target_player)
+                    ):
                         with contextlib.suppress(Exception):
                             await hass.services.async_call(
                                 "media_player", "turn_on", {"entity_id": target_player}

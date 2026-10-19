@@ -1326,6 +1326,25 @@ def test_is_routine_media_playing_default_media_receiver_proxy_stream() -> None:
     )
 
 
+def test_is_routine_media_playing_rejects_ha_cast_splash_screen() -> None:
+    """Test _is_routine_media_playing rejects Home Assistant Cast splash screen."""
+    from custom_components.cast_studio.orchestrator import _is_routine_media_playing
+
+    state_obj = MagicMock()
+    state_obj.state = "playing"
+    state_obj.attributes = {
+        "app_id": "CC1AD845",
+        "app_name": "Default Media Receiver",
+        "media_content_id": "https://www.home-assistant.io/images/cast/splash.png",
+    }
+    assert (
+        _is_routine_media_playing(
+            state_obj, expected_media_url="https://ha.apollo-home.net/local/morning.mp4"
+        )
+        is False
+    )
+
+
 @pytest.mark.asyncio
 async def test_coordinate_playback_lifecycle_wakes_player_for_post_actions() -> None:
     """Verify player turn_on is called to ensure display is awake before post-routine actions."""
