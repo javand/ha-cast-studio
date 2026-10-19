@@ -51,8 +51,9 @@ STEP_PROMPT_GUIDELINES: dict[str, str] = {
         "which option is faster and by how many minutes.\n"
     ),
     "scripture": (
-        "4. SCRIPTURE NARRATION: After summarizing the scripture, "
-        "conclude the narration with an uplifting, encouraging thought "
+        "4. SCRIPTURE NARRATION: Read the scripture passage and commentary verbatim "
+        "without summarizing or altering the text. "
+        "Conclude the narration with an uplifting, encouraging thought "
         "along the lines of walking with purpose, focusing on what matters, "
         "and having a wonderful day.\n"
     ),
@@ -100,6 +101,16 @@ def _build_prompt(
     context = step_config.get("context", "")
     now_str = datetime.now().astimezone().strftime("%A, %B %-d, %Y")
 
+    step_key = str(step_type or step_name or "").strip().lower()
+    name_key = str(step_name or "").strip().lower()
+    if "is_first_step" in step_config:
+        is_first = bool(step_config["is_first_step"])
+    else:
+        is_first = step_key in ("greeting", "welcome") or name_key in (
+            "greeting",
+            "welcome",
+        )
+
     prompt = (
         "You are generating content for an automated smart home briefing routine.\n"
         f"Current Local Date: {now_str}\n"
@@ -119,28 +130,36 @@ def _build_prompt(
         "     },\n"
         '     "narration_script": "<Text to be spoken aloud by TTS>"\n'
         "   }\n"
-        "2. VISUAL CARD IDENTITY CONTRACT: In 'visual_card',\n"
-        f"   always display the recipient's real name '{name}'.\n"
-        f"   NEVER use the phonetic spelling '{phonetic_name}' in 'visual_card'.\n"
-        "3. NARRATION IDENTITY CONTRACT: In 'narration_script', always use\n"
-        f"   the phonetic spelling '{phonetic_name}' when speaking aloud for TTS.\n"
     )
 
-    step_key = str(step_type or step_name or "").strip().lower()
-    name_key = str(step_name or "").strip().lower()
+    if is_first:
+        prompt += (
+            "2. VISUAL CARD IDENTITY CONTRACT: In 'visual_card',\n"
+            f"   always display the recipient's real name '{name}' "
+            "if naming the recipient.\n"
+            f"   NEVER use the phonetic spelling '{phonetic_name}' in 'visual_card'.\n"
+            "3. NARRATION IDENTITY CONTRACT: In 'narration_script', always use\n"
+            f"   the phonetic spelling '{phonetic_name}' when speaking aloud for TTS.\n"
+        )
+    else:
+        prompt += (
+            "2. VISUAL CARD DIRECTIVE: In 'visual_card', "
+            "DO NOT include the recipient's name in the title, subtitle, "
+            "or bullet points. Use clean, direct, simplified titles "
+            "(e.g. 'Weather', 'Today Schedule', 'Tasks', 'Commute', 'Fun Fact'). "
+            f"NEVER use '{name}' or '{phonetic_name}' in 'visual_card' "
+            "on intermediate slides.\n"
+            "3. NARRATION DIRECTIVE: In 'narration_script', "
+            f"DO NOT speak the recipient's name '{phonetic_name}' "
+            "and DO NOT greet them again. Jump directly into narrating the content.\n"
+        )
+
     guideline = STEP_PROMPT_GUIDELINES.get(step_key) or STEP_PROMPT_GUIDELINES.get(
         name_key
     )
     if guideline:
         prompt += guideline
 
-    if "is_first_step" in step_config:
-        is_first = bool(step_config["is_first_step"])
-    else:
-        is_first = step_key in ("greeting", "welcome") or name_key in (
-            "greeting",
-            "welcome",
-        )
     if is_first:
         prompt += (
             "5. GREETING DIRECTIVE: This is the opening slide of the briefing. "
@@ -158,7 +177,10 @@ def _build_prompt(
 
 
 def _enforce_recipient_separation(
-    content: dict[str, Any], recipient: dict[str, Any]
+    content: dict[str, Any],
+    recipient: dict[str, Any],
+    *,
+    is_first: bool | None = None,
 ) -> dict[str, Any]:
     """Enforce contract: real name in visual_card and phonetic in narration."""
     name = recipient.get("name", "")
@@ -185,6 +207,49 @@ def _enforce_recipient_separation(
     if phonetic_name and name and phonetic_name != name:
         name_word_pattern = re.compile(rf"\b{re.escape(name)}\b", flags=re.IGNORECASE)
         narration_script = name_word_pattern.sub(phonetic_name, narration_script)
+
+    # When explicitly marked as an intermediate step (is_first is False),
+    # simplify visual card titles and suppress repeated greetings/names in narration.
+    if is_first is False and name:
+        title = re.sub(
+            rf"\b(for|to|of)\s+{re.escape(name)}(?:'s)?\b",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        )
+        title = re.sub(rf"\b{re.escape(name)}(?:'s)?\b", "", title, flags=re.IGNORECASE)
+        title = " ".join(title.strip(" -:,").split())
+
+        subtitle = re.sub(
+            rf"\b(for|to|of)\s+{re.escape(name)}(?:'s)?\b",
+            "",
+            subtitle,
+            flags=re.IGNORECASE,
+        )
+        subtitle = re.sub(
+            rf"\b{re.escape(name)}(?:'s)?\b", "", subtitle, flags=re.IGNORECASE
+        )
+        subtitle = " ".join(subtitle.strip(" -:,").split())
+
+        name_opts = (
+            f"({re.escape(name)}|{re.escape(phonetic_name)})"
+            if phonetic_name
+            else re.escape(name)
+        )
+        narration_script = re.sub(
+            rf"^(good\s+morning|hello|hi|hey)\s*,?\s*({name_opts})?[!,.]*\s*",
+            "",
+            narration_script,
+            flags=re.IGNORECASE,
+        ).strip()
+        narration_script = re.sub(
+            rf",\s*{name_opts}\b",
+            "",
+            narration_script,
+            flags=re.IGNORECASE,
+        ).strip()
+        if narration_script and narration_script[0].islower():
+            narration_script = narration_script[0].upper() + narration_script[1:]
 
     return {
         "visual_card": {
@@ -523,4 +588,5 @@ async def async_generate_step_content(
             agent_id=agent_id,
         )
 
-    return _enforce_recipient_separation(raw_content, rec)
+    is_first = step_config.get("is_first_step")
+    return _enforce_recipient_separation(raw_content, rec, is_first=is_first)

@@ -375,15 +375,23 @@ def _render_gradient_background(
 def _render_card_overlay(
     canvas: Image.Image,
     theme: dict[str, Any] | None = None,
+    *,
+    is_photo: bool = False,
 ) -> Image.Image:
     """Composite translucent rounded card overlay on top of canvas."""
-    border_col = (theme or {}).get("card_border", CARD_BORDER_COLOR)
     overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
+    if is_photo:
+        fill_col = (10, 16, 30, 95)
+        border_col = (255, 255, 255, 45)
+    else:
+        fill_col = CARD_BG_COLOR
+        border_col = (theme or {}).get("card_border", CARD_BORDER_COLOR)
+
     overlay_draw.rounded_rectangle(
         (CARD_X0, CARD_Y0, CARD_X1, CARD_Y1),
         radius=CARD_RADIUS,
-        fill=CARD_BG_COLOR,
+        fill=fill_col,
         outline=border_col,
         width=1,
     )
@@ -551,8 +559,8 @@ def _render_photo_background(img: Image.Image) -> Image.Image:
     center_y = CANVAS_HEIGHT / 2
     for y in range(CANVAS_HEIGHT):
         dist = abs(y - center_y) / center_y
-        # Base tint (alpha 130) + subtle edge gradient deepening to 220
-        line_alpha = min(255, int(130 + 90 * (dist**2)))
+        # Soft ambient vignette: edge darkening only (alpha 15 to 60)
+        line_alpha = min(255, int(15 + 45 * (dist**2)))
         v_draw.line(
             [(0, y), (CANVAS_WIDTH, y)],
             fill=(2, 6, 23, line_alpha),
@@ -741,12 +749,12 @@ def render_slide(
     # 3. Render base background and card overlay
     if layout_mode == "photo" and img is not None:
         canvas = _render_photo_background(img)
-        canvas = _render_card_overlay(canvas, theme=theme)
+        canvas = _render_card_overlay(canvas, theme=theme, is_photo=True)
         content_left = CONTENT_LEFT
         content_right = CONTENT_RIGHT
     else:
         canvas = _render_gradient_background(theme=theme)
-        canvas = _render_card_overlay(canvas, theme=theme)
+        canvas = _render_card_overlay(canvas, theme=theme, is_photo=False)
         if layout_mode == "icon" and img is not None:
             content_left, content_right = _composite_icon(
                 canvas, img, has_alpha=has_alpha

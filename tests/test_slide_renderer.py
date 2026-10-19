@@ -415,3 +415,25 @@ def test_render_slide_applies_step_theme_and_category_badge(tmp_path: Path) -> N
 
     with Image.open(default_out) as def_img, Image.open(themed_out) as thm_img:
         assert def_img.getpixel((10, 10)) != thm_img.getpixel((10, 10))
+
+
+def test_render_slide_photo_mode_uses_translucent_frosted_glass_scrim(
+    tmp_path: Path,
+) -> None:
+    """Test photo mode applies a frosted glass scrim leaving background photo vibrant and visible."""
+    output_photo = str(tmp_path / "photo_scrim.jpg")
+    card_data = {
+        "title": "Sunny & Warm",
+        "subtitle": "Weather Outlook",
+        "image_path": "weather_sunny.jpg",
+        "layout": "photo",
+    }
+    render_slide(card_data, output_photo)
+
+    with Image.open(output_photo) as img:
+        center_rgb = img.getpixel((500, 300))
+        # Center should not be the dark opaque slate (R<55, G<60, B<70)
+        # It must show the bright golden sunrise colors of weather_sunny.jpg (R >= 80, G >= 60)
+        assert center_rgb[0] >= 80, (
+            f"Expected vibrant red channel >= 80, got {center_rgb[0]}"
+        )

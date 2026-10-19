@@ -13,6 +13,7 @@ import contextlib
 import inspect
 import json
 import wave
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -207,6 +208,59 @@ def _format_scripture_sensor(
         if comment_text and comment_text != lower_attrs.get("text"):
             parts.append(f"Commentary: {comment_text}")
     return "\n".join(parts)
+
+
+def _extract_verbatim_scripture_data(
+    hass: HomeAssistant,
+    step: dict[str, Any],
+) -> tuple[str | None, str | None, str | None]:
+    """Extract scripture citation, text, and commentary verbatim from step or hass."""
+    # 1. Try entities configured on the step or default daily text sensor
+    candidates = _get_step_entity_ids(step)
+    if not candidates:
+        candidates = ["sensor.jw_library_daily_text_today"]
+
+    for eid in candidates:
+        if hasattr(hass, "states") and hasattr(hass.states, "get"):
+            state_obj = hass.states.get(eid)
+            attrs = getattr(state_obj, "attributes", None) or {}
+            lower_attrs = (
+                {str(k).lower(): v for k, v in attrs.items()}
+                if isinstance(attrs, Mapping)
+                else {}
+            )
+            citation = lower_attrs.get("scripture")
+            text = lower_attrs.get("text")
+            comment = lower_attrs.get("commentary")
+            if not comment and eid.endswith("_daily_text_today"):
+                comment_obj = hass.states.get(f"{eid}_comment")
+                c_attrs = getattr(comment_obj, "attributes", None) or {}
+                if isinstance(c_attrs, Mapping):
+                    comment = c_attrs.get("text")
+            if citation and text:
+                return (
+                    str(citation).strip(),
+                    str(text).strip(),
+                    str(comment).strip() if comment else None,
+                )
+
+    # 2. Try parsing from step context if async_extract_entity_context
+    # already formatted it
+    context = str(step.get("context") or "")
+    if "Citation:" in context and "Text:" in context:
+        citation, text, comment = None, None, None
+        for line in context.splitlines():
+            line_str = line.strip()
+            if line_str.startswith("Citation:"):
+                citation = line_str.removeprefix("Citation:").strip()
+            elif line_str.startswith("Text:"):
+                text = line_str.removeprefix("Text:").strip()
+            elif line_str.startswith("Commentary:"):
+                comment = line_str.removeprefix("Commentary:").strip()
+        if citation and text:
+            return citation, text, comment
+
+    return None, None, None
 
 
 def _format_single_entity_state(  # noqa: PLR0912
@@ -737,6 +791,15 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
     clip_target_path: str | None = None,
 ) -> tuple[str, float, float]:
     """Compile a single routine or static step into audio and (if visual) MP4 clip."""
+    step_key = str(step_to_process.get("type") or step_name or "").strip().lower()
+    name_key = str(step_name or "").strip().lower()
+    is_scripture = step_key in ("scripture", "daily_text", "bible") or name_key in (
+        "scripture",
+        "daily_text",
+        "bible",
+    )
+    is_first = step_to_process.get("is_first_step")
+
     explicit_narration = (
         step_to_process.get("narration")
         or step_to_process.get("message")
@@ -757,7 +820,33 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
             },
             "narration_script": str(explicit_narration).strip(),
         }
-        content = _enforce_recipient_separation(raw_content, recipient)
+        content = _enforce_recipient_separation(
+            raw_content, recipient, is_first=is_first
+        )
+    elif (
+        is_scripture
+        and (scripture_data := _extract_verbatim_scripture_data(hass, step_to_process))[
+            0
+        ]
+    ):
+        citation, text, comment = scripture_data
+        if comment:
+            verbatim_narration = (
+                f"Today's text is from {citation}. It reads: {text}.\n{comment}"
+            )
+        else:
+            verbatim_narration = f"Today's text is from {citation}. It reads: {text}."
+        raw_content = {
+            "visual_card": {
+                "title": "Daily Scripture",
+                "subtitle": str(citation),
+                "bullet_points": [f'"{text}"'],
+            },
+            "narration_script": verbatim_narration.strip(),
+        }
+        content = _enforce_recipient_separation(
+            raw_content, recipient, is_first=is_first
+        )
     else:
         content = await async_generate_step_content(
             hass, step_to_process, recipient, ai_creds

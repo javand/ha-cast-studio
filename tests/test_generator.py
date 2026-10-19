@@ -1254,3 +1254,101 @@ async def test_resolve_step_visual_assets_ai_image_generation_and_fallback(
         )
         assert card_fun_fact["image_path"] == "fun_fact.jpg"
         assert card_fun_fact["layout"] == "photo"
+
+
+@pytest.mark.asyncio
+async def test_async_compile_single_step_verbatim_scripture_bypasses_llm(
+    tmp_path: Path,
+) -> None:
+    """Verify scripture step produces verbatim narration from daily text sensors and bypasses LLM."""
+    from types import SimpleNamespace
+
+    from custom_components.cast_studio.generator import _async_compile_single_step
+
+    fake_states = {
+        "sensor.jw_library_daily_text_today": SimpleNamespace(
+            attributes={
+                "scripture": "1 John 4:8",
+                "text": "Whoever does not love has not come to know God, because God is love.",
+            }
+        ),
+        "sensor.jw_library_daily_text_today_comment": SimpleNamespace(
+            attributes={"text": "Love is Jehovah's preeminent quality."}
+        ),
+    }
+    mock_hass = MagicMock()
+    mock_hass.states.get.side_effect = fake_states.get
+
+    step = {
+        "name": "scripture",
+        "type": "scripture",
+        "entity_id": "sensor.jw_library_daily_text_today",
+    }
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    ai_creds = {"platform": "conversation_agent"}
+
+    audio_target = str(tmp_path / "audio.wav")
+    slide_target = str(tmp_path / "slide.jpg")
+    clip_target = str(tmp_path / "clip.mp4")
+
+    # Write dummy audio wav so duration extraction succeeds
+    with wave.open(audio_target, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"\x00\x00" * 24000)
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_generate_step_content",
+            new=AsyncMock(),
+        ) as mock_llm,
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            new=AsyncMock(return_value=audio_target),
+        ) as mock_synth,
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value=slide_target,
+        ) as mock_render,
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        await _async_compile_single_step(
+            mock_hass,
+            step,
+            "scripture",
+            recipient,
+            ai_creds,
+            is_visual=True,
+            default_pad_seconds=0.5,
+            audio_target_path=audio_target,
+            slide_target_path=slide_target,
+            clip_target_path=clip_target,
+        )
+
+        # 1. LLM summarization must NOT be called
+        mock_llm.assert_not_called()
+
+        # 2. Narration sent to TTS must be verbatim matching script.read_daily_text
+        mock_synth.assert_called_once()
+        synth_script = mock_synth.call_args.args[1]
+        assert "Today's text is from 1 John 4:8" in synth_script
+        assert (
+            "It reads: Whoever does not love has not come to know God" in synth_script
+        )
+        assert "Love is Jehovah's preeminent quality." in synth_script
+
+        # 3. Slide rendered must have citation subtitle and scripture bullet point
+        mock_render.assert_called_once()
+        rendered_card = mock_render.call_args.args[0]
+        assert rendered_card["title"] == "Daily Scripture"
+        assert rendered_card["subtitle"] == "1 John 4:8"
+        assert (
+            rendered_card["bullet_points"][0]
+            == '"Whoever does not love has not come to know God, because God is love."'
+        )
+        assert rendered_card["image_path"] == "bible_scripture.jpg"
+        assert rendered_card["layout"] == "photo"

@@ -592,3 +592,38 @@ async def test_async_generate_ai_image_success(tmp_path: Path) -> None:
         assert result == target_path
         assert Path(target_path).is_file()
         assert Path(target_path).read_bytes() == fake_png_bytes
+
+
+def test_build_prompt_intermediate_steps_forbid_repeating_recipient_name() -> None:
+    """Verify intermediate step prompt strictly forbids naming recipient on card or in speech."""
+    weather_prompt = _build_prompt(
+        {"name": "weather", "type": "weather", "is_first_step": False},
+        {"name": "Javan", "phonetic_name": "Jay-ven"},
+    )
+    assert "DO NOT include the recipient's name" in weather_prompt
+    assert "DO NOT speak the recipient's name" in weather_prompt
+
+
+def test_enforce_recipient_separation_simplifies_intermediate_titles_and_narration() -> (
+    None
+):
+    """Verify intermediate step sanitizer simplifies titles and strips repeated re-greetings."""
+    from custom_components.cast_studio.ai_client import _enforce_recipient_separation
+
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    raw_content = {
+        "visual_card": {
+            "title": "Weather for Javan",
+            "subtitle": "Forecast for Javan's Day",
+            "bullet_points": ["Sunny skies ahead"],
+        },
+        "narration_script": "Good morning, Jay-ven! Sunny skies ahead with highs near 75.",
+    }
+
+    result = _enforce_recipient_separation(raw_content, recipient, is_first=False)
+    assert result["visual_card"]["title"] == "Weather"
+    assert "Javan" not in result["visual_card"]["title"]
+    assert "Javan" not in result["visual_card"]["subtitle"]
+    assert not result["narration_script"].lower().startswith("good morning")
+    assert "Jay-ven" not in result["narration_script"]
+    assert result["narration_script"].startswith("Sunny skies ahead")
