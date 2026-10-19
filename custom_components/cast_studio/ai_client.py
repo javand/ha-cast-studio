@@ -274,7 +274,9 @@ def _extract_entry_api_key(entry: Any) -> str | None:
     return None
 
 
-async def async_discover_ai_credentials(hass: HomeAssistant) -> dict[str, Any]:
+async def async_discover_ai_credentials(  # noqa: PLR0912
+    hass: HomeAssistant,
+) -> dict[str, Any]:
     """
     Auto-detect AI credentials from existing config entries.
 
@@ -299,15 +301,16 @@ async def async_discover_ai_credentials(hass: HomeAssistant) -> dict[str, Any]:
                 if api_key:
                     return {"platform": "gemini", "api_key": api_key}
 
-    # 2. Check google_generative_ai config entries
-    with suppress(AttributeError, TypeError, KeyError):
-        genai_entries = hass.config_entries.async_entries("google_generative_ai")
-        for entry in genai_entries:
-            if _is_entry_disabled(entry):
-                continue
-            api_key = _extract_entry_api_key(entry)
-            if api_key:
-                return {"platform": "gemini", "api_key": api_key}
+    # 2. Check google_generative_ai and google_generative_ai_conversation config entries
+    for domain in ("google_generative_ai", "google_generative_ai_conversation"):
+        with suppress(AttributeError, TypeError, KeyError):
+            genai_entries = hass.config_entries.async_entries(domain)
+            for entry in genai_entries:
+                if _is_entry_disabled(entry):
+                    continue
+                api_key = _extract_entry_api_key(entry)
+                if api_key:
+                    return {"platform": "gemini", "api_key": api_key}
 
     # Fallback across all entries if mock or system didn't support domain filtering
     with suppress(AttributeError, TypeError, KeyError):
@@ -315,7 +318,10 @@ async def async_discover_ai_credentials(hass: HomeAssistant) -> dict[str, Any]:
         for entry in all_entries:
             if _is_entry_disabled(entry):
                 continue
-            if getattr(entry, "domain", None) == "google_generative_ai":
+            if getattr(entry, "domain", None) in (
+                "google_generative_ai",
+                "google_generative_ai_conversation",
+            ):
                 api_key = _extract_entry_api_key(entry)
                 if api_key:
                     return {"platform": "gemini", "api_key": api_key}

@@ -6,14 +6,17 @@ import asyncio
 import base64
 import re
 import struct
+from contextlib import suppress
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+from homeassistant.components import tts as ha_tts
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from . import ffmpeg_runner
 from .const import DEFAULT_HOST_VOICE, LOGGER
 
 if TYPE_CHECKING:
@@ -297,37 +300,49 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
     output_wav_path: str,
     target_engine: str | None = None,
 ) -> str:
-    """Fallback speech synthesis using Home Assistant tts.speak service."""
+    """Fallback speech synthesis using Home Assistant TTS media source."""
+    del voice, personality  # Reserved for future engine-specific options
     target_path = Path(output_wav_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    service_data: dict[str, Any] = {
-        "message": script,
-    }
-    options: dict[str, Any] = {}
-    if voice:
-        options["voice"] = voice
-    if personality:
-        options["personality"] = personality
-    if options:
-        service_data["options"] = options
-
-    call_kwargs: dict[str, Any] = {
-        "blocking": True,
-    }
-    if target_engine:
-        call_kwargs["target"] = {"entity_id": target_engine}
-
     try:
-        await hass.services.async_call(
-            "tts",
-            "speak",
-            service_data,
-            **call_kwargs,
+        media_source_id = ha_tts.generate_media_source_id(
+            hass,
+            script,
+            engine=target_engine,
         )
+        extension, data = await ha_tts.async_get_media_source_audio(
+            hass, media_source_id
+        )
+        if data:
+            if extension == "wav" or data.startswith(b"RIFF"):
+                await asyncio.to_thread(target_path.write_bytes, data)
+                return output_wav_path
+
+            temp_file = target_path.with_suffix(f".{extension or 'tmp'}")
+            await asyncio.to_thread(temp_file.write_bytes, data)
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(temp_file),
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                "24000",
+                "-ac",
+                "1",
+                str(target_path),
+            ]
+            conv_ok = await ffmpeg_runner.async_run_ffmpeg(hass, ffmpeg_cmd)
+            with suppress(OSError):
+                await asyncio.to_thread(temp_file.unlink, missing_ok=True)
+            if conv_ok and target_path.exists() and target_path.stat().st_size > 0:
+                return output_wav_path
     except (HomeAssistantError, Exception) as err:  # noqa: BLE001
         LOGGER.warning(
-            "Home Assistant tts.speak call encountered warning/error: %s",
+            "Home Assistant TTS media synthesis encountered warning/error: %s",
             err,
         )
 

@@ -35,6 +35,26 @@ async def test_auto_detect_google_genai_credentials() -> None:
 
 
 @pytest.mark.asyncio
+async def test_auto_detect_google_genai_conversation_credentials() -> None:
+    """Test auto-discovery of credentials from existing google_generative_ai_conversation config entry."""
+    hass = MagicMock()
+    mock_entry = MagicMock()
+    mock_entry.domain = "google_generative_ai_conversation"
+    mock_entry.data = {"api_key": "discovered_conversation_key"}
+
+    def mock_async_entries(domain: str | None = None) -> list[MagicMock]:
+        if domain in ("google_generative_ai_conversation", None):
+            return [mock_entry]
+        return []
+
+    hass.config_entries.async_entries.side_effect = mock_async_entries
+
+    creds = await async_discover_ai_credentials(hass)
+    assert creds["platform"] == "gemini"
+    assert creds["api_key"] == "discovered_conversation_key"
+
+
+@pytest.mark.asyncio
 async def test_fallback_to_conversation_agent_when_no_key() -> None:
     """Test fallback to native conversation agent when no key is found."""
     hass = MagicMock()

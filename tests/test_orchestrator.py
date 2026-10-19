@@ -1072,3 +1072,59 @@ async def test_async_play_and_sync_routine_executes_post_actions_fallback():
             },
             target={"entity_id": "media_player.kitchen_hub"},
         )
+
+
+@pytest.mark.asyncio
+async def test_async_play_and_sync_routine_executes_post_actions_on_timeout():
+    """Verify post_routine_actions execute even if safety timeout expires."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    mock_state = MagicMock()
+    mock_state.state = "idle"
+    hass.states.get.return_value = mock_state
+
+    post_actions = [
+        {
+            "service": "cast.show_lovelace_view",
+            "target": {"entity_id": "media_player.bathroom_display"},
+            "data": {
+                "dashboard_path": "nest-display",
+                "view_path": "morning",
+            },
+        }
+    ]
+    metadata = {
+        "video_path": "/local/morning.mp4",
+        "prepare_player": False,
+        "duration": 5.0,
+        "slide_timestamps": [],
+        "post_routine_actions": post_actions,
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch(
+            "custom_components.cast_studio.orchestrator.async_call_later"
+        ) as mock_call_later,
+    ):
+        playback_task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        assert isinstance(playback_task, asyncio.Task)
+
+        # Trigger timeout callback directly instead of entering playing
+        timeout_cb = mock_call_later.call_args[0][2]
+        timeout_cb(None)
+
+        # Await the playback lifecycle to complete
+        await playback_task
+
+        # Verify that cast.show_lovelace_view was called despite timeout
+        hass.services.async_call.assert_any_call(
+            "cast",
+            "show_lovelace_view",
+            service_data={"dashboard_path": "nest-display", "view_path": "morning"},
+            target={"entity_id": "media_player.bathroom_display"},
+        )

@@ -503,22 +503,25 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
                     remaining = duration - now
                     if remaining > 0:
                         await asyncio.sleep(remaining)
-                post_actions = (
-                    metadata.get("post_routine_actions")
-                    or metadata.get("post_actions")
-                    or metadata.get("post_briefing_actions")
-                )
-                if post_actions:
-                    if isinstance(post_actions, dict):
-                        post_actions = [post_actions]
-                    try:
-                        await async_execute_background_actions(hass, post_actions)
-                    except Exception as err:  # noqa: BLE001
-                        LOGGER.error("Error executing post-routine actions: %s", err)
         except asyncio.CancelledError:
             if not playing_future.done():
                 playing_future.cancel()
             raise
+        finally:
+            post_actions = (
+                metadata.get("post_routine_actions")
+                or metadata.get("post_actions")
+                or metadata.get("post_briefing_actions")
+            )
+            if post_actions:
+                if isinstance(post_actions, dict):
+                    post_actions = [post_actions]
+                try:
+                    await asyncio.shield(
+                        async_execute_background_actions(hass, post_actions)
+                    )
+                except Exception as err:  # noqa: BLE001
+                    LOGGER.error("Error executing post-routine actions: %s", err)
 
     return _create_task(
         hass,
