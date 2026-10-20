@@ -1565,22 +1565,17 @@ def render_slide(  # noqa: PLR0912, PLR0915
         theme=theme,
     )
 
-    # 7. Draw body content: 2-column agenda or standard bullet points
-    if card_data.get("layout") == "agenda_split" or (
-        "calendar_items" in card_data and "todo_items" in card_data
-    ):
-        _draw_two_column_agenda(canvas, card_data, theme=theme)
-    else:
-        raw_bullets = card_data.get("bullet_points")
-        if isinstance(raw_bullets, list):
-            _draw_bullets(
-                draw,
-                raw_bullets,
-                curr_y,
-                content_left=content_left,
-                content_right=content_right,
-                theme=theme,
-            )
+    # 7. Draw body content: bullet points
+    raw_bullets = card_data.get("bullet_points")
+    if isinstance(raw_bullets, list):
+        _draw_bullets(
+            draw,
+            raw_bullets,
+            curr_y,
+            content_left=content_left,
+            content_right=content_right,
+            theme=theme,
+        )
 
     # 8. Ensure output directory exists and save RGB JPEG or PNG
     output_path = Path(output_jpeg_path).resolve()
