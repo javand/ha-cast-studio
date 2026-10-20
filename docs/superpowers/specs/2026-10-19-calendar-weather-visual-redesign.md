@@ -1,7 +1,7 @@
 # Design Specification: Calendar Dual-Focus Agenda & Google Nest Display Weather
 
 **Date:** 2026-10-19  
-**Status:** Draft / Review  
+**Status:** Approved by Human Partner (Visual Mockup Validated)  
 **Author:** Antigravity  
 
 ---
@@ -19,23 +19,22 @@ During testing on Nest Hub displays, two specific visual slides required redesig
 ## 2. Goals, Non-Goals & Anti-Goals
 
 ### Goals
-- **Dual-Focused Agenda Slide**:
+- **Dual-Focused Agenda Slide (Option B)**:
   - Render a 2-column split board:
     - **Left Column (Schedule & Events)**: Chronological event timeline featuring time chips (`[ 10:00 AM ]`), event summaries, and location/subtext.
-    - **Right Column (Priority Tasks)**: To-do checklist featuring status checkboxes (`[ ]`), task summaries, and pending task count chips.
+    - **Right Column (Priority Tasks)**: To-do checklist featuring status checkboxes (`[ ]`), task summaries, and pending task count chips (`✓ PENDING TO-DOS (3)`).
   - Header with clean date badge (`Monday, Oct 19`) without redundant "Good Morning" or repetitive title bubbles.
   - Render on high-contrast frosted slate panels (`#0f172a` / `#1e293b`) over an ambient planner backdrop so text is crisp and legible from across the room.
-  - Handle empty states gracefully (e.g., "No scheduled meetings today • Schedule is clear", "All tasks completed").
+  - Handle empty states gracefully (e.g., "Schedule is clear • No meetings today", "All priority tasks completed").
 - **Google Nest Hub Weather Display**:
   - Render an authentic Google Assistant smart display weather layout:
     - **Hero Temperature**: Large bold current temperature (e.g., `68°`).
-    - **Condition & Spread**: Large condition icon (`🌤️`), condition description (`Mostly Sunny`), and high/low spread (`High 74° • Low 54°`).
+    - **Condition & Spread**: Prominent condition icon, condition description (`Mostly Sunny`), and high/low spread (`High 74° • Low 54°`).
     - **Metrics Strip**: Chips for humidity (`💧 48%`), wind (`💨 8 mph`), and precipitation probability (`☂️ 10%`).
     - **Hourly Forecast Timeline**: 5 to 6 horizontal time slots along the bottom (`Now`, `+2h`, `+4h`, `+6h`, `+8h`, `Tomorrow`) with forecast weather icons and expected temperatures.
   - **Dynamic Weather Atmosphere**: Visual theme/backdrop dynamically selected based on current weather condition (sunny daylight blue gradient, rainy cool slate, overcast neutral gray, clear night deep indigo).
 - **Data Pipeline Ingestion**:
-  - In `generator.py`, enhance weather entity context extraction to call `weather.get_forecasts` (or inspect state attributes) to obtain `forecast` entries (hourly or daily), current humidity, wind speed, and precipitation chance.
-  - In `generator.py` and `ai_client.py`, pass structured `calendar_events` and `todo_items` directly into the agenda card payload for `slide_renderer.py`.
+  - In `generator.py`, inject live Home Assistant service responses (`calendar.get_events`, `todo.get_items`, `weather.get_forecasts`) directly into `card_data` so visual cards display 100% verified, live data without relying on LLM JSON formatting.
 
 ### Non-Goals
 - Changing audio narration synthesis or Gemini TTS voices (Pulcherrima / Enceladus).
@@ -45,21 +44,43 @@ During testing on Nest Hub displays, two specific visual slides required redesig
 - Text overlapping busy, unshielded photographic backgrounds.
 - Tiny fonts that cannot be read on a 7-inch or 10-inch Nest Hub at typical bathroom/kitchen viewing distances.
 - Hardcoded or fake hourly temperatures when live forecast data is available from Home Assistant's `weather` platform.
+- Unnecessary Imagen AI generation delays for standardized UI slides like weather and agenda.
 
 ---
 
-## 3. Detailed Visual Architecture & Layout (1024x600)
+## 3. Builder Architectural Decisions
 
-### 3.1 Dual-Focused Agenda Slide (`slide_renderer.py`)
+Following the Builder Check Review, the following four architecture decisions have been established:
+
+### Decision 1: Direct Home Assistant Data Ingestion into Visual Cards
+- **Architecture**: `generator.py` extracts verified calendar events (`calendar.get_events`), tasks (`todo.get_items`), and forecast metrics (`weather.get_forecasts`) and directly populates `card_data["agenda_data"]` and `card_data["weather_data"]`.
+- **Reasoning**: Completely prevents LLM hallucination of meeting times, task summaries, or temperature numbers, avoids brittle JSON schema formatting errors, and ensures slides render instantaneously and accurately. The LLM is used strictly for its strength: synthesizing natural spoken narration scripts.
+
+### Decision 2: Weather Data Ingestion (Dual Ingestion: Hourly + Daily)
+- **Architecture**: In `async_extract_entity_context`, `generator.py` invokes `weather.get_forecasts` for `type: "hourly"` (for the bottom timeline) and `type: "daily"` (for today's and tomorrow's high/low spread).
+- **Fallback**: If `daily` is unsupported by the user's weather integration, calculate today's high and low by taking the max and min temperatures across the first 24 hours of hourly entries. If `hourly` is unsupported, adapt the timeline to display 5 consecutive daily forecasts (`Mon`, `Tue`, `Wed`, `Thu`, `Fri`) with high/low spreads.
+
+### Decision 3: Weather Assets & Generation Pipeline
+- **Architecture**: The weather slide uses the condition-aware atmospheric 135° gradient canvas and bundled Google-style weather assets. `is_step_image_dynamic` exempts `weather` (joining `scripture`), completely skipping Gemini Imagen generation for this slide.
+- **Reasoning**: Saves ~12–15 seconds and API quota on every morning run, eliminates the risk of winter or inappropriate AI-generated background images, and delivers the exact Google Nest Hub aesthetic requested by the user.
+
+### Decision 4: High-Fidelity Asset-Based Weather Icons
+- **Architecture**: Transparent, crisp vector-rendered PNG icons (`custom_components/cast_studio/assets/weather/`: `sunny.png`, `partly_cloudy.png`, `cloudy.png`, `rainy.png`, `stormy.png`, `snowy.png`, `humidity.png`, `wind.png`, `precip.png`) are bundled and loaded by `slide_renderer.py`.
+- **Reasoning**: Standard Pillow environments on Linux/Home Assistant OS lack color emoji fonts (causing Unicode emojis like `🌤️` to render as blank tofu boxes `□`). Bundling dedicated PNG assets guarantees 100% pixel-perfect rendering across macOS, Home Assistant OS, Debian, and Docker.
+
+---
+
+## 4. Detailed Visual Layout (1024x600)
+
+### 4.1 Dual-Focused Agenda Slide (`slide_renderer.py`)
 
 - **Canvas Size**: 1024 x 600 px.
 - **Background**: Ambient modern planner aesthetic (`assets/calendar_agenda.jpg`) darkened by a subtle full-screen vignette/scrim (`rgba(10, 15, 26, 0.75)`).
-- **Header**:
+- **Header** (`Y: 30px` to `75px`):
   - Left: Title `TODAY'S SCHEDULE & TASKS` (Font size 26, bold, `#f8fafc`).
   - Right: Date pill `Monday, Oct 19` (Background `#0284c7`, text `#ffffff`, font size 18, rounded pill).
-  - Y-position: `30px` to `75px`.
 - **Columns Layout** (`Y: 95px` to `550px`, Height `455px`):
-  - **Left Column (Schedule)**:
+  - **Left Column (Schedule & Events)**:
     - Box: `X: 35px` to `495px` (Width `460px`).
     - Container: Frosted slate panel (Fill `rgba(26, 36, 56, 0.92)`, border `rgba(56, 189, 248, 0.4)`, radius `12px`).
     - Column Header: `📅 MEETINGS & EVENTS` (Sky-400 `#38bdf8`, font size 18, bold).
@@ -77,11 +98,11 @@ During testing on Nest Hub displays, two specific visual slides required redesig
       - Summary: `50 push-ups & morning mobility` (Font size 17, `#f1f5f9`).
     - Empty State: "All caught up! No pending to-do tasks."
 
-### 3.2 Google Nest Hub Weather Slide (`slide_renderer.py`)
+### 4.2 Google Nest Hub Weather Slide (`slide_renderer.py`)
 
 - **Canvas Size**: 1024 x 600 px.
-- **Background**: Weather-aware sky gradient or atmospheric backdrop:
-  - Sunny / Clear: `linear-gradient(135deg, #1e3a8a 0%, #0284c7 100%)`
+- **Background**: Weather-aware atmospheric gradient canvas:
+  - Sunny / Clear: `linear-gradient(135deg, #1e3a8a 0%, #0369a1 50%, #0284c7 100%)`
   - Rainy / Pouring: `linear-gradient(135deg, #1e293b 0%, #334155 100%)`
   - Cloudy / Overcast: `linear-gradient(135deg, #1e293b 0%, #0369a1 100%)`
   - Night: `linear-gradient(135deg, #090d16 0%, #1e1b4b 100%)`
@@ -91,9 +112,9 @@ During testing on Nest Hub displays, two specific visual slides required redesig
   - Current Temperature: Massive typography `68°` (Font size 110, `#ffffff`, font-weight light/regular).
   - Condition Text: `Mostly Sunny` (Font size 32, bold, `#ffffff`).
   - High / Low Spread: `High 74° • Low 54°` (Font size 22, `#e2e8f0`).
-  - Condition Icon: Big glyph / weather symbol (`🌤️` or vector rendered weather symbol, size ~100px) aligned on the right.
+  - Condition Icon: High-resolution PNG weather symbol (size ~100px) aligned on the right.
 - **Metrics Strip** (`Y: 275px` to `325px`):
-  - Floating pill pills (`rgba(255, 255, 255, 0.15)`):
+  - Floating pill chips (`rgba(255, 255, 255, 0.15)`):
     - `💧 Humidity: 48%`
     - `💨 Wind: 8 mph`
     - `☂️ Precip: 10%`
@@ -101,38 +122,8 @@ During testing on Nest Hub displays, two specific visual slides required redesig
   - Full-width frosted glass container (`X: 35px` to `985px`, Width `950px`, radius `16px`, background `rgba(15, 23, 42, 0.5)`, border `rgba(255, 255, 255, 0.18)`).
   - 5 to 6 equally spaced forecast columns:
     - Time Label: `Now`, `10 AM`, `1 PM`, `4 PM`, `7 PM`, `Tomorrow` (Font size 16, `#94a3b8`).
-    - Mini Weather Icon: `🌤️`, `☀️`, `☀️`, `🌤️`, `⛅`, `☀️` (Font size 28).
+    - Mini Weather Icon: Loaded PNG icon (size 28px).
     - Temperature: `68°`, `70°`, `73°`, `74°`, `67°`, `72°/52°` (Font size 20, bold, `#ffffff`).
-
----
-
-## 4. Ingestion & Generator Updates
-
-### 4.1 Weather Service Ingestion (`generator.py`)
-In `async_extract_entity_context`:
-- Call `hass.services.async_call("weather", "get_forecasts", {"entity_id": eid, "type": "hourly"}, blocking=True, return_response=True)`.
-- If unavailable or fails, fall back to `type: "daily"` or state attributes (`state_attr(weather_entity, "forecast")`).
-- Extract:
-  - Current state and temperature
-  - High and low temperature for today
-  - Humidity, wind speed, precipitation probability
-  - Hourly forecast points (next 5-6 hours with condition and temperature)
-- Pass these structured values in `card_payload` or metadata so `slide_renderer.py` renders them faithfully.
-
-### 4.2 Agenda Service Ingestion (`generator.py`)
-- Extract calendar events from `calendar.get_events` as list of objects: `[{"summary": ..., "start": ..., "location": ...}]`.
-- Extract to-do items from `todo.get_items` as list of strings: `["Task 1", "Task 2"]`.
-- Format into `agenda_data` dict:
-  ```json
-  {
-    "calendar_events": [
-      {"time": "10:00 AM", "title": "Architecture Alignment", "location": "Room A"}
-    ],
-    "todo_items": ["50 push-ups", "Prescription refill"],
-    "date_str": "Monday, Oct 19"
-  }
-  ```
-- `slide_renderer.py` consumes `agenda_data` directly to draw the two columns.
 
 ---
 
@@ -143,5 +134,5 @@ In `async_extract_entity_context`:
 - Unit tests to update/add:
   - `test_render_slide_google_nest_weather`: Verifies rendering hero temp, high/low, metrics, and hourly forecast timeline.
   - `test_render_slide_dual_focus_agenda`: Verifies rendering 2-column agenda with time chips and checkboxes.
-  - `test_extract_weather_forecasts_hourly`: Verifies `weather.get_forecasts` ingestion in `generator.py`.
+  - `test_extract_weather_forecasts_hourly_and_daily`: Verifies `weather.get_forecasts` ingestion in `generator.py`.
 - Full test suite passes (236+ tests, 0 ruff errors).
