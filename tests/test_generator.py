@@ -18,7 +18,9 @@ from custom_components.cast_studio.generator import (
     async_compile_routine_media,
     async_compile_static_clip,
     async_extract_entity_context,
+    async_extract_weather_data,
     get_audio_duration,
+    is_step_image_dynamic,
 )
 
 TWO_STEPS = 2
@@ -1384,14 +1386,14 @@ def test_is_step_image_dynamic_matrix() -> None:
     """Verify is_step_image_dynamic rules for all slide types and explicit overrides."""
     from custom_components.cast_studio.generator import is_step_image_dynamic
 
-    # 1. Default rule: scripture / daily_text / bible is static
+    # 1. Default rule: scripture / daily_text / bible and weather are static
     assert is_step_image_dynamic({"name": "scripture"}, "scripture") is False
     assert is_step_image_dynamic({"type": "daily_text"}, "step_05") is False
     assert is_step_image_dynamic({"name": "bible"}, "bible") is False
+    assert is_step_image_dynamic({"name": "weather"}, "weather") is False
 
-    # 2. Default rule: all non-scripture slides are dynamic
+    # 2. Default rule: non-scripture / non-weather slides are dynamic
     assert is_step_image_dynamic({"name": "greeting"}, "greeting") is True
-    assert is_step_image_dynamic({"name": "weather"}, "weather") is True
     assert is_step_image_dynamic({"name": "national_day"}, "national_day") is True
     assert is_step_image_dynamic({"name": "fun_fact"}, "fun_fact") is True
     assert is_step_image_dynamic({"name": "agenda"}, "agenda") is True
@@ -1409,8 +1411,8 @@ def test_is_step_image_dynamic_matrix() -> None:
         is False
     )
     assert (
-        is_step_image_dynamic({"name": "weather", "dynamic_image": False}, "weather")
-        is False
+        is_step_image_dynamic({"name": "weather", "dynamic_image": True}, "weather")
+        is True
     )
 
     # 4. Explicit image_mode string overrides
@@ -1481,7 +1483,7 @@ async def test_async_resolve_step_visual_assets_dynamic_generation(
         assert card_greeting["image_path"].endswith("bg_greeting.png")
         assert card_greeting["layout"] == "photo"
 
-    # 2. Weather: dynamic generation with weather condition in prompt
+    # 2. Weather: dynamic generation with weather condition in prompt (explicit dynamic override)
     card_weather: dict[str, Any] = {"weather_condition": "rainy"}
     with patch(
         "custom_components.cast_studio.generator.async_generate_ai_image",
@@ -1489,7 +1491,7 @@ async def test_async_resolve_step_visual_assets_dynamic_generation(
     ) as mock_gen:
         await _async_resolve_step_visual_assets(
             mock_hass,
-            {"name": "weather"},
+            {"name": "weather", "dynamic_image": True},
             "weather",
             card_weather,
             ai_creds,
@@ -1721,3 +1723,238 @@ async def test_async_compile_routine_media_timestamps_include_image_type_and_dyn
         assert slides[1]["image_type"] == "static"
         assert slides[1]["dynamic_image"] is False
         assert slides[1]["image_path"] == "bible_scripture.jpg"
+
+
+@pytest.mark.asyncio
+async def test_async_extract_weather_data_hourly_and_daily() -> None:
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = MagicMock(
+        state="partlycloudy",
+        attributes={
+            "temperature": 68,
+            "humidity": 48,
+            "wind_speed": 8,
+            "precipitation_probability": 10,
+            "friendly_name": "Home",
+        },
+    )
+
+    async def mock_async_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        domain = args[0] if len(args) > 0 else kwargs.get("domain")
+        service = args[1] if len(args) > 1 else kwargs.get("service")
+        data = args[2] if len(args) > 2 else kwargs.get("data", {})
+        if domain == "weather" and service == "get_forecasts":
+            ftype = (data or {}).get("type")
+            if ftype == "hourly":
+                return {
+                    "weather.home": {
+                        "forecast": [
+                            {
+                                "datetime": "2026-10-19T20:00:00",
+                                "temperature": 68,
+                                "condition": "partlycloudy",
+                            },
+                            {
+                                "datetime": "2026-10-19T22:00:00",
+                                "temperature": 70,
+                                "condition": "sunny",
+                            },
+                            {
+                                "datetime": "2026-10-20T01:00:00",
+                                "temperature": 73,
+                                "condition": "sunny",
+                            },
+                            {
+                                "datetime": "2026-10-20T04:00:00",
+                                "temperature": 74,
+                                "condition": "partlycloudy",
+                            },
+                            {
+                                "datetime": "2026-10-20T07:00:00",
+                                "temperature": 67,
+                                "condition": "cloudy",
+                            },
+                        ]
+                    }
+                }
+            if ftype == "daily":
+                return {
+                    "weather.home": {
+                        "forecast": [
+                            {
+                                "datetime": "2026-10-19",
+                                "temperature": 74,
+                                "templow": 54,
+                                "condition": "partlycloudy",
+                            },
+                            {
+                                "datetime": "2026-10-20",
+                                "temperature": 72,
+                                "templow": 52,
+                                "condition": "sunny",
+                            },
+                        ]
+                    }
+                }
+        return {}
+
+    mock_hass.services.async_call = AsyncMock(side_effect=mock_async_call)
+
+    weather_data = await async_extract_weather_data(mock_hass, "weather.home")
+    assert weather_data["current_temp"] == 68
+    assert weather_data["high"] == 74
+    assert weather_data["low"] == 54
+    assert len(weather_data["forecast_points"]) >= 5
+    assert weather_data["forecast_points"][0]["temperature"] == 68
+
+
+def test_is_step_image_dynamic_exempts_weather() -> None:
+    assert is_step_image_dynamic({"name": "weather", "visual": True}) is False
+    assert is_step_image_dynamic({"name": "fun_fact", "visual": True}) is True
+    assert is_step_image_dynamic({"name": "scripture", "visual": True}) is False
+
+
+@pytest.mark.asyncio
+async def test_async_extract_weather_data_hourly_only_fallback() -> None:
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = MagicMock(
+        state="rainy",
+        attributes={
+            "temperature": 62,
+            "humidity": 80,
+            "wind_speed": 12,
+            "precipitation_probability": 90,
+            "friendly_name": "Cabin",
+        },
+    )
+
+    async def mock_async_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        domain = args[0] if len(args) > 0 else kwargs.get("domain")
+        service = args[1] if len(args) > 1 else kwargs.get("service")
+        data = args[2] if len(args) > 2 else kwargs.get("data", {})
+        if domain == "weather" and service == "get_forecasts":
+            ftype = (data or {}).get("type")
+            if ftype == "hourly":
+                return {
+                    "weather.cabin": {
+                        "forecast": [
+                            {
+                                "datetime": "2026-10-19T20:00:00",
+                                "temperature": 60,
+                                "condition": "rainy",
+                            },
+                            {
+                                "datetime": "2026-10-19T22:00:00",
+                                "temperature": 65,
+                                "condition": "rainy",
+                            },
+                            {
+                                "datetime": "2026-10-20T01:00:00",
+                                "temperature": 55,
+                                "condition": "cloudy",
+                            },
+                        ]
+                    }
+                }
+            if ftype == "daily":
+                return {}
+        return {}
+
+    mock_hass.services.async_call = AsyncMock(side_effect=mock_async_call)
+
+    weather_data = await async_extract_weather_data(mock_hass, "weather.cabin")
+    assert weather_data["current_temp"] == 62
+    assert weather_data["high"] == 65
+    assert weather_data["low"] == 55
+    assert len(weather_data["forecast_points"]) == 3
+    assert weather_data["forecast_points"][0]["time"] == "8 PM"
+
+
+@pytest.mark.asyncio
+async def test_async_extract_weather_data_daily_only_fallback() -> None:
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = MagicMock(
+        state="sunny",
+        attributes={
+            "temperature": 75,
+            "humidity": 30,
+            "wind_speed": 5,
+            "friendly_name": "Beach",
+        },
+    )
+
+    async def mock_async_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        domain = args[0] if len(args) > 0 else kwargs.get("domain")
+        service = args[1] if len(args) > 1 else kwargs.get("service")
+        data = args[2] if len(args) > 2 else kwargs.get("data", {})
+        if domain == "weather" and service == "get_forecasts":
+            ftype = (data or {}).get("type")
+            if ftype == "hourly":
+                return {}
+            if ftype == "daily":
+                return {
+                    "weather.beach": {
+                        "forecast": [
+                            {
+                                "datetime": "2026-10-19",
+                                "temperature": 82,
+                                "templow": 64,
+                                "condition": "sunny",
+                            },
+                        ]
+                    }
+                }
+        return {}
+
+    mock_hass.services.async_call = AsyncMock(side_effect=mock_async_call)
+
+    weather_data = await async_extract_weather_data(mock_hass, "weather.beach")
+    assert weather_data["current_temp"] == 75
+    assert weather_data["high"] == 82
+    assert weather_data["low"] == 64
+    assert len(weather_data["forecast_points"]) == 1
+    assert weather_data["forecast_points"][0]["time"] == "Today"
+
+
+@pytest.mark.asyncio
+async def test_async_extract_entity_context_attaches_weather_data() -> None:
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = MagicMock(
+        state="partlycloudy",
+        attributes={
+            "temperature": 68,
+            "humidity": 48,
+            "wind_speed": 8,
+            "precipitation_probability": 10,
+            "friendly_name": "Home",
+        },
+    )
+
+    async def mock_async_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        domain = args[0] if len(args) > 0 else kwargs.get("domain")
+        service = args[1] if len(args) > 1 else kwargs.get("service")
+        if domain == "weather" and service == "get_forecasts":
+            return {
+                "weather.home": {
+                    "forecast": [
+                        {
+                            "datetime": "2026-10-19",
+                            "temperature": 74,
+                            "templow": 54,
+                            "condition": "partlycloudy",
+                        },
+                    ]
+                }
+            }
+        return {}
+
+    mock_hass.services.async_call = AsyncMock(side_effect=mock_async_call)
+
+    step = {"name": "weather", "entity_id": "weather.home"}
+    context = await async_extract_entity_context(mock_hass, step)
+    assert "Weather (weather.home): Condition: partlycloudy" in context
+    assert "card" in step
+    assert "weather_data" in step["card"]
+    assert step["card"]["weather_data"]["current_temp"] == 68
+    assert step["card"]["weather_data"]["high"] == 74
+    assert step["card"]["weather_data"]["low"] == 54

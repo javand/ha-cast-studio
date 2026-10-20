@@ -103,12 +103,12 @@ def is_step_image_dynamic(step: dict[str, Any], step_name: str = "") -> bool:
     if step.get("image_path") or step.get("icon_path"):
         return False
 
-    # 5. Default rule: scripture / daily_text / bible is static by default
+    # 5. Default rule: scripture / daily_text / bible / weather are static by default
     step_key = (
         str(step.get("type") or step_name or step.get("name") or "").strip().lower()
     )
-    # 6. Non-scripture slides default to dynamic
-    return step_key not in ("scripture", "daily_text", "bible")
+    # 6. Non-scripture / non-weather slides default to dynamic
+    return step_key not in ("scripture", "daily_text", "bible", "weather")
 
 
 def _format_weather_service_response(
@@ -452,6 +452,158 @@ async def _async_call_service_for_entity(
     return None
 
 
+def _extract_forecast_list(res: Any, eid: str) -> list[dict[str, Any]]:
+    """Safely extract forecast list from weather.get_forecasts response."""
+    if isinstance(res, list):
+        return [item for item in res if isinstance(item, dict)]
+    if not isinstance(res, dict):
+        return []
+    target = res.get(eid)
+    if isinstance(target, dict):
+        fc = target.get("forecast")
+        if isinstance(fc, list):
+            return [item for item in fc if isinstance(item, dict)]
+    elif isinstance(target, list):
+        return [item for item in target if isinstance(item, dict)]
+    fc = res.get("forecast")
+    if isinstance(fc, list):
+        return [item for item in fc if isinstance(item, dict)]
+    return []
+
+
+async def async_extract_weather_data(  # noqa: PLR0912, PLR0915
+    hass: HomeAssistant,
+    eid: str,
+) -> dict[str, Any]:
+    """Extract live and forecast weather data, querying weather.get_forecasts."""
+    state_obj = (
+        hass.states.get(eid)
+        if hasattr(hass, "states") and hasattr(hass.states, "get")
+        else None
+    )
+    attrs = (getattr(state_obj, "attributes", None) or {}) if state_obj else {}
+    condition = getattr(state_obj, "state", "unknown") if state_obj else "unknown"
+    current_temp = attrs.get("temperature")
+    humidity = attrs.get("humidity")
+    wind_speed = attrs.get("wind_speed")
+    precip_prob = attrs.get("precipitation_probability")
+    location = str(attrs.get("friendly_name") or "")
+
+    condition_map = {
+        "partlycloudy": "Partly Cloudy",
+        "clear-night": "Clear",
+        "sunny": "Sunny",
+        "cloudy": "Cloudy",
+        "rainy": "Rainy",
+        "pouring": "Heavy Rain",
+        "lightning": "Thunderstorm",
+        "lightning-rainy": "Thunderstorm",
+        "snowy": "Snow",
+        "snowy-rainy": "Sleet",
+        "windy": "Windy",
+        "fog": "Fog",
+        "hail": "Hail",
+    }
+    condition_text = condition_map.get(
+        condition,
+        str(condition).replace("-", " ").replace("_", " ").title()
+        if condition
+        else "Unknown",
+    )
+
+    hourly_forecast: list[dict[str, Any]] = []
+    daily_forecast: list[dict[str, Any]] = []
+
+    services = getattr(hass, "services", None)
+    async_call = getattr(services, "async_call", None) if services else None
+    if callable(async_call):
+        h_res = await _async_call_service_for_entity(
+            async_call,
+            "weather",
+            "get_forecasts",
+            {"entity_id": eid, "type": "hourly"},
+        )
+        hourly_forecast = _extract_forecast_list(h_res, eid)
+
+        d_res = await _async_call_service_for_entity(
+            async_call,
+            "weather",
+            "get_forecasts",
+            {"entity_id": eid, "type": "daily"},
+        )
+        daily_forecast = _extract_forecast_list(d_res, eid)
+
+    high = None
+    low = None
+    if daily_forecast:
+        today_daily = daily_forecast[0]
+        high = today_daily.get("temperature")
+        low = today_daily.get("templow")
+        if precip_prob is None:
+            precip_prob = today_daily.get("precipitation_probability")
+
+    # Min/max aggregation fallback if daily did not provide high/low
+    if hourly_forecast:
+        hourly_temps = [
+            pt["temperature"]
+            for pt in hourly_forecast
+            if isinstance(pt, dict) and pt.get("temperature") is not None
+        ]
+        if hourly_temps:
+            if high is None:
+                high = max(hourly_temps)
+            if low is None:
+                low = min(hourly_temps)
+        if precip_prob is None and "precipitation_probability" in hourly_forecast[0]:
+            precip_prob = hourly_forecast[0].get("precipitation_probability")
+
+    # Fallback to state attributes if still None
+    if high is None:
+        high = attrs.get("temperature_high")
+    if low is None:
+        low = attrs.get("temperature_low")
+
+    # Build forecast_points (next 5-6 points)
+    forecast_points: list[dict[str, Any]] = []
+    source_points = hourly_forecast or daily_forecast
+    for idx, pt in enumerate(source_points[:6]):
+        if not isinstance(pt, dict):
+            continue
+        p = dict(pt)
+        if "time" not in p:
+            if "datetime" in p:
+                try:
+                    dt_val = datetime.fromisoformat(str(p["datetime"]))
+                    if hourly_forecast:
+                        p["time"] = dt_val.strftime("%I %p").lstrip("0")
+                    elif idx == 0:
+                        p["time"] = "Today"
+                    elif idx == 1:
+                        p["time"] = "Tomorrow"
+                    else:
+                        p["time"] = dt_val.strftime("%a")
+                except (ValueError, TypeError, OSError):
+                    p["time"] = str(p["datetime"])
+            elif idx == 0:
+                p["time"] = "Now" if hourly_forecast else "Today"
+        forecast_points.append(p)
+
+    return {
+        "current_temp": current_temp,
+        "condition": condition,
+        "condition_text": condition_text,
+        "high": high,
+        "low": low,
+        "humidity": humidity,
+        "wind_speed": wind_speed,
+        "precipitation_probability": precip_prob,
+        "location": location,
+        "forecast_points": forecast_points,
+        "daily_forecast": daily_forecast,
+        "hourly_forecast": hourly_forecast,
+    }
+
+
 async def async_extract_entity_context(
     hass: HomeAssistant,
     step: dict[str, Any],
@@ -464,28 +616,29 @@ async def async_extract_entity_context(
     async_call = getattr(services, "async_call", None) if services else None
     has_states_getter = hasattr(hass, "states") and hasattr(hass.states, "get")
 
+    for eid in eids:
+        if eid.startswith("weather."):
+            weather_data = await async_extract_weather_data(hass, eid)
+            step.setdefault("card", {})["weather_data"] = weather_data
+            if has_states_getter:
+                state_obj = hass.states.get(eid)
+                forecasts = (
+                    weather_data.get("daily_forecast")
+                    or weather_data.get("forecast_points")
+                    or []
+                )
+                if forecasts:
+                    service_overrides[eid] = _format_weather_service_response(
+                        eid, state_obj, forecasts
+                    )
+
     if callable(async_call):
         now = datetime.now().astimezone()
         start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         end_dt = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
 
         for eid in eids:
-            if eid.startswith("weather."):
-                res = await _async_call_service_for_entity(
-                    async_call,
-                    "weather",
-                    "get_forecasts",
-                    {"entity_id": eid, "type": "daily"},
-                )
-                if res and isinstance(res.get(eid), dict):
-                    forecasts = res[eid].get("forecast")
-                    if isinstance(forecasts, list) and forecasts:
-                        state_obj = hass.states.get(eid) if has_states_getter else None
-                        service_overrides[eid] = _format_weather_service_response(
-                            eid, state_obj, forecasts
-                        )
-
-            elif eid.startswith("calendar."):
+            if eid.startswith("calendar."):
                 res = await _async_call_service_for_entity(
                     async_call,
                     "calendar",
@@ -970,6 +1123,9 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
         )
 
     card_data = dict(content.get("visual_card", {}))
+    if "card" in step_to_process and isinstance(step_to_process["card"], dict):
+        for c_key, c_val in step_to_process["card"].items():
+            card_data.setdefault(c_key, c_val)
     for key in (
         "image_path",
         "icon_path",
