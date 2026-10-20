@@ -1,0 +1,90 @@
+blueprint:
+  name: CastStudio - Bedtime Routine
+  description: >-
+    Executes an evening wind-down routine with soothing multimedia playback,
+    concurrent whole-house shutdown actions, and synchronized bedside display actions.
+  domain: automation
+  author: "Javan Dicks (@javand)"
+  homeassistant:
+    min_version: "2024.10.0"
+  source_url: "https://github.com/javand/ha-cast-studio/blob/main/blueprints/automation/cast_studio/bedtime_routine.yaml"
+  input:
+    bedtime_trigger:
+      name: Bedtime Trigger
+      description: Trigger that initiates the evening routine (e.g. bedside button press, NFC tag tap, or scheduled time).
+      selector:
+        trigger: {}
+    recipient_name:
+      name: Recipient Name
+      description: Real name to display visually on slides and cards.
+      default: Javan
+      selector:
+        text: {}
+    phonetic_name:
+      name: Phonetic Name
+      description: Phonetic pronunciation spelling strictly for spoken TTS narration.
+      default: Jay-ven
+      selector:
+        text: {}
+    target_player:
+      name: Target Media Player
+      description: Bedroom smart display or speaker entity for evening multimedia playback.
+      selector:
+        entity:
+          domain: media_player
+    bedtime_voice:
+      name: Bedtime Voice
+      description: High-fidelity voice model for evening wind-down narration.
+      default: Enceladus
+      selector:
+        select:
+          options:
+            - Enceladus
+            - Pulcherrima
+    bedtime_personality:
+      name: Bedtime Personality
+      description: Speaking persona and cadence for bedtime relaxation.
+      default: calm_reassuring
+      selector:
+        select:
+          options:
+            - calm_reassuring
+            - soothing
+            - meditative
+          custom_value: true
+    background_shutdown_actions:
+      name: Background Shutdown Actions
+      description: Smart home actions executed concurrently (e.g. turn off main lights, lock doors, arm security, set thermostat).
+      default: []
+      selector:
+        action: {}
+    night_display_action:
+      name: Night Display Action (Optional)
+      description: Bedside lamp dimming or visual lighting action synchronized with display wind-down.
+      default: []
+      selector:
+        action: {}
+
+mode: queued
+max: 2
+
+trigger:
+  - triggers: !input bedtime_trigger
+
+action:
+  - action: cast_studio.run_routine
+    data:
+      routine_name: bedtime_routine
+      target_player: !input target_player
+      recipient:
+        name: !input recipient_name
+        phonetic_name: !input phonetic_name
+      routine_config:
+        visuals: true
+        background_actions: !input background_shutdown_actions
+        steps:
+          - name: wind_down
+            visual: true
+            voice: !input bedtime_voice
+            voice_personality: !input bedtime_personality
+            actions_on_display: !input night_display_action
