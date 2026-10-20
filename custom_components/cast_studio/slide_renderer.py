@@ -18,6 +18,63 @@ from PIL import Image, ImageDraw, ImageFont
 
 _LOGGER = logging.getLogger(__name__)
 BUNDLED_ASSETS_DIR = Path(__file__).parent / "assets"
+WEATHER_ASSETS_DIR = BUNDLED_ASSETS_DIR / "weather"
+
+SlideTheme = dict[str, Any]
+MID_GRADIENT_STOP = 0.5
+
+WEATHER_ICON_MAP: dict[str, str] = {
+    "sunny": "sunny.png",
+    "clear": "sunny.png",
+    "clearnight": "sunny.png",
+    "sunnynight": "sunny.png",
+    "fair": "sunny.png",
+    "partlycloudy": "partly_cloudy.png",
+    "partlysunny": "partly_cloudy.png",
+    "mostlysunny": "partly_cloudy.png",
+    "scatteredclouds": "partly_cloudy.png",
+    "cloudy": "cloudy.png",
+    "overcast": "cloudy.png",
+    "mostlycloudy": "cloudy.png",
+    "fog": "cloudy.png",
+    "mist": "cloudy.png",
+    "haze": "cloudy.png",
+    "smoke": "cloudy.png",
+    "brokenclouds": "cloudy.png",
+    "rainy": "rainy.png",
+    "rain": "rainy.png",
+    "pouring": "rainy.png",
+    "drizzle": "rainy.png",
+    "showers": "rainy.png",
+    "shower": "rainy.png",
+    "lightrain": "rainy.png",
+    "heavyrain": "rainy.png",
+    "stormy": "stormy.png",
+    "lightning": "stormy.png",
+    "thunderstorm": "stormy.png",
+    "storm": "stormy.png",
+    "lightningrainy": "stormy.png",
+    "thunder": "stormy.png",
+    "snowy": "snowy.png",
+    "snow": "snowy.png",
+    "snowyrainy": "snowy.png",
+    "sleet": "snowy.png",
+    "hail": "snowy.png",
+    "blizzard": "snowy.png",
+    "flurries": "snowy.png",
+    "lightsnow": "snowy.png",
+    "heavysnow": "snowy.png",
+    "ice": "snowy.png",
+    "humidity": "humidity.png",
+    "humid": "humidity.png",
+    "wind": "wind.png",
+    "windy": "wind.png",
+    "breezy": "wind.png",
+    "windyvariant": "wind.png",
+    "precip": "precip.png",
+    "precipitation": "precip.png",
+    "umbrella": "precip.png",
+}
 
 # Display dimensions
 CANVAS_WIDTH = 1024
@@ -412,6 +469,336 @@ def _render_card_overlay(
         width=1,
     )
     return Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
+
+
+def load_weather_icon(condition: str, size: tuple[int, int] = (64, 64)) -> Image.Image:
+    """Normalize weather condition string and load transparent weather icon asset."""
+    clean = (
+        str(condition or "")
+        .strip()
+        .lower()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+    )
+
+    if clean in WEATHER_ICON_MAP:
+        filename = WEATHER_ICON_MAP[clean]
+    elif any(w in clean for w in ("rain", "pour", "drizzle", "shower")):
+        filename = "rainy.png"
+    elif any(w in clean for w in ("storm", "thunder", "lightning")):
+        filename = "stormy.png"
+    elif any(w in clean for w in ("snow", "sleet", "hail", "ice", "blizzard")):
+        filename = "snowy.png"
+    elif any(w in clean for w in ("cloud", "overcast", "fog", "mist", "haze")):
+        filename = "cloudy.png"
+    elif any(w in clean for w in ("sun", "clear")):
+        filename = "sunny.png"
+    elif "wind" in clean:
+        filename = "wind.png"
+    else:
+        filename = "partly_cloudy.png"
+
+    target_file = WEATHER_ASSETS_DIR / filename
+    if target_file.is_file():
+        try:
+            with Image.open(target_file) as img:
+                return img.convert("RGBA").resize(size, Image.Resampling.LANCZOS)
+        except (OSError, ValueError) as err:
+            _LOGGER.warning("Failed to open weather icon '%s': %s", target_file, err)
+
+    # Safe fallback if asset missing or corrupted
+    fallback = Image.new("RGBA", size, (0, 0, 0, 0))
+    fb_draw = ImageDraw.Draw(fallback)
+    fb_draw.ellipse(
+        [(2, 2), (size[0] - 2, size[1] - 2)],
+        fill=(251, 191, 36, 230),
+        outline=(245, 158, 11, 255),
+        width=max(1, size[0] // 16),
+    )
+    return fallback
+
+
+def _render_atmospheric_weather_gradient(condition: str) -> Image.Image:
+    """Render condition-aware 135° atmospheric linear gradient base canvas."""
+    cond = str(condition or "").strip().lower()
+    if any(w in cond for w in ("rain", "pour", "drizzle", "storm", "lightning")):
+        c0 = (30, 41, 59)
+        c1 = (41, 53, 72)
+        c2 = (51, 65, 85)
+    elif any(w in cond for w in ("cloud", "overcast", "fog", "mist", "haze")):
+        c0 = (30, 41, 59)
+        c1 = (17, 73, 110)
+        c2 = (3, 105, 161)
+    elif any(w in cond for w in ("snow", "sleet", "ice", "blizzard", "hail")):
+        c0 = (30, 41, 59)
+        c1 = (16, 82, 129)
+        c2 = (2, 132, 199)
+    else:
+        # Sunny/clear: #1e3a8a 0%, #0369a1 50%, #0284c7 100%
+        c0 = (30, 58, 138)
+        c1 = (3, 105, 161)
+        c2 = (2, 132, 199)
+
+    gw, gh = 128, 75
+    pixels = bytearray(gw * gh * 3)
+    idx = 0
+    for y in range(gh):
+        ry = y / (gh - 1)
+        for x in range(gw):
+            rx = x / (gw - 1)
+            t = (rx + ry) / 2.0
+            if t <= MID_GRADIENT_STOP:
+                st = t / MID_GRADIENT_STOP
+                r = int(c0[0] * (1.0 - st) + c1[0] * st)
+                g = int(c0[1] * (1.0 - st) + c1[1] * st)
+                b = int(c0[2] * (1.0 - st) + c1[2] * st)
+            else:
+                st = (t - MID_GRADIENT_STOP) / MID_GRADIENT_STOP
+                r = int(c1[0] * (1.0 - st) + c2[0] * st)
+                g = int(c1[1] * (1.0 - st) + c2[1] * st)
+                b = int(c1[2] * (1.0 - st) + c2[2] * st)
+            pixels[idx] = r
+            pixels[idx + 1] = g
+            pixels[idx + 2] = b
+            idx += 3
+
+    small = Image.frombytes("RGB", (gw, gh), bytes(pixels))
+    return small.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.BILINEAR)
+
+
+def _draw_google_nest_weather_slide(  # noqa: C901, PLR0912, PLR0915
+    canvas: Image.Image,
+    card: dict[str, Any],
+    theme: SlideTheme | dict[str, Any] | None = None,
+) -> None:
+    """Render Google Nest Hub atmospheric weather slide layout."""
+    _ = theme
+    w_data = card.get("weather_data") or {}
+    condition = str(
+        w_data.get("condition") or card.get("weather_condition") or "sunny"
+    ).strip()
+
+    # 1. Atmospheric 135-degree linear gradient canvas
+    grad = _render_atmospheric_weather_gradient(condition)
+    canvas.paste(grad, (0, 0))
+
+    draw = ImageDraw.Draw(canvas)
+
+    # 2. Location & condition header at Y: 35
+    location = str(w_data.get("location") or card.get("location") or "").strip()
+    if location:
+        header_text = f"{location} • Today"
+    else:
+        header_text = str(card.get("title") or "Today's Weather • Today").strip()
+
+    header_font = _get_font(20, bold=True)
+    draw.text((45, 35), header_text, font=header_font, fill=(226, 232, 240))
+
+    # 3. Hero row (Y: 70 to 260)
+    raw_temp = w_data.get("current_temp")
+    if raw_temp is None:
+        raw_temp = card.get("current_temp")
+    if raw_temp is not None:
+        if isinstance(raw_temp, (int, float)):
+            temp_text = f"{round(float(raw_temp))}°"
+        else:
+            temp_text = str(raw_temp).strip()
+            if not temp_text.endswith(("°", "F", "C")):
+                temp_text = f"{temp_text}°"
+    else:
+        temp_text = "--°"
+
+    temp_font = _get_font(108, bold=True)
+    draw.text((45, 70), temp_text, font=temp_font, fill=(255, 255, 255))
+    temp_bbox = draw.textbbox((45, 70), temp_text, font=temp_font)
+    temp_w = temp_bbox[2] - temp_bbox[0]
+
+    info_x = 45 + temp_w + 24
+    cond_text = str(
+        w_data.get("condition_text")
+        or card.get("condition_text")
+        or condition.replace("_", " ").title()
+    ).strip()
+
+    cond_font = _get_font(32, bold=True)
+    draw.text((info_x, 85), cond_text, font=cond_font, fill=(255, 255, 255))
+
+    high = w_data.get("high")
+    low = w_data.get("low")
+    if high is not None and low is not None:
+        h_str = f"{high}°" if not str(high).endswith("°") else str(high)
+        l_str = f"{low}°" if not str(low).endswith("°") else str(low)
+        hl_text = f"High {h_str} • Low {l_str}"
+    elif high is not None:
+        h_str = f"{high}°" if not str(high).endswith("°") else str(high)
+        hl_text = f"High {h_str}"
+    elif low is not None:
+        l_str = f"{low}°" if not str(low).endswith("°") else str(low)
+        hl_text = f"Low {l_str}"
+    else:
+        hl_text = ""
+
+    if hl_text:
+        hl_font = _get_font(20, bold=False)
+        draw.text((info_x, 132), hl_text, font=hl_font, fill=(186, 230, 253))
+
+    hero_icon = load_weather_icon(condition, size=(108, 108))
+    if "A" in hero_icon.getbands():
+        canvas.paste(hero_icon, (865, 75), mask=hero_icon.split()[3])
+    else:
+        canvas.paste(hero_icon, (865, 75))
+
+    # 4. Metrics chips (Y: 275 to 325)
+    chips_data: list[tuple[str, str]] = []
+    if (humidity := w_data.get("humidity")) is not None:
+        h_val = f"{humidity}%" if not str(humidity).endswith("%") else str(humidity)
+        chips_data.append(("humidity", f"Humidity: {h_val}"))
+
+    if (wind_speed := w_data.get("wind_speed")) is not None:
+        unit = w_data.get("wind_speed_unit") or "mph"
+        chips_data.append(("wind", f"Wind: {wind_speed} {unit}"))
+
+    precip = w_data.get("precipitation_probability")
+    if precip is None:
+        precip = w_data.get("precipitation")
+    if precip is not None:
+        p_val = f"{precip}%" if not str(precip).endswith("%") else str(precip)
+        chips_data.append(("precip", f"Precip: {p_val}"))
+
+    if chips_data:
+        chip_x = 45
+        chip_y = 278
+        chip_h = 44
+        chip_radius = 22
+        chip_font = _get_font(16, bold=True)
+
+        chip_overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+        c_draw = ImageDraw.Draw(chip_overlay)
+
+        for _, chip_text in chips_data:
+            t_bbox = draw.textbbox((0, 0), chip_text, font=chip_font)
+            text_w = t_bbox[2] - t_bbox[0]
+            chip_w = max(110, text_w + 64)
+
+            c_draw.rounded_rectangle(
+                (chip_x, chip_y, chip_x + chip_w, chip_y + chip_h),
+                radius=chip_radius,
+                fill=(15, 23, 42, 130),
+                outline=(255, 255, 255, 50),
+                width=1,
+            )
+            chip_x += chip_w + 14
+
+        comp = Image.alpha_composite(canvas.convert("RGBA"), chip_overlay).convert(
+            "RGB"
+        )
+        canvas.paste(comp, (0, 0))
+        draw = ImageDraw.Draw(canvas)
+
+        chip_x = 45
+        for icon_key, chip_text in chips_data:
+            t_bbox = draw.textbbox((0, 0), chip_text, font=chip_font)
+            text_w = t_bbox[2] - t_bbox[0]
+            chip_w = max(110, text_w + 64)
+
+            m_icon = load_weather_icon(icon_key, size=(24, 24))
+            if "A" in m_icon.getbands():
+                canvas.paste(m_icon, (chip_x + 14, chip_y + 10), mask=m_icon.split()[3])
+            else:
+                canvas.paste(m_icon, (chip_x + 14, chip_y + 10))
+
+            draw.text(
+                (chip_x + 46, chip_y + 13),
+                chip_text,
+                font=chip_font,
+                fill=(241, 245, 249),
+            )
+            chip_x += chip_w + 14
+
+    # 5. Google Nest Hourly Forecast Timeline (Y: 345 to 555)
+    cont_x0, cont_y0 = 35, 345
+    cont_x1, cont_y1 = 985, 555
+    cont_w = cont_x1 - cont_x0
+
+    cont_overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+    o_draw = ImageDraw.Draw(cont_overlay)
+    o_draw.rounded_rectangle(
+        (cont_x0, cont_y0, cont_x1, cont_y1),
+        radius=16,
+        fill=(15, 23, 42, 128),
+        outline=(255, 255, 255, 46),
+        width=1,
+    )
+    comp = Image.alpha_composite(canvas.convert("RGBA"), cont_overlay).convert("RGB")
+    canvas.paste(comp, (0, 0))
+    draw = ImageDraw.Draw(canvas)
+
+    forecast_points = w_data.get("forecast_points") or []
+    if not forecast_points:
+        empty_font = _get_font(18, bold=False)
+        msg = "Hourly forecast unavailable"
+        m_bbox = draw.textbbox((0, 0), msg, font=empty_font)
+        m_w = m_bbox[2] - m_bbox[0]
+        draw.text(
+            (cont_x0 + (cont_w - m_w) // 2, cont_y0 + 95),
+            msg,
+            font=empty_font,
+            fill=(148, 163, 184),
+        )
+    else:
+        num_pts = min(len(forecast_points), 6)
+        col_w = cont_w / num_pts
+        time_font = _get_font(16, bold=True)
+        temp_pt_font = _get_font(20, bold=True)
+
+        for i in range(num_pts):
+            pt = forecast_points[i]
+            col_center = cont_x0 + (i + 0.5) * col_w
+
+            time_label = str(pt.get("time") or "").strip()
+            if time_label:
+                tb = draw.textbbox((0, 0), time_label, font=time_font)
+                tw = tb[2] - tb[0]
+                draw.text(
+                    (int(col_center - tw / 2), cont_y0 + 22),
+                    time_label,
+                    font=time_font,
+                    fill=(203, 213, 225),
+                )
+
+            pt_cond = str(pt.get("condition") or "sunny").strip()
+            pt_icon = load_weather_icon(pt_cond, size=(32, 32))
+            icon_x = int(col_center - 16)
+            icon_y = cont_y0 + 64
+            if "A" in pt_icon.getbands():
+                canvas.paste(pt_icon, (icon_x, icon_y), mask=pt_icon.split()[3])
+            else:
+                canvas.paste(pt_icon, (icon_x, icon_y))
+
+            pt_temp = pt.get("temperature")
+            if pt_temp is not None:
+                if isinstance(pt_temp, (int, float)):
+                    p_temp_str = f"{round(float(pt_temp))}°"
+                else:
+                    p_temp_str = str(pt_temp).strip()
+                    if not (
+                        p_temp_str.endswith("°")
+                        or "/" in p_temp_str
+                        or " " in p_temp_str
+                    ):
+                        p_temp_str = f"{p_temp_str}°"
+            else:
+                p_temp_str = "--°"
+
+            tpb = draw.textbbox((0, 0), p_temp_str, font=temp_pt_font)
+            tpw = tpb[2] - tpb[0]
+            draw.text(
+                (int(col_center - tpw / 2), cont_y0 + 128),
+                p_temp_str,
+                font=temp_pt_font,
+                fill=(255, 255, 255),
+            )
 
 
 def _resolve_image_path(raw_path: Any) -> Path | None:  # noqa: PLR0911
@@ -953,25 +1340,58 @@ def _draw_bullets(  # noqa: PLR0913
     return curr_y
 
 
-def render_slide(
+def render_slide(  # noqa: PLR0912, PLR0915
     card_data: dict[str, Any],
     output_jpeg_path: str,
     phonetic_name: str | None = None,
 ) -> str:
-    """Render a structured visual card to a 1024x600 high-contrast RGB JPEG."""
+    """Render a structured visual card to a 1024x600 high-contrast RGB JPEG or PNG."""
     if not isinstance(card_data, dict):
         msg = "card_data must be a dict"
         raise InvalidCardDataError(msg)
 
-    # 1. Enforce identity contract before generating visual pixels
-    _assert_identity_contract(card_data, phonetic_name=phonetic_name)
+    # 1. Resolve slide envelope if passed {step_name: ..., card: {...}}
+    if "card" in card_data and isinstance(card_data["card"], dict):
+        effective_card = dict(card_data["card"])
+        if "step_name" in card_data and "step_name" not in effective_card:
+            effective_card["step_name"] = card_data["step_name"]
+        step_name = (
+            str(card_data.get("step_name") or effective_card.get("step_name") or "")
+            .strip()
+            .lower()
+        )
+    else:
+        effective_card = card_data
+        step_name = (
+            str(effective_card.get("step_name") or effective_card.get("type") or "")
+            .strip()
+            .lower()
+        )
 
-    # 2. Resolve visual theme and inspect/load image asset if present
+    # 2. Enforce identity contract before generating visual pixels
+    _assert_identity_contract(effective_card, phonetic_name=phonetic_name)
+
+    # 3. Google Nest Hub Weather slide layout
+    if step_name == "weather" and effective_card.get("weather_data"):
+        theme = resolve_slide_theme(effective_card)
+        canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
+        _draw_google_nest_weather_slide(canvas, effective_card, theme=theme)
+        output_path = Path(output_jpeg_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.suffix.lower() == ".png":
+            canvas.save(str(output_path), "PNG")
+        else:
+            canvas.save(str(output_path), "JPEG", quality=95)
+        return str(output_path)
+
+    card_data = effective_card
+
+    # 4. Resolve visual theme and inspect/load image asset if present
     theme = resolve_slide_theme(card_data)
     img, has_alpha = _load_image(card_data)
     layout_mode = _determine_layout_mode(card_data, img, has_alpha=has_alpha)
 
-    # 3. Render base background and card overlay
+    # 5. Render base background and card overlay
     if layout_mode == "photo" and img is not None:
         canvas = _render_photo_background(img)
         canvas = _render_card_overlay(canvas, theme=theme, is_photo=True)
@@ -990,7 +1410,7 @@ def render_slide(
 
     draw = ImageDraw.Draw(canvas)
 
-    # 4. Draw header (badge, title, subtitle, divider)
+    # 6. Draw header (badge, title, subtitle, divider)
     curr_y = _draw_header(
         draw,
         card_data,
@@ -1000,7 +1420,7 @@ def render_slide(
         theme=theme,
     )
 
-    # 5. Draw body content: 2-column agenda or standard bullet points
+    # 7. Draw body content: 2-column agenda or standard bullet points
     if card_data.get("layout") == "agenda_split" or (
         "calendar_items" in card_data and "todo_items" in card_data
     ):
@@ -1017,8 +1437,11 @@ def render_slide(
                 theme=theme,
             )
 
-    # 6. Ensure output directory exists and save RGB JPEG
+    # 8. Ensure output directory exists and save RGB JPEG or PNG
     output_path = Path(output_jpeg_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(str(output_path), "JPEG", quality=95)
+    if output_path.suffix.lower() == ".png":
+        canvas.save(str(output_path), "PNG")
+    else:
+        canvas.save(str(output_path), "JPEG", quality=95)
     return str(output_path)

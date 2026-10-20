@@ -11,8 +11,10 @@ from PIL import Image
 
 from custom_components.cast_studio.slide_renderer import (
     PhoneticLeakError,
+    _draw_google_nest_weather_slide,
     _load_image,
     _resolve_image_path,
+    load_weather_icon,
     render_slide,
 )
 
@@ -500,3 +502,131 @@ def test_draw_header_suppresses_redundant_badge_matching_title(tmp_path: Path) -
     }
     result = render_slide(card_data, out_redundant)
     assert os.path.exists(result)
+
+
+def test_render_slide_google_nest_weather_layout(tmp_path: Path) -> None:
+    """Test render_slide renders 1024x600 Google Nest Hub weather layout with timeline."""
+    output_png = str(tmp_path / "slide_weather.png")
+    slide_data = {
+        "step_name": "weather",
+        "card": {
+            "title": "Weather",
+            "weather_data": {
+                "current_temp": 68,
+                "condition": "partlycloudy",
+                "condition_text": "Mostly Sunny",
+                "high": 74,
+                "low": 54,
+                "humidity": 48,
+                "wind_speed": 8,
+                "precipitation_probability": 10,
+                "location": "Washington, D.C.",
+                "forecast_points": [
+                    {"time": "Now", "temperature": 68, "condition": "partlycloudy"},
+                    {"time": "10 AM", "temperature": 70, "condition": "sunny"},
+                    {"time": "1 PM", "temperature": 73, "condition": "sunny"},
+                    {"time": "4 PM", "temperature": 74, "condition": "partlycloudy"},
+                    {"time": "7 PM", "temperature": 67, "condition": "cloudy"},
+                    {
+                        "time": "Tomorrow",
+                        "temperature": "72° / 52°",
+                        "condition": "sunny",
+                    },
+                ],
+            },
+        },
+    }
+    render_slide(slide_data, output_png)
+    assert Path(output_png).is_file()
+    with Image.open(output_png) as img:
+        assert img.size == (1024, 600)
+        assert img.mode == "RGB"
+
+
+def test_load_weather_icon_normalization_and_fallback() -> None:
+    """Test load_weather_icon handles known condition aliases and unknown condition fallback."""
+    # Known condition with alias
+    img_partly = load_weather_icon("partlycloudy", size=(64, 64))
+    assert img_partly.size == (64, 64)
+    assert img_partly.mode == "RGBA"
+
+    img_hyphen = load_weather_icon("partly-cloudy", size=(32, 32))
+    assert img_hyphen.size == (32, 32)
+    assert img_hyphen.mode == "RGBA"
+
+    img_sunny = load_weather_icon("clear-night", size=(48, 48))
+    assert img_sunny.size == (48, 48)
+
+    # Unknown condition should safely fallback without raising
+    fallback_img = load_weather_icon("apocalyptic_fog", size=(64, 64))
+    assert fallback_img.size == (64, 64)
+    assert fallback_img.mode == "RGBA"
+
+
+def test_render_slide_google_nest_weather_missing_forecast_points(
+    tmp_path: Path,
+) -> None:
+    """Test Google Nest weather slide renders cleanly without forecast points."""
+    output_png = str(tmp_path / "slide_weather_no_forecast.png")
+    slide_data = {
+        "step_name": "weather",
+        "card": {
+            "title": "Weather",
+            "weather_data": {
+                "current_temp": 72,
+                "condition": "sunny",
+                "condition_text": "Sunny",
+                "high": 75,
+                "low": 55,
+                "humidity": 40,
+                "wind_speed": 5,
+                "precipitation_probability": 0,
+                "location": "Bethesda, MD",
+                "forecast_points": [],
+            },
+        },
+    }
+    render_slide(slide_data, output_png)
+    assert Path(output_png).is_file()
+    with Image.open(output_png) as img:
+        assert img.size == (1024, 600)
+
+
+def test_render_slide_weather_fallback_without_weather_data(tmp_path: Path) -> None:
+    """Test render_slide preserves legacy card rendering if step_name is weather but weather_data is absent."""
+    output_jpg = str(tmp_path / "slide_weather_legacy.jpg")
+    slide_data = {
+        "step_name": "weather",
+        "title": "Today's Weather",
+        "subtitle": "Warm and sunny",
+        "bullet_points": ["High of 75°", "Clear skies all day"],
+    }
+    result = render_slide(slide_data, output_jpg)
+    assert Path(result).is_file()
+    with Image.open(result) as img:
+        assert img.size == (1024, 600)
+
+
+def test_draw_google_nest_weather_slide_direct_call() -> None:
+    """Test _draw_google_nest_weather_slide directly paints onto canvas with theme."""
+    canvas = Image.new("RGB", (1024, 600))
+    card = {
+        "title": "Weather Briefing",
+        "weather_data": {
+            "current_temp": 65,
+            "condition": "rainy",
+            "condition_text": "Showers",
+            "high": 68,
+            "low": 50,
+            "humidity": 85,
+            "wind_speed": 12,
+            "precipitation_probability": 90,
+            "location": "Seattle, WA",
+            "forecast_points": [
+                {"time": "Now", "temperature": 65, "condition": "rainy"},
+                {"time": "3 PM", "temperature": 67, "condition": "rainy"},
+            ],
+        },
+    }
+    _draw_google_nest_weather_slide(canvas, card, theme={"badge": "WEATHER"})
+    assert canvas.size == (1024, 600)
