@@ -10,7 +10,7 @@ import yaml
 from homeassistant.components.automation.config import AUTOMATION_BLUEPRINT_SCHEMA
 from homeassistant.components.blueprint.models import Blueprint
 
-MORNING_BRIEFING_INPUT_COUNT = 19
+MORNING_BRIEFING_INPUT_COUNT = 20
 BEDTIME_ROUTINE_INPUT_COUNT = 8
 EVENT_ALERT_INPUT_COUNT = 9
 WELCOME_HOME_INPUT_COUNT = 8
@@ -73,6 +73,7 @@ def test_morning_briefing_blueprint_structure():
         "target_player",
         "greeting_image",
         "weather_entity",
+        "national_day_entity",
         "fun_fact_entity",
         "calendar_entities",
         "todo_entity",
@@ -106,6 +107,8 @@ def test_morning_briefing_blueprint_structure():
     assert "text" in inputs["greeting_image"]["selector"]
 
     assert "weather" in str(inputs["weather_entity"]["selector"])
+    assert "sensor" in str(inputs["national_day_entity"]["selector"])
+    assert "input_text" in str(inputs["national_day_entity"]["selector"])
     assert "sensor" in str(inputs["fun_fact_entity"]["selector"])
     assert "input_text" in str(inputs["fun_fact_entity"]["selector"])
     assert "calendar" in str(inputs["calendar_entities"]["selector"])
@@ -114,12 +117,15 @@ def test_morning_briefing_blueprint_structure():
     assert "sensor" in str(inputs["commute_sensor"]["selector"])
     assert "sensor" in str(inputs["scripture_sensor"]["selector"])
 
-    # Optional entity selectors should not have empty-string default
-    assert "default" not in inputs["fun_fact_entity"]
-    assert "default" not in inputs["todo_entity"]
-    assert "default" not in inputs["commute_sensor"]
-    assert "default" not in inputs["scripture_sensor"]
-    assert "default" not in inputs["conversation_agent"]
+    # Optional entity selectors define defaults so blueprint runs without every optional entity configured
+    assert inputs["weather_entity"]["default"] == ""
+    assert inputs["national_day_entity"]["default"] == ""
+    assert inputs["fun_fact_entity"]["default"] == ""
+    assert inputs["calendar_entities"]["default"] == []
+    assert inputs["todo_entity"]["default"] == ""
+    assert inputs["commute_sensor"]["default"] == ""
+    assert inputs["scripture_sensor"]["default"] == ""
+    assert inputs["conversation_agent"]["default"] == ""
 
     assert inputs["host_voice"]["default"] == "Pulcherrima"
     assert inputs["host_personality"]["default"] == "news_anchor"
@@ -130,6 +136,27 @@ def test_morning_briefing_blueprint_structure():
     assert inputs["background_actions"]["default"] == []
     assert "action" in inputs["post_briefing_actions"]["selector"]
     assert inputs["post_briefing_actions"]["default"] == []
+
+
+def test_morning_briefing_optional_inputs_have_defaults():
+    """Verify optional inputs in morning_briefing.yaml define defaults."""
+    bp = _load_yaml(MORNING_BRIEFING_PATH)
+    inputs = bp["blueprint"]["input"]
+
+    for key in (
+        "weather_entity",
+        "national_day_entity",
+        "fun_fact_entity",
+        "todo_entity",
+        "commute_sensor",
+        "scripture_sensor",
+        "conversation_agent",
+    ):
+        assert "default" in inputs[key], f"Missing default for {key}"
+        assert inputs[key]["default"] == ""
+
+    assert "default" in inputs["calendar_entities"]
+    assert inputs["calendar_entities"]["default"] == []
 
 
 def test_morning_briefing_triggers_and_actions():
@@ -176,16 +203,14 @@ def test_morning_briefing_triggers_and_actions():
     expected_step_names = [
         "greeting",
         "weather",
+        "national_day",
         "fun_fact",
-        "calendar",
-        "todo",
+        "agenda",
         "commute",
         "scripture",
     ]
     assert [s["name"] for s in pregen_steps] == expected_step_names
-    assert pregen_steps[0]["layout"] == "icon"
     assert pregen_steps[0]["subtitle"] == "Good Morning"
-    assert pregen_steps[0]["icon"] == "greeting_image"
     assert pregen_steps[0]["title"] == "recipient_name"
 
     # Identify run_routine in default branch
@@ -200,9 +225,7 @@ def test_morning_briefing_triggers_and_actions():
     assert run_config.get("post_briefing_actions") == "post_briefing_actions"
     run_steps = run_config["steps"]
     assert [s["name"] for s in run_steps] == expected_step_names
-    assert run_steps[0]["layout"] == "icon"
     assert run_steps[0]["subtitle"] == "Good Morning"
-    assert run_steps[0]["icon"] == "greeting_image"
 
 
 def test_morning_briefing_ha_blueprint_schema():

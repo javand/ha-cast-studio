@@ -103,6 +103,7 @@ ha-cast-studio/
 │       ├── brand/                    # HA Brands compliant icons and logos
 │       ├── assets/                   # Bundled graphics (dripping_ice, door_alert, avatar)
 │       ├── __init__.py               # Setup, services, reload, and entry management
+│       ├── helpers.py                # Shared async task tracking and executor utilities
 │       ├── manifest.json             # Integration metadata & dependencies
 │       ├── const.py                  # Domain constants, defaults, voice mappings
 │       ├── config_flow.py            # Optional UI config flow (override keys / recipient profile)
@@ -149,13 +150,28 @@ ha-cast-studio/
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/javand/ha-cast-studio/issues",
-  "requirements": ["pillow>=10.2.0"],
+  "requirements": [],
   "version": "0.1.0"
 }
 ```
 
 ### 5.2. Service Definitions (`services.yaml`)
 1. **`cast_studio.run_routine`**: Executes a multimedia routine or static clip with instant playback, cache-busting timestamping (`?v=<timestamp>`), pre-playback display unmuting/volume preparation, and optional `post_routine_actions` hook.
-2. **`cast_studio.pregenerate_routine`**: Silently compiles media ahead of time.
+2. **`cast_studio.pregenerate_routine`**: Silently compiles media ahead of time with companion `post_routine_actions`.
 3. **`cast_studio.compile_clip`**: Compiles a static reusable alert video clip directly into `/config/www/cast_studio/static/<clip_name>.mp4`.
 4. **`cast_studio.reload`**: Reloads integration configuration and resets routine sensors.
+
+### 5.3. Visual Themes, Weather-Aware Gradients & Badges
+`slide_renderer.py` provides responsive visual themes and header badge pills:
+- **Themes (`SLIDE_THEMES`):** `morning`, `weather_sunny`, `weather_rainy`, `weather_snow`, `weather_cloudy`, `calendar`, `evening`, `scripture`.
+- **Weather Condition Adaptive Gradients:** Automatically selects deep slate/indigo for rainy/stormy conditions, frosted icy blues for snow/sleet, muted blue-greys for overcast/wind, and warm dawn palettes for clear/sunny forecasts.
+- **Category Badge Pills:** Renders translucent badge pills (e.g. `GREETING`, `FORECAST`, `COMMUTE`, `SCHEDULE`, `TASKS`, `SCRIPTURE`, `WIND DOWN`) in the top left header above the card title.
+
+### 5.4. Live Service Extraction & Commute Comparisons
+- **`weather.get_forecasts` Extraction:** Evaluates modern Home Assistant 2024.6+ service responses to extract live forecast temperatures and conditions without relying on deprecated entity state attributes.
+- **Multi-Sensor Commute Comparison:** Automatically compares multiple travel sensors (e.g., `sensor.drive_travel_time` vs `sensor.metro_travel_time`) and computes the delta, reporting which option is faster and by how many minutes.
+- **Current Date Injection:** AI prompts are injected with the exact local day-of-week and date (`Current Local Date: Saturday, October 17, 2026`) for temporal accuracy in greeting, calendar, and fun fact / National Day narrations.
+
+### 5.5. Voice Personas & Custom Registration
+- **Built-in Personas:** `morning_host`, `news_anchor`, `upbeat_energetic`, `conversational`, `life_coach`, `calm_reassuring`, `soothing`, `meditative`, `reverent`, `warm_uplifting`.
+- **Runtime Registration:** Third-party extensions can register custom speaking profiles dynamically via `tts_client.register_personality_prompt(name, prompt)`.

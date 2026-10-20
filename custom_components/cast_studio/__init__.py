@@ -8,30 +8,36 @@ background smart home actions.
 
 from __future__ import annotations
 
-import asyncio
-import functools
-import inspect
+import contextlib
+import importlib
 import json
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.const import Platform
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    CONF_OUTPUT_DIR,
     CONF_PHONETIC_NAME,
     CONF_RECIPIENT_NAME,
+    DEFAULT_HOST_VOICE,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PHONETIC_NAME,
     DEFAULT_RECIPIENT_NAME,
+    DEFAULT_SCRIPTURE_VOICE,
     DOMAIN,
     LOGGER,
 )
 from .generator import (
     async_compile_routine_media,
     async_compile_static_clip,
+    get_executable_steps,
 )
+from .helpers import async_run_in_executor, create_task
 from .orchestrator import (
     async_execute_background_actions,
     async_play_and_sync_routine,
@@ -43,7 +49,7 @@ from .sensor import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    import asyncio
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant, ServiceCall
@@ -52,43 +58,10 @@ PLATFORMS: list[Platform] = [
     Platform.SENSOR,
 ]
 
+CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
-def _create_task(
-    hass: HomeAssistant,
-    coro: Coroutine[Any, Any, Any],
-    name: str | None = None,
-) -> asyncio.Task[Any]:
-    """Create task in Home Assistant or fallback to asyncio loop."""
-    if hasattr(hass, "async_create_task") and callable(hass.async_create_task):
-        res = hass.async_create_task(coro, name=name)
-        if isinstance(res, asyncio.Task):
-            return res
-    return asyncio.create_task(coro, name=name)
-
-
-async def _async_run_in_executor(
-    hass: HomeAssistant | None,
-    func: Callable[..., Any],
-    *args: Any,
-    **kwargs: Any,
-) -> Any:
-    """Execute synchronous blocking function in Home Assistant executor if available."""
-    if hass is not None:
-        executor_func = getattr(hass, "async_add_executor_job", None)
-        if callable(executor_func):
-            target: Callable[..., Any] = (
-                functools.partial(func, **kwargs) if kwargs else func
-            )
-            res = executor_func(target, *args)
-            if inspect.isawaitable(res):
-                return await res
-
-    loop = asyncio.get_running_loop()
-    target = functools.partial(func, **kwargs) if kwargs else func
-    try:
-        return await loop.run_in_executor(None, target, *args)
-    except Exception:  # noqa: BLE001
-        return func(*args, **kwargs)
+_create_task = create_task
+_async_run_in_executor = async_run_in_executor
 
 
 def _check_static_media(
@@ -130,12 +103,13 @@ def _check_static_media(
     return False, None
 
 
-def _is_media_ready_and_fresh(
+def _is_media_ready_and_fresh(  # noqa: PLR0911, PLR0912
     output_dir: str,
     routine_name: str,
     max_age_seconds: int = 86400,
     *,
     is_static: bool = False,
+    expected_step_count: int | None = None,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Check if media or companion metadata exists and is not stale."""
     out_path = Path(output_dir)
@@ -159,6 +133,10 @@ def _is_media_ready_and_fresh(
             mtime = metadata_file.stat().st_mtime
             if now - mtime < max_age_seconds:
                 meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+                if expected_step_count is not None and expected_step_count > 0:
+                    slides = meta.get("slide_timestamps", [])
+                    if len(slides) != expected_step_count:
+                        return False, None
                 vpath = meta.get("video_path")
                 apath = meta.get("audio_path")
                 vpath_fresh = (
@@ -181,6 +159,8 @@ def _is_media_ready_and_fresh(
             )
 
     if video_file.is_file():
+        if expected_step_count is not None and expected_step_count > 0:
+            return False, None
         try:
             mtime = video_file.stat().st_mtime
             if now - mtime < max_age_seconds:
@@ -197,6 +177,219 @@ def _is_media_ready_and_fresh(
     return False, None
 
 
+def _count_expected_executable_steps(
+    hass: HomeAssistant,
+    routine_config: dict[str, Any],
+) -> int | None:
+    """Count visual or audio steps that are executable."""
+    count = len(get_executable_steps(hass, routine_config))
+    return count if count > 0 else None
+
+
+def _discover_morning_entities(hass: HomeAssistant) -> dict[str, Any]:
+    """Discover available Home Assistant entities for default morning steps."""
+    weather_entity = ""
+    national_day_entity = ""
+    fun_fact_entity = ""
+    calendar_entities: list[str] = []
+    todo_entity = ""
+    commute_sensors: list[str] = []
+    scripture_sensor = ""
+
+    entity_ids: list[str] = []
+    if hasattr(hass, "states") and hasattr(hass.states, "async_all"):
+        try:
+            all_states = hass.states.async_all()
+            if isinstance(all_states, (list, tuple)):
+                entity_ids = [
+                    str(getattr(s, "entity_id", ""))
+                    for s in all_states
+                    if getattr(s, "entity_id", None)
+                ]
+        except Exception:  # noqa: BLE001
+            entity_ids = []
+
+    for eid in entity_ids:
+        if eid.startswith("weather.") and not weather_entity:
+            weather_entity = eid
+        elif eid.startswith("calendar."):
+            calendar_entities.append(eid)
+        elif eid.startswith("todo.") and not todo_entity:
+            todo_entity = eid
+        elif eid.startswith("sensor."):
+            lower_eid = eid.lower()
+            if not scripture_sensor and (
+                "daily_text" in lower_eid or "scripture" in lower_eid
+            ):
+                scripture_sensor = eid
+            elif "commute" in lower_eid or "travel_time" in lower_eid:
+                commute_sensors.append(eid)
+            elif not national_day_entity and (
+                "national_day" in lower_eid or "holiday" in lower_eid
+            ):
+                national_day_entity = eid
+            elif not fun_fact_entity and (
+                "fun_fact" in lower_eid or "trivia" in lower_eid
+            ):
+                fun_fact_entity = eid
+
+    return {
+        "weather_entity": weather_entity,
+        "national_day_entity": national_day_entity,
+        "fun_fact_entity": fun_fact_entity,
+        "calendar_entities": calendar_entities,
+        "todo_entity": todo_entity,
+        "commute_sensor": commute_sensors[0] if commute_sensors else "",
+        "commute_sensors": commute_sensors,
+        "scripture_sensor": scripture_sensor,
+    }
+
+
+def _build_default_morning_routine_config(
+    hass: HomeAssistant,
+    recipient: dict[str, Any],
+) -> dict[str, Any]:
+    """Build standard morning routine config with discovered or optional entities."""
+    discovered = _discover_morning_entities(hass)
+    recipient_name = recipient.get("name", DEFAULT_RECIPIENT_NAME)
+    greeting_ctx = f"A cheerful, energizing morning greeting for {recipient_name}."
+    return {
+        "visuals": True,
+        "steps": [
+            {
+                "name": "greeting",
+                "visual": True,
+                "title": recipient_name,
+                "subtitle": "Good Morning",
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+                "context": greeting_ctx,
+            },
+            {
+                "name": "weather",
+                "visual": True,
+                "entity_id": discovered["weather_entity"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "national_day",
+                "visual": True,
+                "entity_id": discovered["national_day_entity"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "fun_fact",
+                "visual": True,
+                "entity_id": discovered["fun_fact_entity"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "agenda",
+                "visual": True,
+                "calendar_entities": discovered["calendar_entities"],
+                "todo_entity": discovered["todo_entity"],
+                "entity_ids": [
+                    *discovered["calendar_entities"],
+                    *([discovered["todo_entity"]] if discovered["todo_entity"] else []),
+                ],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "commute",
+                "visual": True,
+                "entity_id": discovered["commute_sensor"],
+                "entity_ids": discovered["commute_sensors"],
+                "voice": DEFAULT_HOST_VOICE,
+                "voice_personality": "news_anchor",
+            },
+            {
+                "name": "scripture",
+                "visual": True,
+                "entity_id": discovered["scripture_sensor"],
+                "voice": DEFAULT_SCRIPTURE_VOICE,
+                "voice_personality": "life_coach",
+            },
+        ],
+    }
+
+
+def _build_default_routine_config(
+    hass: HomeAssistant,
+    routine_name: str,
+    recipient: dict[str, Any],
+) -> dict[str, Any]:
+    """Build default routine configuration when none is explicitly configured."""
+    if routine_name in ("morning_briefing", "morning"):
+        return _build_default_morning_routine_config(hass, recipient)
+    return {}
+
+
+def _extract_target_player(data: dict[str, Any]) -> str | None:
+    """Extract and normalize target player entity ID from data supporting aliases."""
+    raw = data.get("target_player") or data.get("media_player") or data.get("entity_id")
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else None
+    return str(raw).strip() if raw and str(raw).strip() else None
+
+
+def _resolve_routine_invocation(
+    hass: HomeAssistant,
+    routine_name: str,
+    routine_config: dict[str, Any] | None,
+    recipient: dict[str, Any] | None,
+    output_dir: str | None,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Resolve effective routine_config, recipient profile, and output_dir."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    eff_config = (
+        routine_config
+        if routine_config is not None
+        else domain_data.get("routines", {}).get(routine_name, {})
+    )
+    if "target_player" not in eff_config:
+        resolved_tp = _extract_target_player(eff_config)
+        if resolved_tp:
+            eff_config["target_player"] = resolved_tp
+    eff_recipient = (
+        recipient
+        if recipient is not None
+        else domain_data.get("recipient", {"name": "User", "phonetic_name": "User"})
+    )
+    if not eff_config.get("steps") and not eff_config.get("static"):
+        default_cfg = _build_default_routine_config(hass, routine_name, eff_recipient)
+        if default_cfg:
+            eff_config = {**default_cfg, **eff_config}
+            if not eff_config.get("steps") and default_cfg.get("steps"):
+                eff_config["steps"] = default_cfg["steps"]
+
+    default_out = domain_data.get("output_dir", DEFAULT_OUTPUT_DIR)
+    eff_output_dir = output_dir or eff_config.get("output_dir", default_out)
+    return eff_config, eff_recipient, eff_output_dir
+
+
+def _set_sensor_ready(
+    sensor: CastStudioRoutineSensor,
+    metadata: dict[str, Any],
+) -> None:
+    """Update routine sensor to 'ready' with metadata attributes."""
+    sensor.update_state(
+        "ready",
+        duration=metadata.get("duration"),
+        last_pregenerated=metadata.get(
+            "last_pregenerated",
+            datetime.now(UTC).isoformat(),
+        ),
+        video_path=metadata.get("video_path"),
+        audio_path=metadata.get("audio_path"),
+        slide_count=len(metadata.get("slide_timestamps", [])),
+        active_task=None,
+    )
+
+
 async def async_pregenerate_routine(  # noqa: PLR0913
     hass: HomeAssistant,
     routine_name: str,
@@ -210,15 +403,9 @@ async def async_pregenerate_routine(  # noqa: PLR0913
         msg = "Missing or empty required parameter 'routine_name'"
         raise ValueError(msg)
 
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    if routine_config is None:
-        routine_config = domain_data.get("routines", {}).get(routine_name, {})
-    if recipient is None:
-        recipient = domain_data.get(
-            "recipient", {"name": "User", "phonetic_name": "User"}
-        )
-    if output_dir is None:
-        output_dir = routine_config.get("output_dir", DEFAULT_OUTPUT_DIR)
+    routine_config, recipient, output_dir = _resolve_routine_invocation(
+        hass, routine_name, routine_config, recipient, output_dir
+    )
 
     sensor = async_get_or_create_sensor(hass, routine_name)
     sensor.update_state("generating", active_task="pregenerate_routine")
@@ -236,18 +423,7 @@ async def async_pregenerate_routine(  # noqa: PLR0913
         LOGGER.error("Failed to pregenerate routine '%s': %s", routine_name, err)
         raise
     else:
-        sensor.update_state(
-            "ready",
-            duration=metadata.get("duration"),
-            last_pregenerated=metadata.get(
-                "last_pregenerated",
-                datetime.now(UTC).isoformat(),
-            ),
-            video_path=metadata.get("video_path"),
-            audio_path=metadata.get("audio_path"),
-            slide_count=len(metadata.get("slide_timestamps", [])),
-            active_task=None,
-        )
+        _set_sensor_ready(sensor, metadata)
         return metadata
 
 
@@ -265,7 +441,8 @@ async def async_compile_clip(
         msg = "Missing or invalid required parameter 'step_config'"
         raise ValueError(msg)
 
-    output_dir = output_dir or DEFAULT_OUTPUT_DIR
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    output_dir = output_dir or domain_data.get("output_dir", DEFAULT_OUTPUT_DIR)
 
     sensor = async_get_or_create_sensor(hass, clip_name)
     sensor.update_state("generating", active_task="compile_clip")
@@ -282,22 +459,11 @@ async def async_compile_clip(
         LOGGER.error("Failed to compile static clip '%s': %s", clip_name, err)
         raise
     else:
-        sensor.update_state(
-            "ready",
-            duration=metadata.get("duration"),
-            last_pregenerated=metadata.get(
-                "last_pregenerated",
-                datetime.now(UTC).isoformat(),
-            ),
-            video_path=metadata.get("video_path"),
-            audio_path=metadata.get("audio_path"),
-            slide_count=len(metadata.get("slide_timestamps", [])),
-            active_task=None,
-        )
+        _set_sensor_ready(sensor, metadata)
         return metadata
 
 
-async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
+async def async_run_routine(  # noqa: PLR0913, PLR0915
     hass: HomeAssistant,
     routine_name: str,
     target_player: str | None = None,
@@ -311,21 +477,17 @@ async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
         msg = "Missing or empty required parameter 'routine_name'"
         raise ValueError(msg)
 
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    if routine_config is None:
-        routine_config = domain_data.get("routines", {}).get(routine_name, {})
-    if recipient is None:
-        recipient = domain_data.get(
-            "recipient", {"name": "User", "phonetic_name": "User"}
-        )
-    if output_dir is None:
-        output_dir = routine_config.get("output_dir", DEFAULT_OUTPUT_DIR)
-    if target_player is None:
-        target_player = routine_config.get("target_player")
+    routine_config, recipient, output_dir = _resolve_routine_invocation(
+        hass, routine_name, routine_config, recipient, output_dir
+    )
+    target_player = _extract_target_player(
+        {"target_player": target_player}
+    ) or _extract_target_player(routine_config)
 
     sensor = async_get_or_create_sensor(hass, routine_name)
 
     # 1. Check if media exists and is fresh (<24h) unless force_regenerate is requested
+    expected_steps = _count_expected_executable_steps(hass, routine_config)
     force_reg = force_regenerate or bool(routine_config.get("force_regenerate", False))
     if force_reg:
         is_ready, metadata = False, None
@@ -338,6 +500,7 @@ async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
             routine_name,
             86400,
             is_static=is_static_routine,
+            expected_step_count=expected_steps,
         )
 
     # 2. If not ready/missing or stale, compile on-demand
@@ -360,18 +523,7 @@ async def async_run_routine(  # noqa: PLR0912, PLR0913, PLR0915
                     recipient=recipient,
                     output_dir=output_dir,
                 )
-            sensor.update_state(
-                "ready",
-                duration=metadata.get("duration"),
-                last_pregenerated=metadata.get(
-                    "last_pregenerated",
-                    datetime.now(UTC).isoformat(),
-                ),
-                video_path=metadata.get("video_path"),
-                audio_path=metadata.get("audio_path"),
-                slide_count=len(metadata.get("slide_timestamps", [])),
-                active_task=None,
-            )
+            _set_sensor_ready(sensor, metadata)
         except Exception as err:
             sensor.update_state("error", active_task=None)
             LOGGER.error(
@@ -448,11 +600,35 @@ async def async_reload(hass: HomeAssistant) -> None:
     for sensor in domain_data.get("sensors", {}).values():
         sensor.update_state("idle", active_task=None)
 
+    if "pytest" not in sys.modules:
+        for mod_name in sorted(sys.modules.keys()):
+            if mod_name.startswith("custom_components.cast_studio."):
+                with contextlib.suppress(Exception):
+                    importlib.reload(sys.modules[mod_name])
+
     if hasattr(hass, "config_entries") and hasattr(
         hass.config_entries, "async_entries"
     ):
         for entry in hass.config_entries.async_entries(DOMAIN):
             await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _merge_service_post_actions(
+    hass: HomeAssistant,
+    routine_name: str,
+    data: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Merge top-level post_routine_actions into routine_config if provided."""
+    routine_config = data.get("routine_config")
+    if "post_routine_actions" in data:
+        if routine_config is None:
+            domain_data = hass.data.get(DOMAIN, {})
+            routine_config = dict(domain_data.get("routines", {}).get(routine_name, {}))
+        else:
+            routine_config = dict(routine_config)
+        if "post_routine_actions" not in routine_config:
+            routine_config["post_routine_actions"] = data["post_routine_actions"]
+    return routine_config
 
 
 async def async_setup(
@@ -471,6 +647,8 @@ async def async_setup(
 
     routines = domain_config.get("routines", {})
     domain_data["routines"] = routines
+    if CONF_OUTPUT_DIR in domain_config:
+        domain_data["output_dir"] = domain_config[CONF_OUTPUT_DIR]
 
     domain_data.setdefault("sensors", {})
     domain_data["update_sensor"] = async_update_routine_sensor
@@ -486,11 +664,13 @@ async def async_setup(
         if not routine_name or not str(routine_name).strip():
             msg = "Missing or empty required service parameter 'routine_name'"
             raise ValueError(msg)
+        routine_config = _merge_service_post_actions(hass, routine_name, data)
+        target = _extract_target_player(data)
         await async_pregenerate_routine(
             hass,
             routine_name=routine_name,
-            target_player=data.get("target_player"),
-            routine_config=data.get("routine_config"),
+            target_player=target,
+            routine_config=routine_config,
             recipient=data.get("recipient"),
             output_dir=data.get("output_dir"),
         )
@@ -501,19 +681,12 @@ async def async_setup(
         if not routine_name or not str(routine_name).strip():
             msg = "Missing or empty required service parameter 'routine_name'"
             raise ValueError(msg)
-        routine_config = data.get("routine_config")
-        if "post_routine_actions" in data:
-            if routine_config is None:
-                domain_data = hass.data.get(DOMAIN, {})
-                routine_config = dict(
-                    domain_data.get("routines", {}).get(routine_name, {})
-                )
-            if "post_routine_actions" not in routine_config:
-                routine_config["post_routine_actions"] = data["post_routine_actions"]
+        routine_config = _merge_service_post_actions(hass, routine_name, data)
+        target = _extract_target_player(data)
         await async_run_routine(
             hass,
             routine_name=routine_name,
-            target_player=data.get("target_player"),
+            target_player=target,
             routine_config=routine_config,
             recipient=data.get("recipient"),
             output_dir=data.get("output_dir"),
@@ -562,11 +735,15 @@ async def async_setup_entry(
     phonetic_name = entry.options.get(
         CONF_PHONETIC_NAME, entry.data.get(CONF_PHONETIC_NAME, DEFAULT_PHONETIC_NAME)
     )
-    domain_data.setdefault(
-        "recipient", {"name": recipient_name, "phonetic_name": phonetic_name}
+    output_dir = entry.options.get(
+        CONF_OUTPUT_DIR, entry.data.get(CONF_OUTPUT_DIR, DEFAULT_OUTPUT_DIR)
     )
+    domain_data["recipient"] = {
+        "name": recipient_name,
+        "phonetic_name": phonetic_name,
+    }
+    domain_data["output_dir"] = output_dir
 
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -577,13 +754,3 @@ async def async_unload_entry(
 ) -> bool:
     """Handle removal of an entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
-
-async def async_reload_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-) -> bool:
-    """Reload config entry."""
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
-    return True

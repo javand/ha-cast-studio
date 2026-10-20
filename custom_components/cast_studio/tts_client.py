@@ -6,14 +6,17 @@ import asyncio
 import base64
 import re
 import struct
+from contextlib import suppress
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+from homeassistant.components import tts as ha_tts
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from . import ffmpeg_runner
 from .const import DEFAULT_HOST_VOICE, LOGGER
 
 if TYPE_CHECKING:
@@ -35,6 +38,138 @@ OPENAI_KNOWN_VOICES: set[str] = {
     "nova",
     "shimmer",
 }
+
+PERSONALITY_PROMPTS: dict[str, str] = {
+    "morning_host": (
+        "# AUDIO PROFILE: Upbeat Morning Show Host (morning_host)\n"
+        "## THE SCENE\n"
+        "A bright, welcoming smart home morning broadcast studio.\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Warm, energetic, articulate, and genuinely welcoming.\n"
+        "Pacing: Natural, brisk morning cadence with a friendly smile in the voice."
+    ),
+    "news_anchor": (
+        "# AUDIO PROFILE: Broadcast Meteorologist & Anchor (news_anchor)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Crisp, articulate, authoritative yet friendly morning broadcast.\n"
+        "Pacing: Steady, rhythmic, emphasizing key numbers and temperatures."
+    ),
+    "cheerful": (
+        "# AUDIO PROFILE: Warm Morning Companion (cheerful)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Upbeat, warm, genuinely welcoming, smiling tone.\n"
+        "Pacing: Natural, clear, energetic morning cadence."
+    ),
+    "upbeat_energetic": (
+        "# AUDIO PROFILE: Upbeat Morning Host (upbeat_energetic)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: High-energy, enthusiastic, bright, motivating.\n"
+        "Pacing: Lively and engaging."
+    ),
+    "conversational": (
+        "# AUDIO PROFILE: Friendly Conversational Host (conversational)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Natural, relaxed, warm, relatable.\n"
+        "Pacing: Easygoing conversational flow."
+    ),
+    "curious": (
+        "# AUDIO PROFILE: Enthusiastic Storyteller (curious)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Fascinated, playful, engaging, conversational.\n"
+        "Pacing: Dynamic with natural curiosity."
+    ),
+    "executive_assistant": (
+        "# AUDIO PROFILE: Executive Chief of Staff (executive_assistant)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Organized, reassuring, sharp, focused, supportive.\n"
+        "Pacing: Clear, structured delivery."
+    ),
+    "traffic_reporter": (
+        "# AUDIO PROFILE: Live Traffic & Transit Correspondent (traffic_reporter)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Action-oriented, helpful, punchy, decisive.\n"
+        "Pacing: Brisk and clear."
+    ),
+    "life_coach": (
+        "# AUDIO PROFILE: Mindful Life Coach & Reader (life_coach)\n"
+        "## THE SCENE\n"
+        "A serene, sunlit study offering a grounded daily reflection.\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Peaceful, grounded, warm, reflective, building to an uplifting, "
+        "encouraging send-off.\n"
+        "Pacing: Unhurried, deliberate, with gentle pauses between sentences."
+    ),
+    "contemplative": (
+        "# AUDIO PROFILE: Calm Mindful Reader (contemplative)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Peaceful, grounded, warm, reflective, unhurried.\n"
+        "Pacing: Slow, deliberate, with gentle pauses between sentences."
+    ),
+    "reverent": (
+        "# AUDIO PROFILE: Reverent Scripture Reader (reverent)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Calm, respectful, warm, heartfelt.\n"
+        "Pacing: Measured and clear."
+    ),
+    "warm_uplifting": (
+        "# AUDIO PROFILE: Warm Uplifting Encourager (warm_uplifting)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Encouraging, compassionate, bright, reassuring.\n"
+        "Pacing: Smooth and uplifting."
+    ),
+    "calm_reassuring": (
+        "# AUDIO PROFILE: Calm Evening Companion (calm_reassuring)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Soft, reassuring, peaceful, and comforting.\n"
+        "Pacing: Gentle, unhurried evening cadence."
+    ),
+    "soothing": (
+        "# AUDIO PROFILE: Soothing Wind-Down Guide (soothing)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Tranquil, warm, serene, and deeply relaxing.\n"
+        "Pacing: Slow, smooth, and restful."
+    ),
+    "meditative": (
+        "# AUDIO PROFILE: Mindful Meditation Guide (meditative)\n"
+        "### DIRECTOR'S NOTES\n"
+        "Style: Centered, hushed, mindful, and peaceful.\n"
+        "Pacing: Very unhurried with spacious pauses."
+    ),
+}
+
+
+def register_personality_prompt(name: str, style_or_profile: str) -> None:
+    """Register or override a custom TTS personality director profile."""
+    clean_key = name.strip().lower().replace(" ", "_")
+    if not clean_key:
+        return
+    if "# AUDIO PROFILE:" in style_or_profile:
+        PERSONALITY_PROMPTS[clean_key] = style_or_profile.strip()
+    else:
+        PERSONALITY_PROMPTS[clean_key] = (
+            f"# AUDIO PROFILE: Custom Persona ({clean_key})\n"
+            "### DIRECTOR'S NOTES\n"
+            f"{style_or_profile.strip()}"
+        )
+
+
+def _build_gemini_tts_prompt(script: str, personality: str) -> str:
+    """Build structured Gemini 2.5 TTS director prompt with transcript delimiter."""
+    lookup_key = personality.strip().lower().replace(" ", "_")
+    profile = PERSONALITY_PROMPTS.get(personality) or PERSONALITY_PROMPTS.get(
+        lookup_key,
+        (
+            f"# AUDIO PROFILE: Narrator ({personality})\n"
+            "### DIRECTOR'S NOTES\n"
+            f"Style: {personality}, natural, clear, and expressive."
+        ),
+    )
+    return (
+        f"{profile}\n\n"
+        "Speak only the transcript below. "
+        "Do not read any headers or instructions aloud.\n"
+        f"#### TRANSCRIPT\n{script}"
+    )
 
 
 class TTSClientError(Exception):
@@ -147,7 +282,7 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
     output_wav_path: str,
     api_key: str,
     session: aiohttp.ClientSession | None = None,
-    model: str = "gemini-2.0-flash",
+    model: str = "gemini-2.5-flash-preview-tts",
 ) -> str:
     """Synthesize speech using Gemini audio generation API with conditioning."""
     target_path = Path(output_wav_path)
@@ -157,10 +292,7 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         f"?key={api_key}"
     )
-    prompt_text = (
-        f"Please speak the following narration text with a {personality} "
-        f"personality and style.\n\n{script}"
-    )
+    prompt_text = _build_gemini_tts_prompt(script, personality)
     payload = {
         "contents": [
             {
@@ -297,41 +429,75 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
     output_wav_path: str,
     target_engine: str | None = None,
 ) -> str:
-    """Fallback speech synthesis using Home Assistant tts.speak service."""
+    """Fallback speech synthesis using Home Assistant TTS media source."""
+    del personality  # Reserved for future engine-specific options
     target_path = Path(output_wav_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    service_data: dict[str, Any] = {
-        "message": script,
-    }
-    options: dict[str, Any] = {}
-    if voice:
-        options["voice"] = voice
-    if personality:
-        options["personality"] = personality
-    if options:
-        service_data["options"] = options
-
-    call_kwargs: dict[str, Any] = {
-        "blocking": True,
-    }
-    if target_engine:
-        call_kwargs["target"] = {"entity_id": target_engine}
-
     try:
-        await hass.services.async_call(
-            "tts",
-            "speak",
-            service_data,
-            **call_kwargs,
+        if voice:
+            try:
+                media_source_id = ha_tts.generate_media_source_id(
+                    hass,
+                    script,
+                    engine=target_engine,
+                    options={"voice": voice},
+                )
+            except (HomeAssistantError, TypeError):
+                media_source_id = ha_tts.generate_media_source_id(
+                    hass,
+                    script,
+                    engine=target_engine,
+                )
+        else:
+            media_source_id = ha_tts.generate_media_source_id(
+                hass,
+                script,
+                engine=target_engine,
+            )
+        extension, data = await ha_tts.async_get_media_source_audio(
+            hass, media_source_id
         )
+        if data:
+            if extension == "wav" or data.startswith(b"RIFF"):
+                await asyncio.to_thread(target_path.write_bytes, data)
+                return output_wav_path
+
+            temp_file = target_path.with_suffix(f".{extension or 'tmp'}")
+            await asyncio.to_thread(temp_file.write_bytes, data)
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(temp_file),
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                "24000",
+                "-ac",
+                "1",
+                str(target_path),
+            ]
+            conv_ok = await ffmpeg_runner.async_run_ffmpeg(hass, ffmpeg_cmd)
+            with suppress(OSError):
+                await asyncio.to_thread(temp_file.unlink, missing_ok=True)
+            if conv_ok and target_path.exists() and target_path.stat().st_size > 0:
+                return output_wav_path
     except (HomeAssistantError, Exception) as err:  # noqa: BLE001
         LOGGER.warning(
-            "Home Assistant tts.speak call encountered warning/error: %s",
+            "Home Assistant TTS media synthesis encountered warning/error: %s",
             err,
         )
 
-    if not target_path.exists() or target_path.stat().st_size == 0:
+    def _is_empty_or_missing(p: Path) -> bool:
+        return not p.exists() or p.stat().st_size == 0
+
+    if await asyncio.to_thread(_is_empty_or_missing, target_path):
+        LOGGER.error(
+            "All TTS engines failed for %s; writing silent fallback WAV",
+            output_wav_path,
+        )
         await asyncio.to_thread(target_path.write_bytes, _generate_silent_wav())
 
     return output_wav_path

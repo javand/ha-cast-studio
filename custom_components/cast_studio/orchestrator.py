@@ -15,20 +15,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.network import get_url
 
 from .const import LOGGER
+from .helpers import create_task
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
-
     from homeassistant.core import Event, HomeAssistant
+
 
 _ACTIVE_SYNC_TASKS: set[asyncio.Task[Any]] = set()
 _ROUTINE_SYNC_TASKS: dict[str, asyncio.Task[Any]] = {}
 
-DEFAULT_PLAYING_TIMEOUT = 10.0
+DEFAULT_PLAYING_TIMEOUT = 25.0
 
 
 class OrchestratorError(Exception):
@@ -196,6 +197,42 @@ def extract_actions(steps_or_actions: list[dict[str, Any]]) -> list[dict[str, An
     return actions
 
 
+def _bind_target_player_to_post_actions(
+    post_actions: list[dict[str, Any]],
+    target_player: str | None,
+) -> list[dict[str, Any]]:
+    """Bind target_player to post-routine actions targeting media players or Cast."""
+    if not target_player:
+        return post_actions
+
+    resolved: list[dict[str, Any]] = []
+    for act in post_actions:
+        act_copy = dict(act)
+        act_name = str(act_copy.get("action") or act_copy.get("service") or "")
+        if act_name.startswith(("cast.", "media_player.")):
+            has_target = bool(
+                isinstance(act_copy.get("target"), dict)
+                and (
+                    act_copy["target"].get("entity_id")
+                    or act_copy["target"].get("device_id")
+                    or act_copy["target"].get("area_id")
+                )
+            )
+            has_data_entity = bool(
+                isinstance(act_copy.get("data"), dict)
+                and act_copy["data"].get("entity_id")
+            )
+            if not has_target and not has_data_entity:
+                act_data = dict(
+                    act_copy.get("data") or act_copy.get("service_data") or {}
+                )
+                act_data["entity_id"] = target_player
+                act_copy["data"] = act_data
+                act_copy["target"] = {"entity_id": target_player}
+        resolved.append(act_copy)
+    return resolved
+
+
 async def _async_execute_single_action(
     hass: HomeAssistant,
     action_def: dict[str, Any],
@@ -336,20 +373,97 @@ async def _async_sync_slides(
         await async_execute_background_actions(hass, actions)
 
 
-def _create_task(
-    hass: HomeAssistant,
-    coro: Coroutine[Any, Any, Any],
-    name: str | None = None,
-) -> asyncio.Task[Any]:
-    """Create an asynchronous task in Home Assistant or fallback to asyncio loop."""
-    if hasattr(hass, "async_create_task") and callable(hass.async_create_task):
-        res = hass.async_create_task(coro, name=name)
-        if isinstance(res, asyncio.Task):
-            return res
-    return asyncio.create_task(coro, name=name)
+_create_task = create_task
 
 
-async def async_play_and_sync_routine(  # noqa: PLR0915
+def _is_cast_player(hass: HomeAssistant, entity_id: str) -> bool:
+    """Check if target media player entity is a Google Cast device."""
+    if not entity_id:
+        return False
+    with contextlib.suppress(Exception):
+        registry = er.async_get(hass)
+        entry = registry.async_get(entity_id)
+        if entry and getattr(entry, "platform", None) == "cast":
+            return True
+    if hasattr(hass, "states") and hasattr(hass.states, "get"):
+        state_obj = hass.states.get(entity_id)
+        if state_obj:
+            attrs = getattr(state_obj, "attributes", None) or {}
+            if isinstance(attrs, dict) and (
+                attrs.get("app_id")
+                or attrs.get("app_name")
+                or "cast" in str(attrs.get("device_class", "")).lower()
+            ):
+                return True
+    return False
+
+
+def _is_routine_media_playing(  # noqa: PLR0911
+    state_obj: Any,
+    expected_media_url: str | None = None,
+    media_path: str | None = None,
+) -> bool:
+    """
+    Check if the given state represents our routine media playing.
+
+    Returns False if the player is displaying Lovelace Cast dashboard, or playing
+    unrelated media. Accepts playing/buffering or receiver loading when media_content_id
+    matches our routine.
+    """
+    if state_obj is None:
+        return False
+
+    state_val = getattr(state_obj, "state", None)
+    attrs = getattr(state_obj, "attributes", None)
+    if not isinstance(attrs, dict):
+        return state_val == "playing"
+
+    # 1. Cast Lovelace receiver and HA Cast splash are NEVER routine media playback
+    app_name = (attrs.get("app_name") or "").lower()
+    app_id = (attrs.get("app_id") or "").upper()
+    media_content_id_str = str(attrs.get("media_content_id") or "").lower()
+    if (
+        "splash.png" in media_content_id_str
+        or "lovelace" in app_name
+        or app_name in ("home assistant", "home assistant cast")
+        or app_id in ("A078F6B0", "B12CE3C8")
+    ):
+        return False
+
+    # 2. Extract expected filename for comparison
+    expected_candidates: list[str] = []
+    if expected_media_url:
+        expected_candidates.append(
+            Path(expected_media_url.split("?")[0].rstrip("/")).name
+        )
+    if media_path:
+        expected_candidates.append(Path(media_path.replace("\\", "/").rstrip("/")).name)
+    valid_candidates = [c for c in expected_candidates if c]
+
+    # 3. Check media_content_id if available
+    current_media_id = attrs.get("media_content_id")
+    if current_media_id and valid_candidates:
+        current_clean = str(current_media_id).split("?")[0].rstrip("/")
+        if any(cand in current_clean for cand in valid_candidates):
+            # Actively loading or playing our specific routine media!
+            return state_val in ("playing", "buffering", "idle")
+        # Check if proxy or internal stream from Default Media Receiver
+        is_dmr = app_id == "CC1AD845" or "default media receiver" in app_name
+        return is_dmr and state_val in ("playing", "buffering")
+
+    # 4. If Default Media Receiver is active and state is playing or buffering
+    if app_id == "CC1AD845" or "default media receiver" in app_name:
+        return state_val in ("playing", "buffering")
+
+    # 5. Non-Cast or generic player playing state check
+    if state_val != "playing":
+        return False
+
+    # Filter out ambient / idle cast screens
+    return app_name not in ("backdrop", "ambient", "google cast", "homescreen")
+
+
+async def async_play_and_sync_routine(  # noqa: C901, PLR0915
     hass: HomeAssistant,
     routine_name: str,
     target_player: str,
@@ -382,10 +496,11 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
 
     # 0. Wake up, unmute, and initialize volume if configured
     if metadata.get("prepare_player", True) and target_player:
-        with contextlib.suppress(Exception):
-            await hass.services.async_call(
-                "media_player", "turn_on", {"entity_id": target_player}
-            )
+        if not _is_cast_player(hass, target_player):
+            with contextlib.suppress(Exception):
+                await hass.services.async_call(
+                    "media_player", "turn_on", {"entity_id": target_player}
+                )
         if metadata.get("unmute", True):
             with contextlib.suppress(Exception):
                 await hass.services.async_call(
@@ -420,7 +535,7 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
 
     # 2. Check if player is already 'playing' at call time
     current_state = hass.states.get(target_player)
-    if current_state is not None and getattr(current_state, "state", None) == "playing":
+    if _is_routine_media_playing(current_state, resolved_media_url, media_path):
         LOGGER.debug(
             "Player '%s' is already in 'playing' state; starting sync",
             target_player,
@@ -466,7 +581,7 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
         @callback
         def _handle_state_changed(event: Event) -> asyncio.Task[Any] | None:
             new_state = event.data.get("new_state")
-            if new_state is not None and getattr(new_state, "state", None) == "playing":
+            if _is_routine_media_playing(new_state, resolved_media_url, media_path):
                 LOGGER.debug(
                     "Player '%s' entered 'playing'; starting slide sync for '%s'",
                     target_player,
@@ -503,22 +618,42 @@ async def async_play_and_sync_routine(  # noqa: PLR0915
                     remaining = duration - now
                     if remaining > 0:
                         await asyncio.sleep(remaining)
-                post_actions = (
-                    metadata.get("post_routine_actions")
-                    or metadata.get("post_actions")
-                    or metadata.get("post_briefing_actions")
-                )
-                if post_actions:
-                    if isinstance(post_actions, dict):
-                        post_actions = [post_actions]
-                    try:
-                        await async_execute_background_actions(hass, post_actions)
-                    except Exception as err:  # noqa: BLE001
-                        LOGGER.error("Error executing post-routine actions: %s", err)
+            elif duration > 0:
+                elapsed = loop.time() - start_time[0]
+                remaining = max(0.0, duration - elapsed)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
         except asyncio.CancelledError:
             if not playing_future.done():
                 playing_future.cancel()
             raise
+        finally:
+            post_actions = (
+                metadata.get("post_routine_actions")
+                or metadata.get("post_actions")
+                or metadata.get("post_briefing_actions")
+            )
+            if post_actions:
+                if isinstance(post_actions, dict):
+                    post_actions = [post_actions]
+                try:
+                    if (
+                        metadata.get("prepare_player", True)
+                        and target_player
+                        and not _is_cast_player(hass, target_player)
+                    ):
+                        with contextlib.suppress(Exception):
+                            await hass.services.async_call(
+                                "media_player", "turn_on", {"entity_id": target_player}
+                            )
+                    resolved_post_actions = _bind_target_player_to_post_actions(
+                        post_actions, target_player
+                    )
+                    await asyncio.shield(
+                        async_execute_background_actions(hass, resolved_post_actions)
+                    )
+                except Exception as err:  # noqa: BLE001
+                    LOGGER.error("Error executing post-routine actions: %s", err)
 
     return _create_task(
         hass,

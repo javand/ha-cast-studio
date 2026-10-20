@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import wave
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,9 +21,6 @@ from custom_components.cast_studio.tts_client import (
     async_synthesize_speech,
     map_voice_for_openai,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 @pytest.mark.asyncio
@@ -481,42 +480,94 @@ async def test_synthesize_speech_conversation_agent_fallback_to_ha(
 
 
 @pytest.mark.asyncio
-async def test_synthesize_ha_tts_direct_service_call(tmp_path: Path) -> None:
-    """Test _synthesize_ha_tts calls Home Assistant tts.speak with target kwarg and generates wav."""
+async def test_synthesize_ha_tts_media_source_call(tmp_path: Path) -> None:
+    """Test _synthesize_ha_tts retrieves audio bytes via Home Assistant TTS media source."""
     hass = MagicMock()
-    hass.services.async_call = AsyncMock()
     output_wav = str(tmp_path / "ha_direct.wav")
-
-    result = await _synthesize_ha_tts(
-        hass=hass,
-        script="Good evening, family",
-        voice="Enceladus",
-        personality="calm_reassuring",
-        output_wav_path=output_wav,
-        target_engine="tts.piper",
+    fake_wav_bytes = (
+        b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
+        b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
     )
 
-    assert result == output_wav
-    content = await asyncio.to_thread((tmp_path / "ha_direct.wav").read_bytes)
-    assert content.startswith(b"RIFF")
-    assert b"WAVE" in content
+    with (
+        patch(
+            "homeassistant.components.tts.generate_media_source_id",
+            return_value="media-source://tts/tts.piper?message=Good+evening",
+        ) as mock_gen_id,
+        patch(
+            "homeassistant.components.tts.async_get_media_source_audio",
+            new=AsyncMock(return_value=("wav", fake_wav_bytes)),
+        ) as mock_get_audio,
+    ):
+        result = await _synthesize_ha_tts(
+            hass,
+            "Good evening, family",
+            "Enceladus",
+            "calm_reassuring",
+            output_wav,
+            target_engine="tts.piper",
+        )
 
-    hass.services.async_call.assert_awaited_once()
-    call_args = hass.services.async_call.call_args
-    assert call_args[0][0] == "tts"
-    assert call_args[0][1] == "speak"
-    data = call_args[0][2]
-    assert data["message"] == "Good evening, family"
-    assert data["options"]["voice"] == "Enceladus"
-    assert data["options"]["personality"] == "calm_reassuring"
-    # Target must be passed as keyword argument
-    assert call_args[1]["target"] == {"entity_id": "tts.piper"}
-    assert call_args[1]["blocking"] is True
+        assert result == output_wav
+        mock_gen_id.assert_called_once_with(
+            hass,
+            "Good evening, family",
+            engine="tts.piper",
+            options={"voice": "Enceladus"},
+        )
+        mock_get_audio.assert_awaited_once_with(
+            hass,
+            "media-source://tts/tts.piper?message=Good+evening",
+        )
+        content = await asyncio.to_thread((tmp_path / "ha_direct.wav").read_bytes)
+        assert content == fake_wav_bytes
 
 
 @pytest.mark.asyncio
-async def test_synthesize_ha_tts_catches_home_assistant_error(tmp_path: Path) -> None:
-    """Test _synthesize_ha_tts catches HomeAssistantError and falls back to silent wav."""
+async def test_synthesize_ha_tts_converts_mp3_to_wav(tmp_path: Path) -> None:
+    """Test _synthesize_ha_tts converts non-WAV media formats via ffmpeg."""
+    hass = MagicMock()
+    output_wav = str(tmp_path / "ha_converted.wav")
+    fake_mp3_bytes = b"ID3\x03\x00\x00\x00\x00\x00\x00"
+
+    async def fake_ffmpeg(_hass_arg: Any, cmd: Sequence[str]) -> bool:
+        Path(cmd[-1]).write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10")
+        return True
+
+    with (
+        patch(
+            "homeassistant.components.tts.generate_media_source_id",
+            return_value="media-source://tts/tts.google_ai_tts?message=Hello",
+        ),
+        patch(
+            "homeassistant.components.tts.async_get_media_source_audio",
+            new=AsyncMock(return_value=("mp3", fake_mp3_bytes)),
+        ),
+        patch(
+            "custom_components.cast_studio.ffmpeg_runner.async_run_ffmpeg",
+            side_effect=fake_ffmpeg,
+        ) as mock_ffmpeg,
+    ):
+        result = await _synthesize_ha_tts(
+            hass,
+            "Hello",
+            "Pulcherrima",
+            "news_anchor",
+            output_wav,
+            target_engine="tts.google_ai_tts",
+        )
+
+        assert result == output_wav
+        assert mock_ffmpeg.called
+        content = await asyncio.to_thread((tmp_path / "ha_converted.wav").read_bytes)
+        assert content.startswith(b"RIFF")
+
+
+@pytest.mark.asyncio
+async def test_synthesize_ha_tts_catches_home_assistant_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test _synthesize_ha_tts catches HomeAssistantError, logs error, and falls back to silent wav."""
     hass = MagicMock()
     hass.services.async_call = AsyncMock(
         side_effect=HomeAssistantError("Service tts.speak not found")
@@ -536,6 +587,10 @@ async def test_synthesize_ha_tts_catches_home_assistant_error(tmp_path: Path) ->
     content = await asyncio.to_thread((tmp_path / "ha_error.wav").read_bytes)
     assert content.startswith(b"RIFF")
     assert b"WAVE" in content
+    assert (
+        f"All TTS engines failed for {output_wav}; writing silent fallback WAV"
+        in caplog.text
+    )
 
 
 @pytest.mark.asyncio
@@ -633,3 +688,135 @@ async def test_synthesize_speech_reuses_clientsession(tmp_path: Path) -> None:
             "k",
             session=mock_session,
         )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_gemini_tts_structured_director_prompt(tmp_path: Path) -> None:
+    """Test Gemini TTS uses structured # AUDIO PROFILE and #### TRANSCRIPT blocks."""
+    output_wav = str(tmp_path / "structured_gemini.wav")
+    b64_audio = base64.b64encode(b"RIFFfake_wav_bytes").decode("ascii")
+    mock_resp_json = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"inlineData": {"mimeType": "audio/wav", "data": b64_audio}}
+                    ]
+                }
+            }
+        ]
+    }
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value=mock_resp_json)
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_session = MagicMock()
+    mock_session.post.return_value = mock_ctx
+
+    await _synthesize_gemini_tts(
+        script="Good morning, Jay-ven! It is 68 degrees and sunny.",
+        voice="Pulcherrima",
+        personality="news_anchor",
+        output_wav_path=output_wav,
+        api_key="test_key",
+        session=mock_session,
+    )
+
+    payload = mock_session.post.call_args[1]["json"]
+    prompt_sent = payload["contents"][0]["parts"][0]["text"]
+    assert "# AUDIO PROFILE:" in prompt_sent
+    assert "news_anchor" in prompt_sent
+    assert (
+        "#### TRANSCRIPT\nGood morning, Jay-ven! It is 68 degrees and sunny."
+        in prompt_sent
+    )
+    assert "Please speak the following narration text" not in prompt_sent
+
+
+@pytest.mark.asyncio
+async def test_synthesize_ha_tts_voice_options_rejected_fallback(
+    tmp_path: Path,
+) -> None:
+    """Test _synthesize_ha_tts falls back to calling generate_media_source_id without options when rejected."""
+    hass = MagicMock()
+    output_wav = str(tmp_path / "ha_voice_fallback.wav")
+    fake_wav_bytes = (
+        b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
+        b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+    )
+
+    def side_effect_gen_id(
+        _hass_arg: Any,
+        _msg: str,
+        engine: str | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> str:
+        if options is not None:
+            msg = f"Invalid options supported: {options}"
+            raise HomeAssistantError(msg)
+        return f"media-source://tts/{engine}?message=Fallback"
+
+    with (
+        patch(
+            "homeassistant.components.tts.generate_media_source_id",
+            side_effect=side_effect_gen_id,
+        ) as mock_gen_id,
+        patch(
+            "homeassistant.components.tts.async_get_media_source_audio",
+            new=AsyncMock(return_value=("wav", fake_wav_bytes)),
+        ) as mock_get_audio,
+    ):
+        result = await _synthesize_ha_tts(
+            hass,
+            "Fallback test",
+            "Pulcherrima",
+            "news_anchor",
+            output_wav,
+            target_engine="tts.legacy_engine",
+        )
+
+        assert result == output_wav
+        expected_calls = 2
+        assert mock_gen_id.call_count == expected_calls
+        mock_gen_id.assert_any_call(
+            hass,
+            "Fallback test",
+            engine="tts.legacy_engine",
+            options={"voice": "Pulcherrima"},
+        )
+        mock_gen_id.assert_called_with(
+            hass,
+            "Fallback test",
+            engine="tts.legacy_engine",
+        )
+        mock_get_audio.assert_awaited_once_with(
+            hass,
+            "media-source://tts/tts.legacy_engine?message=Fallback",
+        )
+        content = await asyncio.to_thread(
+            (tmp_path / "ha_voice_fallback.wav").read_bytes
+        )
+        assert content == fake_wav_bytes
+
+
+def test_personality_prompts_include_morning_host_and_bedtime_personas() -> None:
+    """Verify PERSONALITY_PROMPTS includes morning_host and bedtime personas and supports custom registration."""
+    from custom_components.cast_studio.tts_client import (
+        PERSONALITY_PROMPTS,
+        _build_gemini_tts_prompt,
+        register_personality_prompt,
+    )
+
+    for persona in ("morning_host", "calm_reassuring", "soothing", "meditative"):
+        assert persona in PERSONALITY_PROMPTS, f"Missing persona {persona}"
+        prompt = _build_gemini_tts_prompt("Hello world", persona)
+        assert "# AUDIO PROFILE:" in prompt
+        assert "### DIRECTOR'S NOTES" in prompt
+        assert persona in prompt
+
+    register_personality_prompt("custom_pirate", "Style: Enthusiastic sea captain.")
+    custom_prompt = _build_gemini_tts_prompt("Ahoy!", "custom_pirate")
+    assert "Enthusiastic sea captain." in custom_prompt
+    assert "custom_pirate" in custom_prompt

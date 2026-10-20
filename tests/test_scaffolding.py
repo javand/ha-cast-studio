@@ -26,7 +26,7 @@ def test_manifest_metadata():
     assert manifest["name"] == "CastStudio"
     assert "@javand" in manifest["codeowners"]
     assert "ffmpeg" in manifest["dependencies"]
-    assert any("pillow" in req.lower() for req in manifest["requirements"])
+    assert manifest["requirements"] == []
 
 
 def test_constants():

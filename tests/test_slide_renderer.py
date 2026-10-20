@@ -11,8 +11,11 @@ from PIL import Image
 
 from custom_components.cast_studio.slide_renderer import (
     PhoneticLeakError,
+    _draw_google_nest_weather_slide,
+    _draw_two_column_agenda,
     _load_image,
     _resolve_image_path,
+    load_weather_icon,
     render_slide,
 )
 
@@ -372,3 +375,335 @@ def test_load_image_avatar_fallback_when_primary_missing() -> None:
     assert img is not None
     assert has_alpha is True
     assert img.size == (512, 512)
+
+
+def test_resolve_slide_theme_by_step_and_weather_condition() -> None:
+    """Test resolve_slide_theme resolves step-specific and weather-aware palettes."""
+    from custom_components.cast_studio.slide_renderer import (
+        SLIDE_THEMES,
+        resolve_slide_theme,
+    )
+
+    assert "greeting" in SLIDE_THEMES
+    assert "national_day" in SLIDE_THEMES
+    assert "fun_fact" in SLIDE_THEMES
+    assert "agenda" in SLIDE_THEMES
+    assert "commute" in SLIDE_THEMES
+    assert "scripture" in SLIDE_THEMES
+
+    rain_theme = resolve_slide_theme(
+        {"step_name": "weather", "weather_condition": "rainy"}
+    )
+    sunny_theme = resolve_slide_theme(
+        {"step_name": "weather", "weather_condition": "sunny"}
+    )
+    assert rain_theme["bg_top"] != sunny_theme["bg_top"]
+    assert rain_theme["badge"] == "TODAY'S WEATHER"
+
+    nd_theme = resolve_slide_theme({"step_name": "national_day"})
+    assert nd_theme["badge"] == "NATIONAL DAY"
+
+    agenda_theme = resolve_slide_theme({"step_name": "agenda"})
+    assert agenda_theme["badge"] == "AGENDA"
+
+    commute_theme = resolve_slide_theme({"step_name": "commute"})
+    assert commute_theme["badge"] == "COMMUTE OVERVIEW"
+
+
+def test_render_slide_applies_step_theme_and_category_badge(tmp_path: Path) -> None:
+    """Test render_slide applies themed background gradient and category badge when step_name/theme is set."""
+    default_out = str(tmp_path / "default_slide.jpg")
+    themed_out = str(tmp_path / "themed_slide.jpg")
+
+    render_slide({"title": "Morning Update"}, default_out)
+    render_slide(
+        {
+            "title": "Morning Update",
+            "step_name": "scripture",
+            "badge": "DAILY SCRIPTURE",
+        },
+        themed_out,
+    )
+
+    with Image.open(default_out) as def_img, Image.open(themed_out) as thm_img:
+        assert def_img.getpixel((10, 10)) != thm_img.getpixel((10, 10))
+
+
+def test_render_slide_photo_mode_uses_translucent_frosted_glass_scrim(
+    tmp_path: Path,
+) -> None:
+    """Test photo mode applies a frosted glass scrim leaving background photo vibrant and visible."""
+    output_photo = str(tmp_path / "photo_scrim.jpg")
+    card_data = {
+        "title": "Sunny & Warm",
+        "subtitle": "Weather Outlook",
+        "image_path": "weather_sunny.jpg",
+        "layout": "photo",
+    }
+    render_slide(card_data, output_photo)
+
+    with Image.open(output_photo) as img:
+        center_rgb = img.getpixel((500, 300))
+        # Center should not be the dark opaque slate (R<55, G<60, B<70)
+        # It must show the bright golden sunrise colors of weather_sunny.jpg (R >= 80, G >= 60)
+        assert center_rgb[0] >= 80, (
+            f"Expected vibrant red channel >= 80, got {center_rgb[0]}"
+        )
+
+
+def test_render_slide_two_column_agenda_layout(tmp_path: Path) -> None:
+    """Test render_slide renders 2-column layout for combined calendar and to-do agenda."""
+    output_path = str(tmp_path / "agenda_slide.jpg")
+    card_data = {
+        "title": "Today's Agenda",
+        "subtitle": "Thursday, October 19 • 2 Events • 2 Tasks",
+        "layout": "agenda_split",
+        "calendar_items": [
+            "09:00 AM — Architecture Planning",
+            "01:30 PM — Design Review",
+        ],
+        "todo_items": [
+            "Review CastStudio PR",
+            "Water office plants",
+        ],
+        "image_path": "calendar_agenda.jpg",
+    }
+    result = render_slide(card_data, output_path)
+    assert os.path.exists(result)
+    with Image.open(result) as img:
+        assert img.size == (1024, 600)
+        assert img.mode == "RGB"
+
+
+def test_render_slide_two_column_agenda_empty_states(tmp_path: Path) -> None:
+    """Test render_slide handles empty calendar and to-do lists in 2-column layout."""
+    output_path = str(tmp_path / "agenda_empty.jpg")
+    card_data = {
+        "title": "Today's Agenda",
+        "subtitle": "Thursday, October 19 • Schedule Clear",
+        "layout": "agenda_split",
+        "calendar_items": [],
+        "todo_items": [],
+        "image_path": "calendar_agenda.jpg",
+    }
+    result = render_slide(card_data, output_path)
+    assert os.path.exists(result)
+    with Image.open(result) as img:
+        assert img.size == (1024, 600)
+
+
+def test_draw_header_suppresses_redundant_badge_matching_title(tmp_path: Path) -> None:
+    """Test _draw_header suppresses redundant category pill when badge and title overlap."""
+    out_redundant = str(tmp_path / "redundant_badge.jpg")
+    card_data = {
+        "title": "Good Morning, Javan",
+        "subtitle": "Welcome to your day",
+        "step_name": "greeting",
+        # Theme has badge "GOOD MORNING"
+    }
+    result = render_slide(card_data, out_redundant)
+    assert os.path.exists(result)
+
+
+def test_render_slide_google_nest_weather_layout(tmp_path: Path) -> None:
+    """Test render_slide renders 1024x600 Google Nest Hub weather layout with timeline."""
+    output_png = str(tmp_path / "slide_weather.png")
+    slide_data = {
+        "step_name": "weather",
+        "card": {
+            "title": "Weather",
+            "weather_data": {
+                "current_temp": 68,
+                "condition": "partlycloudy",
+                "condition_text": "Mostly Sunny",
+                "high": 74,
+                "low": 54,
+                "humidity": 48,
+                "wind_speed": 8,
+                "precipitation_probability": 10,
+                "location": "Washington, D.C.",
+                "forecast_points": [
+                    {"time": "Now", "temperature": 68, "condition": "partlycloudy"},
+                    {"time": "10 AM", "temperature": 70, "condition": "sunny"},
+                    {"time": "1 PM", "temperature": 73, "condition": "sunny"},
+                    {"time": "4 PM", "temperature": 74, "condition": "partlycloudy"},
+                    {"time": "7 PM", "temperature": 67, "condition": "cloudy"},
+                    {
+                        "time": "Tomorrow",
+                        "temperature": "72° / 52°",
+                        "condition": "sunny",
+                    },
+                ],
+            },
+        },
+    }
+    render_slide(slide_data, output_png)
+    assert Path(output_png).is_file()
+    with Image.open(output_png) as img:
+        assert img.size == (1024, 600)
+        assert img.mode == "RGB"
+
+
+def test_load_weather_icon_normalization_and_fallback() -> None:
+    """Test load_weather_icon handles known condition aliases and unknown condition fallback."""
+    # Known condition with alias
+    img_partly = load_weather_icon("partlycloudy", size=(64, 64))
+    assert img_partly.size == (64, 64)
+    assert img_partly.mode == "RGBA"
+
+    img_hyphen = load_weather_icon("partly-cloudy", size=(32, 32))
+    assert img_hyphen.size == (32, 32)
+    assert img_hyphen.mode == "RGBA"
+
+    img_sunny = load_weather_icon("clear-night", size=(48, 48))
+    assert img_sunny.size == (48, 48)
+
+    # Unknown condition should safely fallback without raising
+    fallback_img = load_weather_icon("apocalyptic_fog", size=(64, 64))
+    assert fallback_img.size == (64, 64)
+    assert fallback_img.mode == "RGBA"
+
+
+def test_render_slide_google_nest_weather_missing_forecast_points(
+    tmp_path: Path,
+) -> None:
+    """Test Google Nest weather slide renders cleanly without forecast points."""
+    output_png = str(tmp_path / "slide_weather_no_forecast.png")
+    slide_data = {
+        "step_name": "weather",
+        "card": {
+            "title": "Weather",
+            "weather_data": {
+                "current_temp": 72,
+                "condition": "sunny",
+                "condition_text": "Sunny",
+                "high": 75,
+                "low": 55,
+                "humidity": 40,
+                "wind_speed": 5,
+                "precipitation_probability": 0,
+                "location": "Bethesda, MD",
+                "forecast_points": [],
+            },
+        },
+    }
+    render_slide(slide_data, output_png)
+    assert Path(output_png).is_file()
+    with Image.open(output_png) as img:
+        assert img.size == (1024, 600)
+
+
+def test_render_slide_weather_fallback_without_weather_data(tmp_path: Path) -> None:
+    """Test render_slide preserves legacy card rendering if step_name is weather but weather_data is absent."""
+    output_jpg = str(tmp_path / "slide_weather_legacy.jpg")
+    slide_data = {
+        "step_name": "weather",
+        "title": "Today's Weather",
+        "subtitle": "Warm and sunny",
+        "bullet_points": ["High of 75°", "Clear skies all day"],
+    }
+    result = render_slide(slide_data, output_jpg)
+    assert Path(result).is_file()
+    with Image.open(result) as img:
+        assert img.size == (1024, 600)
+
+
+def test_draw_google_nest_weather_slide_direct_call() -> None:
+    """Test _draw_google_nest_weather_slide directly paints onto canvas with theme."""
+    canvas = Image.new("RGB", (1024, 600))
+    card = {
+        "title": "Weather Briefing",
+        "weather_data": {
+            "current_temp": 65,
+            "condition": "rainy",
+            "condition_text": "Showers",
+            "high": 68,
+            "low": 50,
+            "humidity": 85,
+            "wind_speed": 12,
+            "precipitation_probability": 90,
+            "location": "Seattle, WA",
+            "forecast_points": [
+                {"time": "Now", "temperature": 65, "condition": "rainy"},
+                {"time": "3 PM", "temperature": 67, "condition": "rainy"},
+            ],
+        },
+    }
+    _draw_google_nest_weather_slide(canvas, card, theme={"badge": "WEATHER"})
+    assert canvas.size == (1024, 600)
+
+
+def test_render_slide_dual_focus_agenda_layout(tmp_path: Path) -> None:
+    output_png = str(tmp_path / "slide_agenda.png")
+    slide_data = {
+        "step_name": "agenda",
+        "card": {
+            "title": "Today's Schedule & Tasks",
+            "agenda_data": {
+                "date_str": "Monday, Oct 19",
+                "calendar_events": [
+                    {
+                        "time": "10:00 AM – 11:00 AM",  # noqa: RUF001
+                        "title": "Team Architecture Alignment",
+                        "location": "Room A",
+                    },
+                    {
+                        "time": "2:30 PM – 3:30 PM",  # noqa: RUF001
+                        "title": "Weekly Project Review",
+                        "location": "Google Meet",
+                    },
+                ],
+                "todo_items": [
+                    "50 push-ups & morning mobility",
+                    "Prescription refill reminder",
+                    "Review pull request",
+                ],
+            },
+        },
+    }
+    render_slide(slide_data, output_png)
+    assert Path(output_png).is_file()
+    with Image.open(output_png) as img:
+        assert img.size == (1024, 600)
+        assert img.mode == "RGB"
+
+
+def test_render_slide_dual_focus_agenda_empty_states(tmp_path: Path) -> None:
+    output_png = str(tmp_path / "slide_agenda_empty.png")
+    slide_data = {
+        "step_name": "agenda",
+        "card": {
+            "title": "Today's Schedule & Tasks",
+            "agenda_data": {
+                "date_str": "Monday, Oct 19",
+                "calendar_events": [],
+                "todo_items": [],
+            },
+        },
+    }
+    render_slide(slide_data, output_png)
+    assert Path(output_png).is_file()
+    with Image.open(output_png) as img:
+        assert img.size == (1024, 600)
+        assert img.mode == "RGB"
+
+
+def test_draw_two_column_agenda_direct_call() -> None:
+    """Test _draw_two_column_agenda direct canvas rendering interface."""
+    canvas = Image.new("RGB", (1024, 600))
+    card = {
+        "title": "Today's Schedule & Tasks",
+        "agenda_data": {
+            "date_str": "Monday, Oct 19",
+            "calendar_events": [
+                {
+                    "time": "10:00 AM – 11:00 AM",  # noqa: RUF001
+                    "title": "Team Architecture Alignment",
+                    "location": "Room A",
+                }
+            ],
+            "todo_items": ["Review pull request"],
+        },
+    }
+    _draw_two_column_agenda(canvas, card, theme={"badge": "AGENDA"})
+    assert canvas.size == (1024, 600)

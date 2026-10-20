@@ -48,12 +48,23 @@ blueprint:
     weather_entity:
       name: Weather Entity
       description: Weather entity to summarize in the forecast slide.
+      default: ""
       selector:
         entity:
           domain: weather
+    national_day_entity:
+      name: National Day Entity (Optional)
+      description: Optional entity providing today's official National Day holiday or observance.
+      default: ""
+      selector:
+        entity:
+          domain:
+            - sensor
+            - input_text
     fun_fact_entity:
       name: Fun Fact Entity (Optional)
-      description: Optional entity providing a morning fun fact, trivia, or national day.
+      description: Optional entity providing a morning fun fact or trivia.
+      default: ""
       selector:
         entity:
           domain:
@@ -62,6 +73,7 @@ blueprint:
     calendar_entities:
       name: Calendar Entities
       description: Calendar entities to query and summarize in the agenda slide.
+      default: []
       selector:
         entity:
           domain: calendar
@@ -69,18 +81,21 @@ blueprint:
     todo_entity:
       name: Todo Entity (Optional)
       description: Task or to-do list entity to summarize in the morning briefing.
+      default: ""
       selector:
         entity:
           domain: todo
     commute_sensor:
       name: Commute Sensor (Optional)
       description: Optional sensor entity providing traffic or transit commute status.
+      default: ""
       selector:
         entity:
           domain: sensor
     scripture_sensor:
       name: Scripture Sensor (Optional)
       description: Sensor entity providing daily scripture or morning inspirational thought.
+      default: ""
       selector:
         entity:
           domain: sensor
@@ -100,9 +115,13 @@ blueprint:
       selector:
         select:
           options:
+            - morning_host
             - news_anchor
             - upbeat_energetic
             - conversational
+            - calm_reassuring
+            - soothing
+            - meditative
           custom_value: true
     scripture_voice:
       name: Scripture Voice
@@ -123,10 +142,14 @@ blueprint:
             - life_coach
             - reverent
             - warm_uplifting
+            - calm_reassuring
+            - soothing
+            - meditative
           custom_value: true
     conversation_agent:
       name: Conversation Agent (Optional)
       description: Specific Home Assistant conversation agent entity for AI script generation.
+      default: ""
       selector:
         conversation_agent: {}
     background_actions:
@@ -176,8 +199,6 @@ action:
                     visual: true
                     title: !input recipient_name
                     subtitle: "Good Morning"
-                    layout: "icon"
-                    icon: !input greeting_image
                     voice: !input host_voice
                     voice_personality: !input host_personality
                     context: "A cheerful, energizing morning greeting for {{ recipient_name }}."
@@ -186,19 +207,20 @@ action:
                     entity_id: !input weather_entity
                     voice: !input host_voice
                     voice_personality: !input host_personality
+                  - name: national_day
+                    visual: true
+                    entity_id: !input national_day_entity
+                    voice: !input host_voice
+                    voice_personality: !input host_personality
                   - name: fun_fact
                     visual: true
                     entity_id: !input fun_fact_entity
                     voice: !input host_voice
                     voice_personality: !input host_personality
-                  - name: calendar
+                  - name: agenda
                     visual: true
-                    entity_ids: !input calendar_entities
-                    voice: !input host_voice
-                    voice_personality: !input host_personality
-                  - name: todo
-                    visual: true
-                    entity_id: !input todo_entity
+                    calendar_entities: !input calendar_entities
+                    todo_entity: !input todo_entity
                     voice: !input host_voice
                     voice_personality: !input host_personality
                   - name: commute
@@ -230,8 +252,6 @@ action:
                 visual: true
                 title: !input recipient_name
                 subtitle: "Good Morning"
-                layout: "icon"
-                icon: !input greeting_image
                 voice: !input host_voice
                 voice_personality: !input host_personality
                 context: "A cheerful, energizing morning greeting for {{ recipient_name }}."
@@ -240,19 +260,20 @@ action:
                 entity_id: !input weather_entity
                 voice: !input host_voice
                 voice_personality: !input host_personality
+              - name: national_day
+                visual: true
+                entity_id: !input national_day_entity
+                voice: !input host_voice
+                voice_personality: !input host_personality
               - name: fun_fact
                 visual: true
                 entity_id: !input fun_fact_entity
                 voice: !input host_voice
                 voice_personality: !input host_personality
-              - name: calendar
+              - name: agenda
                 visual: true
-                entity_ids: !input calendar_entities
-                voice: !input host_voice
-                voice_personality: !input host_personality
-              - name: todo
-                visual: true
-                entity_id: !input todo_entity
+                calendar_entities: !input calendar_entities
+                todo_entity: !input todo_entity
                 voice: !input host_voice
                 voice_personality: !input host_personality
               - name: commute

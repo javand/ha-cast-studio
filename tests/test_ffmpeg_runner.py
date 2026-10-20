@@ -31,6 +31,8 @@ def test_build_slide_clip_command():
     assert "libx264" in cmd
     assert "-pix_fmt" in cmd
     assert "yuv420p" in cmd
+    assert "-movflags" in cmd
+    assert "+faststart" in cmd
     assert cmd[-1] == "clip.mp4"
 
 
@@ -41,6 +43,8 @@ def test_build_concat_command():
     assert "concat" in cmd
     assert "-c" in cmd
     assert "copy" in cmd
+    assert "-movflags" in cmd
+    assert "+faststart" in cmd
     assert cmd[-1] == "final.mp4"
 
 
@@ -82,6 +86,24 @@ def test_build_slide_clip_command_validation():
         build_slide_clip_command("slide.jpg", "   ", "clip.mp4")
     with pytest.raises(ValueError, match="output_clip_path"):
         build_slide_clip_command("slide.jpg", "audio.wav", "")
+
+
+def test_build_slide_clip_command_with_duration_and_padding() -> None:
+    """Verify build_slide_clip_command adds apad filter and explicit -t duration when provided."""
+    cmd = build_slide_clip_command(
+        "slide.jpg",
+        "audio.wav",
+        "clip.mp4",
+        duration=11.25,
+        pad_seconds=0.5,
+    )
+    assert "-af" in cmd
+    af_idx = cmd.index("-af")
+    assert cmd[af_idx + 1] == "apad=pad_dur=0.50"
+    assert "-t" in cmd
+    t_idx = cmd.index("-t")
+    assert cmd[t_idx + 1] == "11.25"
+    assert "-shortest" not in cmd
 
 
 def test_build_concat_command_detailed_arguments(tmp_path: Path):

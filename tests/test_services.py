@@ -15,6 +15,7 @@ from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import ServiceCall
 
 from custom_components.cast_studio import (
+    _is_media_ready_and_fresh,
     async_compile_clip,
     async_pregenerate_routine,
     async_reload,
@@ -984,7 +985,11 @@ async def test_run_routine_forwards_post_actions_to_metadata(
     meta_content = {
         "video_path": str(video_file),
         "duration": 10.0,
-        "slide_timestamps": [],
+        "slide_timestamps": [
+            {"name": "greeting", "timestamp": 0.0},
+            {"name": "national_day", "timestamp": 5.0},
+            {"name": "fun_fact", "timestamp": 10.0},
+        ],
         "last_pregenerated": datetime.now(UTC).isoformat(),
     }
     meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
@@ -1047,7 +1052,7 @@ async def test_run_routine_service_call_forwards_top_level_post_routine_actions(
     meta_content = {
         "video_path": str(video_file),
         "duration": 10.0,
-        "slide_timestamps": [],
+        "slide_timestamps": [{"timestamp": 0.0}],
         "last_pregenerated": datetime.now(UTC).isoformat(),
     }
     meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
@@ -1089,5 +1094,289 @@ async def test_run_routine_service_call_forwards_top_level_post_routine_actions(
         mock_play.assert_awaited_once()
         passed_metadata = mock_play.await_args[0][3]
         assert passed_metadata.get("post_routine_actions") == [post_action]
+
+        await dummy_play_task
+
+
+def test_is_media_ready_and_fresh_invalidates_mismatched_slide_count(
+    tmp_path: Path,
+) -> None:
+    """Verify _is_media_ready_and_fresh returns (False, None) when slide count mismatches expected_step_count."""
+    video_file = tmp_path / "morning_briefing.mp4"
+    video_file.write_bytes(b"mp4")
+    meta_file = tmp_path / "morning_briefing.metadata.json"
+    meta_content = {
+        "video_path": str(video_file),
+        "duration": 10.0,
+        "slide_timestamps": [{"name": "greeting", "timestamp": 0.0}],
+    }
+    meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
+
+    is_ready, meta = _is_media_ready_and_fresh(
+        str(tmp_path),
+        "morning_briefing",
+        expected_step_count=6,
+    )
+    assert is_ready is False
+    assert meta is None
+
+    is_ready_match, meta_match = _is_media_ready_and_fresh(
+        str(tmp_path),
+        "morning_briefing",
+        expected_step_count=1,
+    )
+    assert is_ready_match is True
+    assert meta_match is not None
+
+
+@pytest.mark.asyncio
+async def test_run_routine_auto_builds_default_morning_briefing_steps(
+    mock_hass: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Verify async_run_routine auto-populates default morning steps when routines dict is empty."""
+    await async_setup(mock_hass, {DOMAIN: {}})
+    assert mock_hass.data[DOMAIN]["routines"] == {}
+
+    mock_metadata = {
+        "video_path": str(tmp_path / "morning_briefing.mp4"),
+        "audio_path": None,
+        "duration": DURATION_20_0,
+        "slide_timestamps": [
+            {"name": "greeting", "timestamp": 0.0},
+            {"name": "national_day", "timestamp": 5.0},
+            {"name": "fun_fact", "timestamp": 10.0},
+        ],
+    }
+    dummy_play_task = asyncio.create_task(asyncio.sleep(0.01))
+
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=AsyncMock(return_value=mock_metadata),
+        ) as mock_compile,
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_play_and_sync_routine",
+            new=AsyncMock(return_value=dummy_play_task),
+        ),
+    ):
+        await async_run_routine(
+            mock_hass,
+            routine_name="morning_briefing",
+            target_player="media_player.bathroom_display",
+            output_dir=str(tmp_path),
+        )
+
+        mock_compile.assert_awaited_once()
+        compiled_config = mock_compile.await_args.kwargs["routine_config"]
+        steps = compiled_config.get("steps", [])
+        assert len(steps) > 0
+        step_names = [s.get("name") for s in steps]
+        assert "greeting" in step_names
+        assert "weather" in step_names
+        assert "national_day" in step_names
+        assert "fun_fact" in step_names
+        assert "agenda" in step_names
+        assert "commute" in step_names
+        assert "scripture" in step_names
+
+        await dummy_play_task
+
+
+@pytest.mark.asyncio
+async def test_run_routine_zero_config_invalidates_stale_single_slide_cache(
+    mock_hass: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Verify async_run_routine with no routine_config invalidates a 1-slide cached morning_briefing.metadata.json and recompiles."""
+    await async_setup(mock_hass, {DOMAIN: {}})
+
+    video_file = tmp_path / "morning_briefing.mp4"
+    video_file.write_bytes(b"stale_mp4")
+    meta_file = tmp_path / "morning_briefing.metadata.json"
+    stale_meta = {
+        "video_path": str(video_file),
+        "duration": 10.0,
+        "slide_timestamps": [{"name": "greeting", "timestamp": 0.0}],
+        "last_pregenerated": datetime.now(UTC).isoformat(),
+    }
+    meta_file.write_text(json.dumps(stale_meta), encoding="utf-8")
+
+    fresh_metadata = {
+        "video_path": str(video_file),
+        "audio_path": None,
+        "duration": DURATION_20_0,
+        "slide_timestamps": [
+            {"name": "greeting", "timestamp": 0.0},
+            {"name": "fun_fact", "timestamp": 8.0},
+        ],
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=AsyncMock(return_value=fresh_metadata),
+        ) as mock_compile,
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+    ):
+        result = await async_run_routine(
+            mock_hass,
+            "morning_briefing",
+            output_dir=str(tmp_path),
+        )
+
+        mock_compile.assert_awaited_once()
+        assert result["duration"] == DURATION_20_0
+        assert len(result["slide_timestamps"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_setup_entry_stores_configured_output_dir_and_uses_as_default(
+    mock_hass: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Verify async_setup_entry stores CONF_OUTPUT_DIR in hass.data and service handlers use it."""
+    from custom_components.cast_studio import async_setup_entry
+    from custom_components.cast_studio.const import CONF_OUTPUT_DIR
+
+    custom_out = str(tmp_path / "custom_cast_dir")
+    mock_entry = MagicMock()
+    mock_entry.data = {CONF_OUTPUT_DIR: custom_out}
+    mock_entry.options = {}
+    mock_hass.config_entries.async_forward_entry_setups = AsyncMock()
+
+    await async_setup(mock_hass, {DOMAIN: {}})
+    await async_setup_entry(mock_hass, mock_entry)
+
+    assert mock_hass.data[DOMAIN]["output_dir"] == custom_out
+
+    mock_meta = {
+        "video_path": f"{custom_out}/morning.mp4",
+        "duration": 5.0,
+        "slide_timestamps": [{"name": "greeting", "timestamp": 0.0}],
+    }
+    with patch(
+        "custom_components.cast_studio.async_compile_routine_media",
+        new=AsyncMock(return_value=mock_meta),
+    ) as mock_compile:
+        await async_pregenerate_routine(
+            mock_hass,
+            routine_name="morning",
+            routine_config={"steps": [{"name": "greeting", "visual": True}]},
+        )
+        assert mock_compile.await_args.kwargs["output_dir"] == custom_out
+
+
+def test_discover_morning_entities_collects_multiple_commute_sensors(
+    mock_hass: MagicMock,
+) -> None:
+    """Verify _discover_morning_entities collects all commute/travel_time sensors for comparison."""
+    from custom_components.cast_studio import _build_default_morning_routine_config
+
+    s_drive = MagicMock(entity_id="sensor.javan_commute_drive_to_work")
+    s_metro = MagicMock(entity_id="sensor.javan_commute_metro")
+    mock_hass.states.async_all = MagicMock(return_value=[s_drive, s_metro])
+
+    cfg = _build_default_morning_routine_config(mock_hass, {"name": "Javan"})
+    assert [s["name"] for s in cfg["steps"]] == [
+        "greeting",
+        "weather",
+        "national_day",
+        "fun_fact",
+        "agenda",
+        "commute",
+        "scripture",
+    ]
+    agenda_step = next(s for s in cfg["steps"] if s["name"] == "agenda")
+    assert "calendar_entities" in agenda_step
+    assert "todo_entity" in agenda_step
+
+    commute_step = next(s for s in cfg["steps"] if s["name"] == "commute")
+    assert commute_step["entity_ids"] == [
+        "sensor.javan_commute_drive_to_work",
+        "sensor.javan_commute_metro",
+    ]
+
+
+def test_sensor_unrecorded_attributes() -> None:
+    """Verify CastStudioRoutineSensor marks video_path and audio_path as unrecorded attributes."""
+    from custom_components.cast_studio.sensor import CastStudioRoutineSensor
+
+    assert "video_path" in CastStudioRoutineSensor._unrecorded_attributes
+    assert "audio_path" in CastStudioRoutineSensor._unrecorded_attributes
+
+
+@pytest.mark.asyncio
+async def test_run_routine_accepts_media_player_and_entity_id_aliases(
+    mock_hass: MagicMock, sample_config: dict[str, Any], tmp_path: Path
+) -> None:
+    """Verify run_routine service call accepts 'media_player' and 'entity_id' as target_player aliases."""
+    await async_setup(mock_hass, sample_config)
+
+    calls = mock_hass.services.async_register.call_args_list
+    run_handler = next(c.args[2] for c in calls if c.args[1] == "run_routine")
+
+    video_file = tmp_path / "morning.mp4"
+    video_file.write_bytes(b"video")
+    meta_file = tmp_path / "morning.metadata.json"
+    meta_content = {
+        "video_path": str(video_file),
+        "duration": 10.0,
+        "slide_timestamps": [{"timestamp": 0.0}],
+        "last_pregenerated": datetime.now(UTC).isoformat(),
+    }
+    meta_file.write_text(json.dumps(meta_content), encoding="utf-8")
+
+    dummy_play_task = asyncio.create_task(asyncio.sleep(0.01))
+
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.cast_studio.async_play_and_sync_routine",
+            new=AsyncMock(return_value=dummy_play_task),
+        ) as mock_play,
+    ):
+        service_call_1 = ServiceCall(
+            mock_hass,
+            DOMAIN,
+            "run_routine",
+            {
+                "routine_name": "morning",
+                "media_player": "media_player.bathroom_display",
+                "output_dir": str(tmp_path),
+            },
+        )
+        await run_handler(service_call_1)
+        mock_play.assert_awaited_once()
+        assert mock_play.await_args[0][2] == "media_player.bathroom_display"
+        mock_play.reset_mock()
+
+        service_call_2 = ServiceCall(
+            mock_hass,
+            DOMAIN,
+            "run_routine",
+            {
+                "routine_name": "morning",
+                "entity_id": ["media_player.kitchen_display"],
+                "output_dir": str(tmp_path),
+            },
+        )
+        await run_handler(service_call_2)
+        mock_play.assert_awaited_once()
+        assert mock_play.await_args[0][2] == "media_player.kitchen_display"
 
         await dummy_play_task

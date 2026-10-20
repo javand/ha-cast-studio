@@ -12,6 +12,7 @@ from custom_components.cast_studio.orchestrator import (
     OrchestratorError,
     _async_sync_slides,
     _create_task,
+    _is_routine_media_playing,
     async_execute_background_actions,
     async_play_and_sync_routine,
     get_media_payload,
@@ -331,6 +332,177 @@ async def test_play_and_sync_already_playing():
             await sync_task
         # 1 call for play_media, 1 call for light.turn_on
         assert hass.services.async_call.call_count == CALL_COUNT_TWO
+
+
+def test_is_routine_media_playing_helper():
+    """Test helper distinguishes routine media from Lovelace dashboard or other media."""
+    # None or non-playing states
+    assert not _is_routine_media_playing(None)
+    assert not _is_routine_media_playing(MagicMock(state="idle"))
+    assert not _is_routine_media_playing(MagicMock(state="buffering"))
+    assert not _is_routine_media_playing(MagicMock(state="off"))
+
+    # Lovelace app names and IDs must never be considered routine media
+    lovelace_states = [
+        MagicMock(state="playing", attributes={"app_name": "Home Assistant Lovelace"}),
+        MagicMock(state="playing", attributes={"app_name": "Lovelace"}),
+        MagicMock(state="playing", attributes={"app_name": "home assistant cast"}),
+        MagicMock(state="playing", attributes={"app_id": "A078F6B0"}),
+        MagicMock(state="playing", attributes={"app_id": "B12CE3C8"}),
+    ]
+    for state_obj in lovelace_states:
+        assert not _is_routine_media_playing(
+            state_obj,
+            expected_media_url="http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+            media_path="/config/www/cast_studio/morning_briefing.mp4",
+        )
+
+    # Completely different media content id (e.g. Spotify or radio)
+    spotify_state = MagicMock(
+        state="playing",
+        attributes={"app_name": "Spotify", "media_content_id": "spotify:track:xyz123"},
+    )
+    assert not _is_routine_media_playing(
+        spotify_state,
+        expected_media_url="http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        media_path="/config/www/cast_studio/morning_briefing.mp4",
+    )
+
+    # Valid routine media playback in Default Media Receiver
+    receiver_state = MagicMock(
+        state="playing",
+        attributes={
+            "app_name": "Default Media Receiver",
+            "app_id": "CC1AD845",
+            "media_content_id": "http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        },
+    )
+    assert _is_routine_media_playing(
+        receiver_state,
+        expected_media_url="http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        media_path="/config/www/cast_studio/morning_briefing.mp4",
+    )
+
+    # Receiver in idle or buffering state while loading our media
+    receiver_idle = MagicMock(
+        state="idle",
+        attributes={
+            "app_name": "Default Media Receiver",
+            "app_id": "CC1AD845",
+            "media_content_id": "http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        },
+    )
+    assert _is_routine_media_playing(
+        receiver_idle,
+        expected_media_url="http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        media_path="/config/www/cast_studio/morning_briefing.mp4",
+    )
+
+    receiver_buffering = MagicMock(
+        state="buffering",
+        attributes={
+            "app_name": "Default Media Receiver",
+            "app_id": "CC1AD845",
+            "media_content_id": "http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        },
+    )
+    assert _is_routine_media_playing(
+        receiver_buffering,
+        expected_media_url="http://ha.local:8123/local/cast_studio/morning_briefing.mp4?v=1",
+        media_path="/config/www/cast_studio/morning_briefing.mp4",
+    )
+
+    # Generic or mock state without conflicting attributes
+    generic_state = MagicMock(state="playing", attributes={})
+    assert _is_routine_media_playing(generic_state)
+
+
+@pytest.mark.asyncio
+async def test_play_and_sync_ignores_lovelace_state():
+    """Test that if the player is in 'playing' showing Lovelace, orchestrator waits for Default Media Receiver."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+
+    # Initial state is playing Lovelace
+    lovelace_state = MagicMock(
+        state="playing",
+        attributes={
+            "app_name": "Home Assistant Lovelace",
+            "app_id": "A078F6B0",
+        },
+    )
+    hass.states.get.return_value = lovelace_state
+
+    metadata = {
+        "video_path": "/local/morning_briefing.mp4",
+        "prepare_player": False,
+        "duration": 5.0,
+        "slide_timestamps": [
+            {
+                "timestamp": 0.0,
+                "actions_on_display": [
+                    {
+                        "action": "light.turn_on",
+                        "target": {"entity_id": "light.kitchen"},
+                    }
+                ],
+            }
+        ],
+        "post_routine_actions": [
+            {
+                "action": "cast.show_lovelace_view",
+                "target": {"entity_id": "media_player.display"},
+                "data": {"dashboard_path": "nest-display", "view_path": "morning"},
+            }
+        ],
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ) as mock_track,
+        patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
+    ):
+        playback_task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.display", metadata, []
+        )
+        # Should register state change listener despite current_state.state == "playing"
+        assert mock_track.call_count == 1
+        state_cb = mock_track.call_args[0][2]
+
+        # 1. State change event while still in Lovelace -> ignored
+        event_lovelace = MagicMock()
+        event_lovelace.data = {
+            "new_state": MagicMock(
+                state="playing",
+                attributes={"app_name": "Home Assistant Lovelace"},
+            )
+        }
+        res1 = state_cb(event_lovelace)
+        assert res1 is None
+        # Light should NOT have turned on yet
+        assert hass.services.async_call.call_count == 1
+
+        # 2. State change event entering Default Media Receiver with routine video
+        event_receiver = MagicMock()
+        event_receiver.data = {
+            "new_state": MagicMock(
+                state="playing",
+                attributes={
+                    "app_name": "Default Media Receiver",
+                    "media_content_id": "http://ha.local:8123/local/morning_briefing.mp4?v=123",
+                },
+            )
+        }
+        sync_task = state_cb(event_receiver)
+        assert sync_task is not None
+
+        await playback_task
+
+        # play_media (1) + light.turn_on (1) + cast.show_lovelace_view (1) = 3 calls
+        assert hass.services.async_call.call_count == CALL_COUNT_THREE
+        # Verify sleep was awaited for the duration
+        mock_sleep.assert_awaited_with(pytest.approx(5.0, rel=1e-2))
 
 
 @pytest.mark.asyncio
@@ -1071,4 +1243,148 @@ async def test_async_play_and_sync_routine_executes_post_actions_fallback():
                 "view_path": "overview",
             },
             target={"entity_id": "media_player.kitchen_hub"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_async_play_and_sync_routine_executes_post_actions_on_timeout():
+    """Verify post_routine_actions execute even if safety timeout expires."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    mock_state = MagicMock()
+    mock_state.state = "idle"
+    hass.states.get.return_value = mock_state
+
+    post_actions = [
+        {
+            "service": "cast.show_lovelace_view",
+            "target": {"entity_id": "media_player.bathroom_display"},
+            "data": {
+                "dashboard_path": "nest-display",
+                "view_path": "morning",
+            },
+        }
+    ]
+    metadata = {
+        "video_path": "/local/morning.mp4",
+        "prepare_player": False,
+        "duration": 5.0,
+        "slide_timestamps": [],
+        "post_routine_actions": post_actions,
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch(
+            "custom_components.cast_studio.orchestrator.async_call_later"
+        ) as mock_call_later,
+        patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
+    ):
+        playback_task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        assert isinstance(playback_task, asyncio.Task)
+
+        # Trigger timeout callback directly instead of entering playing
+        timeout_cb = mock_call_later.call_args[0][2]
+        timeout_cb(None)
+
+        # Await the playback lifecycle to complete
+        await playback_task
+
+        # Verify fallback sleep was awaited for the remaining duration
+        mock_sleep.assert_awaited_with(pytest.approx(5.0, rel=1e-2))
+
+        # Verify that cast.show_lovelace_view was called after timeout and duration sleep
+        hass.services.async_call.assert_any_call(
+            "cast",
+            "show_lovelace_view",
+            service_data={"dashboard_path": "nest-display", "view_path": "morning"},
+            target={"entity_id": "media_player.bathroom_display"},
+        )
+
+
+def test_is_routine_media_playing_default_media_receiver_proxy_stream() -> None:
+    """Test _is_routine_media_playing recognizes Cast Default Media Receiver playing even with proxy URL."""
+    from custom_components.cast_studio.orchestrator import _is_routine_media_playing
+
+    state_obj = MagicMock()
+    state_obj.state = "playing"
+    state_obj.attributes = {
+        "app_id": "CC1AD845",
+        "app_name": "Default Media Receiver",
+        "media_content_id": "http://192.168.1.50:8123/api/media_player_proxy/123456",
+    }
+    # Even though /api/media_player_proxy does not match morning.mp4, CC1AD845 playing is recognized
+    assert (
+        _is_routine_media_playing(
+            state_obj, expected_media_url="http://192.168.1.50:8123/local/morning.mp4"
+        )
+        is True
+    )
+
+
+def test_is_routine_media_playing_rejects_ha_cast_splash_screen() -> None:
+    """Test _is_routine_media_playing rejects Home Assistant Cast splash screen."""
+    from custom_components.cast_studio.orchestrator import _is_routine_media_playing
+
+    state_obj = MagicMock()
+    state_obj.state = "playing"
+    state_obj.attributes = {
+        "app_id": "CC1AD845",
+        "app_name": "Default Media Receiver",
+        "media_content_id": "https://www.home-assistant.io/images/cast/splash.png",
+    }
+    assert (
+        _is_routine_media_playing(
+            state_obj, expected_media_url="https://ha.apollo-home.net/local/morning.mp4"
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_coordinate_playback_lifecycle_wakes_player_for_post_actions() -> None:
+    """Verify player turn_on is called to ensure display is awake before post-routine actions."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    mock_state = MagicMock()
+    mock_state.state = "idle"
+    hass.states.get.return_value = mock_state
+
+    metadata = {
+        "video_path": "/local/morning.mp4",
+        "prepare_player": True,
+        "duration": 0.01,
+        "slide_timestamps": [],
+        "post_routine_actions": [
+            {
+                "service": "cast.show_lovelace_view",
+                "target": {"entity_id": "media_player.bathroom_display"},
+                "data": {"dashboard_path": "nest-display", "view_path": "morning"},
+            }
+        ],
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ) as mock_track,
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        playback_task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        state_cb = mock_track.call_args[0][2]
+        event_playing = MagicMock()
+        event_playing.data = {"new_state": MagicMock(state="playing")}
+        state_cb(event_playing)
+
+        await playback_task
+
+        # Verify media_player.turn_on was called for target_player
+        hass.services.async_call.assert_any_call(
+            "media_player", "turn_on", {"entity_id": "media_player.bathroom_display"}
         )

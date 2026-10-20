@@ -20,6 +20,7 @@ class CastStudioRoutineSensor(SensorEntity):
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = ["idle", "generating", "ready", "playing", "error"]  # noqa: RUF012
+    _unrecorded_attributes = frozenset({"video_path", "audio_path"})
 
     def __init__(
         self,
@@ -161,12 +162,11 @@ def async_update_routine_sensor(
     return sensor
 
 
-async def async_setup_entry(
+def _async_register_routine_sensors(
     hass: HomeAssistant,
-    entry: Any,  # noqa: ARG001 Unused function argument
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up CastStudio sensors from a config entry."""
+    """Register routine sensors with Home Assistant entity platform."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     domain_data["async_add_entities"] = async_add_entities
     sensors = domain_data.setdefault("sensors", {})
@@ -178,6 +178,15 @@ async def async_setup_entry(
 
     if sensors:
         async_add_entities(list(sensors.values()))
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: Any,  # noqa: ARG001 Unused function argument
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up CastStudio sensors from a config entry."""
+    _async_register_routine_sensors(hass, async_add_entities)
 
 
 async def async_setup_platform(
@@ -187,14 +196,4 @@ async def async_setup_platform(
     discovery_info: dict[str, Any] | None = None,  # noqa: ARG001
 ) -> None:
     """Set up CastStudio sensors from platform configuration."""
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    domain_data["async_add_entities"] = async_add_entities
-    sensors = domain_data.setdefault("sensors", {})
-
-    routines = domain_data.get("routines", {})
-    for routine_name in routines:
-        if routine_name not in sensors:
-            sensors[routine_name] = CastStudioRoutineSensor(routine_name, hass=hass)
-
-    if sensors:
-        async_add_entities(list(sensors.values()))
+    _async_register_routine_sensors(hass, async_add_entities)

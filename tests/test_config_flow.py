@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import MagicMock
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant import config_entries, data_entry_flow
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 from custom_components.cast_studio.config_flow import (
     CastStudioFlowHandler,
@@ -20,6 +26,7 @@ from custom_components.cast_studio.const import (
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PHONETIC_NAME,
     DEFAULT_RECIPIENT_NAME,
+    DOMAIN,
 )
 
 
@@ -83,46 +90,85 @@ async def test_config_flow_aborts_if_already_configured():
     assert exc_info.value.reason == "already_configured"
 
 
-@pytest.mark.asyncio
-async def test_options_flow_init_step_shows_form():
-    """Test options flow displays current config entry values."""
+def test_async_get_options_flow():
+    """Verify flow handler returns an OptionsFlowWithReload instance."""
     mock_entry = MagicMock()
-    mock_entry.entry_id = "test_entry_id"
-    mock_entry.data = {
-        CONF_API_KEY: "original_key",
-        CONF_RECIPIENT_NAME: "Javan",
-        CONF_PHONETIC_NAME: "Jay-ven",
-        CONF_OUTPUT_DIR: "/config/www/cast_studio",
-    }
-    mock_entry.options = {}
+    handler = CastStudioFlowHandler.async_get_options_flow(mock_entry)
+    assert isinstance(handler, CastStudioOptionsFlowHandler)
+    assert isinstance(handler, config_entries.OptionsFlowWithReload)
 
-    options_flow = CastStudioOptionsFlowHandler(mock_entry)
-    mock_hass = MagicMock()
-    mock_hass.config_entries.async_get_known_entry = MagicMock(return_value=mock_entry)
-    options_flow.hass = mock_hass
 
-    result = await options_flow.async_step_init(user_input=None)
+@pytest.mark.asyncio
+async def test_options_flow_init_step_shows_form_default_data(
+    hass: HomeAssistant,
+) -> None:
+    """Test options flow displays current config entry values from data."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="test_cast_studio",
+        data={
+            CONF_API_KEY: "original_key",
+            CONF_RECIPIENT_NAME: "Javan",
+            CONF_PHONETIC_NAME: "Jay-ven",
+            CONF_OUTPUT_DIR: "/config/www/cast_studio",
+        },
+        options={},
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "init"
+    assert result["data_schema"] is not None
+
+
+@pytest.mark.asyncio
+async def test_options_flow_init_step_shows_form_default_options(
+    hass: HomeAssistant,
+) -> None:
+    """Test options flow prioritizing options over data."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="test_cast_studio",
+        data={
+            CONF_RECIPIENT_NAME: "Javan",
+            CONF_PHONETIC_NAME: "Jay-ven",
+            CONF_OUTPUT_DIR: "/config/www/cast_studio",
+        },
+        options={
+            CONF_RECIPIENT_NAME: "Updated Javan",
+            CONF_PHONETIC_NAME: "Jay-ven",
+            CONF_OUTPUT_DIR: "/config/www/cast_studio_updated",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert result["type"] == data_entry_flow.FlowResultType.FORM
     assert result["step_id"] == "init"
 
 
 @pytest.mark.asyncio
-async def test_options_flow_updates_options():
-    """Test submitting new options creates entry with updated values."""
-    mock_entry = MagicMock()
-    mock_entry.entry_id = "test_entry_id"
-    mock_entry.data = {
-        CONF_RECIPIENT_NAME: "Javan",
-        CONF_PHONETIC_NAME: "Jay-ven",
-        CONF_OUTPUT_DIR: "/config/www/cast_studio",
-    }
-    mock_entry.options = {}
+async def test_options_flow_updates_options_and_reloads(
+    hass: HomeAssistant,
+) -> None:
+    """Test submitting new options updates entry and triggers async_reload."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="test_cast_studio",
+        data={
+            CONF_RECIPIENT_NAME: "Javan",
+            CONF_PHONETIC_NAME: "Jay-ven",
+            CONF_OUTPUT_DIR: "/config/www/cast_studio",
+        },
+        options={},
+    )
+    entry.add_to_hass(hass)
 
-    options_flow = CastStudioOptionsFlowHandler(mock_entry)
-    mock_hass = MagicMock()
-    mock_hass.config_entries.async_get_known_entry = MagicMock(return_value=mock_entry)
-    options_flow.hass = mock_hass
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
 
     updated_input = {
         CONF_API_KEY: "new_api_key",
@@ -131,14 +177,45 @@ async def test_options_flow_updates_options():
         CONF_OUTPUT_DIR: "/config/www/custom_dir",
     }
 
-    result = await options_flow.async_step_init(user_input=updated_input)
+    with patch(
+        "homeassistant.config_entries.ConfigEntries.async_reload", AsyncMock()
+    ) as mock_reload:
+        result2 = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input=updated_input,
+        )
+        assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+        assert result2["data"] == updated_input
+        assert entry.options == updated_input
+        mock_reload.assert_awaited_once_with(entry.entry_id)
 
-    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-    assert result["data"] == updated_input
 
+def test_translations_en_structure() -> None:
+    """Test translations en.json schema."""
+    en_path = (
+        Path(__file__).parent.parent
+        / "custom_components"
+        / "cast_studio"
+        / "translations"
+        / "en.json"
+    )
+    with en_path.open(encoding="utf-8") as f:
+        data = json.load(f)
 
-def test_async_get_options_flow():
-    """Verify flow handler returns an OptionsFlow instance."""
-    mock_entry = MagicMock()
-    handler = CastStudioFlowHandler.async_get_options_flow(mock_entry)
-    assert isinstance(handler, config_entries.OptionsFlow)
+    assert "config" in data
+    assert "step" in data["config"]
+    assert "user" in data["config"]["step"]
+    user_step = data["config"]["step"]["user"]
+    assert user_step["title"] == "CastStudio"
+    assert "description" in user_step
+    assert "recipient_name" in user_step["data"]
+
+    assert "abort" in data["config"]
+    assert "already_configured" in data["config"]["abort"]
+
+    assert "options" in data
+    assert "step" in data["options"]
+    assert "init" in data["options"]["step"]
+    init_step = data["options"]["step"]["init"]
+    assert init_step["title"] == "CastStudio Options"
+    assert "recipient_name" in init_step["data"]

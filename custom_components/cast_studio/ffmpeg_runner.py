@@ -25,11 +25,14 @@ class FFmpegExecutionError(HomeAssistantError, RuntimeError):
     """Raised when an FFmpeg subprocess execution fails."""
 
 
-def build_slide_clip_command(
+def build_slide_clip_command(  # noqa: PLR0913
     image_path: str,
     audio_path: str,
     output_clip_path: str,
     ffmpeg_bin: str = "ffmpeg",
+    *,
+    duration: float | None = None,
+    pad_seconds: float = 0.0,
 ) -> list[str]:
     """
     Build FFmpeg command to mux static slide image and audio into an H.264/AAC clip.
@@ -39,6 +42,8 @@ def build_slide_clip_command(
         audio_path: Path to the TTS audio file (e.g. WAV).
         output_clip_path: Destination path for the rendered MP4 clip.
         ffmpeg_bin: Path or binary name for ffmpeg (default: 'ffmpeg').
+        duration: Optional explicit clip duration in seconds (uses -t).
+        pad_seconds: Optional silence tail padding in seconds via apad filter.
 
     Returns:
         List of command-line arguments for FFmpeg execution.
@@ -57,7 +62,7 @@ def build_slide_clip_command(
         msg = "output_clip_path cannot be empty or whitespace"
         raise ValueError(msg)
 
-    return [
+    cmd = [
         ffmpeg_bin,
         "-y",
         "-loop",
@@ -72,15 +77,31 @@ def build_slide_clip_command(
         "yuv420p",
         "-tune",
         "stillimage",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-ar",
-        "44100",
-        "-shortest",
-        str(output_clip_path),
     ]
+    if pad_seconds > 0:
+        cmd.extend(["-af", f"apad=pad_dur={pad_seconds:.2f}"])
+    cmd.extend(
+        [
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "44100",
+        ]
+    )
+    if duration is not None and duration > 0:
+        cmd.extend(["-t", f"{duration:.2f}"])
+    else:
+        cmd.append("-shortest")
+    cmd.extend(
+        [
+            "-movflags",
+            "+faststart",
+            str(output_clip_path),
+        ]
+    )
+    return cmd
 
 
 def build_concat_command(
@@ -121,6 +142,8 @@ def build_concat_command(
         str(concat_list_file),
         "-c",
         "copy",
+        "-movflags",
+        "+faststart",
         str(output_mp4_path),
     ]
 

@@ -1,6 +1,6 @@
 # The contents of this file is based on https://github.com/home-assistant/core/blob/dev/pyproject.toml
 
-target-version = "py314"
+target-version = "py313"
 
 [lint]
 select = [
@@ -13,6 +13,48 @@ ignore = [
     "D212", # multi-line-summary-first-line (incompatible with formatter)
     "COM812", # incompatible with formatter
     "ISC001", # incompatible with formatter
+    "CPY001", # missing-copyright-notice
+    "ASYNC240", # Async functions should not use pathlib.Path methods, use trio.Path or anyio.path
+]
+
+[lint.per-file-ignores]
+"tests/*" = [
+    "S101", # assert allowed in tests
+    "PLR2004", # magic value in comparisons
+    "SLF001", # private member access in tests
+    "PT011", # pytest.raises without match
+    "ARG001", # unused fixture arguments
+    "ARG002", # unused arguments
+    "ANN003", # kwargs type
+    "ANN201", # missing return type
+    "ANN202", # missing private return type
+    "D", # docstrings in tests
+    "F841", # unused variable in tests
+    "TC002", # type checking imports
+    "TC003", # type checking imports
+    "E501", # line length in tests
+    "PTH", # pathlib in tests
+    "INP001", # namespace package
+    "PLC0415", # import outside top level
+]
+"tests/**" = [
+    "S101",
+    "PLR2004",
+    "SLF001",
+    "PT011",
+    "ARG001",
+    "ARG002",
+    "ANN003",
+    "ANN201",
+    "ANN202",
+    "D",
+    "F841",
+    "TC002",
+    "TC003",
+    "E501",
+    "PTH",
+    "INP001",
+    "PLC0415",
 ]
 
 [lint.flake8-pytest-style]
@@ -23,14 +65,3 @@ keep-runtime-typing = true
 
 [lint.mccabe]
 max-complexity = 25
-
-[lint.per-file-ignores]
-"tests/**" = [
-    "S101",
-    "ANN201",
-    "D103",
-    "PTH",
-    "E501",
-    "INP001",
-    "PLC0415",
-]
