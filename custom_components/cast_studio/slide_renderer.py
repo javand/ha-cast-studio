@@ -10,6 +10,7 @@ visual slides.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -568,6 +569,404 @@ def _render_atmospheric_weather_gradient(condition: str) -> Image.Image:
     return small.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.BILINEAR)
 
 
+ADVISORY_CHIP_Y = 192
+ADVISORY_CHIP_H = 40
+ADVISORY_RIGHT_LIMIT = 850
+ICON_PILL_PAD = 14
+
+# Encouragement slide palette and geometry
+ENC_CARD = (40, 40, 984, 560)
+ENC_CARD_RADIUS = 18
+ENC_PAD_X = 48
+ENC_FOOTER_H = 84
+ENC_CAPTION = "CastStudio Morning Host"
+ENC_PILL_LABEL = "TODAY'S TAKEAWAY"
+ENC_BULLET_COLORS = ((56, 189, 248), (52, 211, 153))  # Sky-400 / Emerald-400
+ENC_MAX_BULLETS = 2
+ENC_MAX_HEAD_LINES = 2
+ENC_MAX_BULLET_LINES = 2
+ELLIPSIS = "\u2026"
+
+
+def _composite_overlay(canvas: Image.Image, paint: Any) -> ImageDraw.ImageDraw:
+    """Paint translucent shapes via ``paint(draw)`` on a layer and alpha-composite."""
+    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    paint(ImageDraw.Draw(layer))
+    canvas.paste(Image.alpha_composite(canvas.convert("RGBA"), layer).convert("RGB"))
+    return ImageDraw.Draw(canvas)
+
+
+def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+    """Return the rendered pixel width of text."""
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return int(bbox[2] - bbox[0])
+
+
+def _truncate_to_width(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    max_width: int,
+) -> str:
+    """Trim text and append an ellipsis until it fits max_width."""
+    if _text_width(draw, text, font) <= max_width:
+        return text
+    trimmed = text.rstrip()
+    while trimmed and _text_width(draw, trimmed + ELLIPSIS, font) > max_width:
+        trimmed = trimmed[:-1].rstrip()
+    return trimmed + ELLIPSIS
+
+
+def _fit_wrapped(  # noqa: PLR0913
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    max_width: int,
+    max_lines: int,
+    sizes: tuple[int, ...],
+    *,
+    bold: bool,
+) -> tuple[list[str], ImageFont.ImageFont]:
+    """Wrap text to max_lines, shrinking through sizes; ellipsize as last resort."""
+    font = _get_font(sizes[-1], bold=bold)
+    for size in sizes:
+        font = _get_font(size, bold=bold)
+        lines = _wrap_text(text, font, max_width, draw)
+        if len(lines) <= max_lines and all(
+            _text_width(draw, ln, font) <= max_width for ln in lines
+        ):
+            return lines, font
+    lines = _wrap_text(text, font, max_width, draw)
+    kept = lines[:max_lines]
+    if len(lines) > max_lines:
+        kept[-1] = " ".join([kept[-1], *lines[max_lines:]])
+    return [_truncate_to_width(draw, ln, font, max_width) for ln in kept], font
+
+
+def _draw_sun_icon(
+    draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, fill: Any
+) -> None:
+    """Draw a simple vector sun (the default fonts have no emoji glyphs)."""
+    core = max(2, r // 2)
+    draw.ellipse((cx - core, cy - core, cx + core, cy + core), fill=fill)
+    for i in range(8):
+        ang = i * math.pi / 4
+        x0 = cx + math.cos(ang) * (core + 2)
+        y0 = cy + math.sin(ang) * (core + 2)
+        x1 = cx + math.cos(ang) * r
+        y1 = cy + math.sin(ang) * r
+        draw.line((x0, y0, x1, y1), fill=fill, width=2)
+
+
+def _draw_umbrella_icon(
+    draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, fill: Any
+) -> None:
+    """Draw a simple vector umbrella."""
+    draw.pieslice((cx - r, cy - r, cx + r, cy + r), 180, 360, fill=fill)
+    draw.line((cx, cy, cx, cy + r - 2), fill=fill, width=2)
+    draw.arc((cx - 4, cy + r - 8, cx, cy + r - 1), 0, 180, fill=fill, width=2)
+
+
+def _draw_advisory_chip(
+    canvas: Image.Image,
+    text: str,
+    *,
+    x: int,
+    y: int,
+    max_w: int,
+) -> None:
+    """Draw the weather preparation advisory pill, shrinking/truncating to fit."""
+    probe = ImageDraw.Draw(canvas)
+    icon_w = 22
+    pad = ICON_PILL_PAD
+    text_max = max(40, max_w - icon_w - pad * 3)
+    font = _get_font(14, bold=True)
+    for size in (18, 16, 15, 14, 13):
+        font = _get_font(size, bold=True)
+        if _text_width(probe, text, font) <= text_max:
+            break
+    label = _truncate_to_width(probe, text, font, text_max)
+    chip_w = _text_width(probe, label, font) + icon_w + pad * 3
+    h = ADVISORY_CHIP_H
+
+    def paint(d: ImageDraw.ImageDraw) -> None:
+        d.rounded_rectangle(
+            (x, y, x + chip_w, y + h),
+            radius=h // 2,
+            fill=(2, 132, 199, 90),
+            outline=(56, 189, 248, 255),
+            width=1,
+        )
+
+    draw = _composite_overlay(canvas, paint)
+    _draw_umbrella_icon(
+        draw, x + pad + icon_w // 2, y + h // 2 - 2, 10, (255, 255, 255)
+    )
+    bbox = draw.textbbox((0, 0), label, font=font)
+    draw.text(
+        (x + pad * 2 + icon_w, y + (h - (bbox[3] - bbox[1])) // 2 - bbox[1]),
+        label,
+        font=font,
+        fill=(255, 255, 255),
+    )
+
+
+def _render_dawn_gradient() -> Image.Image:
+    """Render a local procedural dawn gradient (no generated imagery)."""
+    stops = ((30, 27, 75), (131, 58, 120), (234, 120, 90), (251, 191, 110))
+    grad = Image.new("RGB", (1, CANVAS_HEIGHT))
+    for y in range(CANVAS_HEIGHT):
+        t = (y / (CANVAS_HEIGHT - 1)) * (len(stops) - 1)
+        i = min(int(t), len(stops) - 2)
+        f = t - i
+        grad.putpixel(
+            (0, y),
+            tuple(int(stops[i][c] * (1 - f) + stops[i + 1][c] * f) for c in range(3)),
+        )
+    return grad.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.BILINEAR)
+
+
+def _split_lead(text: str) -> tuple[str, str]:
+    """Split '<Bold lead>: <sentence>' into (lead, rest); lead is '' if absent."""
+    lead, sep, rest = text.partition(":")
+    if sep and rest.strip() and 0 < len(lead.strip()) <= 40:  # noqa: PLR2004
+        return lead.strip() + ":", rest.strip()
+    return "", text.strip()
+
+
+def _wrap_rich(
+    draw: ImageDraw.ImageDraw,
+    lead: str,
+    rest: str,
+    size: int,
+    max_width: int,
+) -> list[list[tuple[str, bool]]]:
+    """Wrap words (bold lead + regular rest) into lines of (word, is_bold)."""
+    fonts = {True: _get_font(size, bold=True), False: _get_font(size)}
+    words = [(w, True) for w in lead.split()] + [(w, False) for w in rest.split()]
+    lines: list[list[tuple[str, bool]]] = []
+    cur: list[tuple[str, bool]] = []
+    cur_w = 0
+    space = _text_width(draw, "a a", fonts[False]) - _text_width(
+        draw, "aa", fonts[False]
+    )
+    for word, bold in words:
+        w = _text_width(draw, word, fonts[bold])
+        add = w if not cur else space + w
+        if cur and cur_w + add > max_width:
+            lines.append(cur)
+            cur, cur_w = [(word, bold)], w
+        else:
+            cur.append((word, bold))
+            cur_w += add
+    if cur:
+        lines.append(cur)
+    return lines or [[]]
+
+
+def _line_width(
+    draw: ImageDraw.ImageDraw, line: list[tuple[str, bool]], size: int
+) -> int:
+    """Return pixel width of a rich line."""
+    total = 0
+    for i, (word, bold) in enumerate(line):
+        total += _text_width(draw, word, _get_font(size, bold=bold))
+        if i:
+            total += max(3, size // 4)
+    return total
+
+
+def _fit_rich(
+    draw: ImageDraw.ImageDraw, text: str, max_width: int
+) -> tuple[list[list[tuple[str, bool]]], int]:
+    """Fit a bullet into <=2 lines by shrinking font; ellipsize as last resort."""
+    lead, rest = _split_lead(text)
+    lines: list[list[tuple[str, bool]]] = [[]]
+    size = 16
+    for size in (20, 19, 18, 17, 16):
+        lines = _wrap_rich(draw, lead, rest, size, max_width)
+        if len(lines) <= ENC_MAX_BULLET_LINES and all(
+            _line_width(draw, ln, size) <= max_width for ln in lines
+        ):
+            return lines, size
+    lines = _wrap_rich(draw, lead, rest, size, max_width)
+    kept = lines[:ENC_MAX_BULLET_LINES]
+    if len(lines) > ENC_MAX_BULLET_LINES:
+        kept[-1] = [w for ln in lines[ENC_MAX_BULLET_LINES - 1 :] for w in ln]
+    last = kept[-1]
+    while (
+        last
+        and _line_width(draw, [*last[:-1], (last[-1][0] + ELLIPSIS, last[-1][1])], size)
+        > max_width
+    ):
+        if len(last) == 1:
+            word, bold = last[0]
+            last[0] = (word[:-1], bold)
+            if not word[:-1]:
+                break
+        else:
+            last.pop()
+    if last:
+        last[-1] = (last[-1][0].rstrip() + ELLIPSIS, last[-1][1])
+    return kept, size
+
+
+def _draw_frosted_takeaway_card(  # noqa: PLR0913, PLR0915
+    canvas: Image.Image,
+    *,
+    pill_label: str,
+    headline: str,
+    bullets: list[str],
+    signoff: str,
+    caption: str,
+    pill_fill: tuple[int, int, int, int],
+    pill_border: tuple[int, int, int],
+    pill_text: tuple[int, int, int],
+    signoff_color: tuple[int, int, int],
+    bullet_colors: tuple[tuple[int, int, int], ...] = ENC_BULLET_COLORS,
+    draw_pill_icon: Any = _draw_sun_icon,
+) -> None:
+    """Draw a reusable frosted card: pill, headline, bullets, divider, footer."""
+    x0, y0, x1, y1 = ENC_CARD
+    cx0, cx1 = x0 + ENC_PAD_X, x1 - ENC_PAD_X
+    text_w = cx1 - cx0
+
+    draw = _composite_overlay(
+        canvas,
+        lambda d: d.rounded_rectangle(
+            ENC_CARD,
+            radius=ENC_CARD_RADIUS,
+            fill=(15, 23, 42, 191),
+            outline=(255, 255, 255, 46),
+            width=1,
+        ),
+    )
+
+    # Label pill anchored at the top of the card
+    pill_font = _get_font(13, bold=True)
+    label = _truncate_to_width(draw, pill_label, pill_font, text_w - 60)
+    pill_h = 32
+    icon_w = 20
+    pill_w = _text_width(draw, label, pill_font) + icon_w + 40
+    pill_y = y0 + 30
+
+    def paint_pill(d: ImageDraw.ImageDraw) -> None:
+        d.rounded_rectangle(
+            (cx0, pill_y, cx0 + pill_w, pill_y + pill_h),
+            radius=pill_h // 2,
+            fill=pill_fill,
+            outline=(*pill_border, 255),
+            width=1,
+        )
+
+    draw = _composite_overlay(canvas, paint_pill)
+    draw_pill_icon(
+        draw, cx0 + 18 + icon_w // 2 - 4, pill_y + pill_h // 2, 8, pill_border
+    )
+    pb = draw.textbbox((0, 0), label, font=pill_font)
+    draw.text(
+        (cx0 + 18 + icon_w + 4, pill_y + (pill_h - (pb[3] - pb[1])) // 2 - pb[1]),
+        label,
+        font=pill_font,
+        fill=pill_text,
+    )
+
+    # Measure content (headline + bullets) to balance it in the body area.
+    bullets = bullets[:ENC_MAX_BULLETS]
+    head_sizes = (34, 32, 30, 28, 26, 24) if bullets else (44, 40, 36, 32, 28, 24)
+    head_lines, head_font = _fit_wrapped(
+        draw, headline, text_w, ENC_MAX_HEAD_LINES, head_sizes, bold=True
+    )
+    head_lh = int(head_font.size * 1.25) if hasattr(head_font, "size") else 40
+    head_h = head_lh * len(head_lines)
+
+    bullet_fits = [_fit_rich(draw, b, text_w - 28) for b in bullets]
+    bullet_gap = 18
+    bullet_hs = [int(sz * 1.4) * len(ln) for ln, sz in bullet_fits]
+    bullets_h = sum(bullet_hs) + bullet_gap * max(0, len(bullets) - 1)
+    head_to_bullets = 30 if bullets else 0
+
+    divider_y = y1 - ENC_FOOTER_H
+    body_top = pill_y + pill_h + 16
+    body_h = divider_y - 16 - body_top
+    content_h = head_h + head_to_bullets + bullets_h
+    cur_y = body_top + max(0, (body_h - content_h) // 2)
+
+    for line in head_lines:
+        draw.text((cx0, cur_y), line, font=head_font, fill=(255, 255, 255))
+        cur_y += head_lh
+    cur_y += head_to_bullets
+
+    for i, ((lines, size), block_h) in enumerate(
+        zip(bullet_fits, bullet_hs, strict=True)
+    ):
+        lh = int(size * 1.4)
+        color = bullet_colors[i % len(bullet_colors)]
+        draw.ellipse(
+            (cx0, cur_y + lh // 2 - 9, cx0 + 10, cur_y + lh // 2 + 1), fill=color
+        )
+        for ln in lines:
+            px = cx0 + 28
+            for j, (word, bold) in enumerate(ln):
+                f = _get_font(size, bold=bold)
+                if j:
+                    px += max(3, size // 4)
+                draw.text((px, cur_y), word, font=f, fill=(226, 232, 240))
+                px += _text_width(draw, word, f)
+            cur_y += lh
+        cur_y += bullet_gap if block_h else 0
+
+    # Divider + footer
+    draw.line((cx0, divider_y, cx1, divider_y), fill=(78, 83, 93), width=1)
+    cap_font = _get_font(13)
+    cap_w = _text_width(draw, caption, cap_font)
+    foot_cy = divider_y + (y1 - divider_y) // 2
+    if signoff:
+        sign_font = _get_font(16, bold=True)
+        sign = _truncate_to_width(draw, signoff, sign_font, text_w - cap_w - 24)
+        sb = draw.textbbox((0, 0), sign, font=sign_font)
+        draw.text(
+            (cx0, foot_cy - (sb[3] - sb[1]) // 2 - sb[1]),
+            sign,
+            font=sign_font,
+            fill=signoff_color,
+        )
+    cb = draw.textbbox((0, 0), caption, font=cap_font)
+    draw.text(
+        (cx1 - cap_w, foot_cy - (cb[3] - cb[1]) // 2 - cb[1]),
+        caption,
+        font=cap_font,
+        fill=(148, 163, 184),
+    )
+
+
+def _draw_daily_encouragement_slide(
+    canvas: Image.Image,
+    card: dict[str, Any],
+    theme: SlideTheme | dict[str, Any] | None = None,
+) -> None:
+    """Render the daily encouragement slide over a local procedural dawn gradient."""
+    _ = theme
+    canvas.paste(_render_dawn_gradient(), (0, 0))
+    raw = card.get("bullets")
+    if not isinstance(raw, list) or not raw:
+        raw = card.get("bullet_points")
+    bullets = (
+        [str(b).strip() for b in raw if str(b).strip()] if isinstance(raw, list) else []
+    )
+    _draw_frosted_takeaway_card(
+        canvas,
+        pill_label=ENC_PILL_LABEL,
+        headline=str(card.get("title") or "").strip(),
+        bullets=bullets,
+        signoff=str(card.get("host_signoff") or "").strip(),
+        caption=ENC_CAPTION,
+        pill_fill=(245, 158, 11, 64),
+        pill_border=(245, 158, 11),
+        pill_text=(253, 230, 138),
+        signoff_color=(253, 230, 138),
+    )
+
+
 def _draw_google_nest_weather_slide(  # noqa: C901, PLR0912, PLR0915
     canvas: Image.Image,
     card: dict[str, Any],
@@ -649,6 +1048,18 @@ def _draw_google_nest_weather_slide(  # noqa: C901, PLR0912, PLR0915
         canvas.paste(hero_icon, (865, 75), mask=hero_icon.split()[3])
     else:
         canvas.paste(hero_icon, (865, 75))
+
+    # 3b. Actionable preparation advisory chip (hero section, under High/Low)
+    advisory = str(w_data.get("advisory") or "").strip()
+    if advisory:
+        _draw_advisory_chip(
+            canvas,
+            advisory,
+            x=info_x,
+            y=ADVISORY_CHIP_Y,
+            max_w=ADVISORY_RIGHT_LIMIT - info_x,
+        )
+        draw = ImageDraw.Draw(canvas)
 
     # 4. Metrics chips (Y: 275 to 325)
     chips_data: list[tuple[str, str]] = []
@@ -802,6 +1213,222 @@ def _draw_google_nest_weather_slide(  # noqa: C901, PLR0912, PLR0915
                 font=temp_pt_font,
                 fill=(255, 255, 255),
             )
+
+
+def _commute_minutes(value: Any) -> str:
+    """Format a commute duration as 'N' minutes text, or '--' when unknown."""
+    if isinstance(value, bool) or value is None:
+        return "--"
+    try:
+        return str(round(float(value)))
+    except (TypeError, ValueError):
+        return "--"
+
+
+def _render_commute_map_background(map_path: Any) -> Image.Image:
+    """Load the live route map cover-fitted to canvas, or draw a dark fallback map."""
+    resolved = _resolve_image_path(map_path) if map_path else None
+    if resolved is not None:
+        try:
+            with Image.open(resolved) as opened:
+                rgb = opened.convert("RGB")
+            scale = max(CANVAS_WIDTH / rgb.width, CANVAS_HEIGHT / rgb.height)
+            new_size = (
+                max(CANVAS_WIDTH, round(rgb.width * scale)),
+                max(CANVAS_HEIGHT, round(rgb.height * scale)),
+            )
+            fitted = rgb.resize(new_size, Image.LANCZOS)
+            left = (fitted.width - CANVAS_WIDTH) // 2
+            top = (fitted.height - CANVAS_HEIGHT) // 2
+            return fitted.crop((left, top, left + CANVAS_WIDTH, top + CANVAS_HEIGHT))
+        except (OSError, ValueError):
+            _LOGGER.debug("Commute map image unreadable: %s", resolved)
+
+    bg = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (22, 27, 34))
+    d = ImageDraw.Draw(bg)
+    for x in range(0, CANVAS_WIDTH, 80):
+        d.line([(x, 0), (x, CANVAS_HEIGHT)], fill=(32, 38, 48), width=3)
+    for y in range(0, CANVAS_HEIGHT, 80):
+        d.line([(0, y), (CANVAS_WIDTH, y)], fill=(32, 38, 48), width=3)
+    d.line([(0, 420), (CANVAS_WIDTH, 160)], fill=(48, 56, 70), width=18)
+    return bg
+
+
+COMMUTE_MARGIN = 30
+COMMUTE_CHIP_GAP = 14
+COMMUTE_CHIP_PADDING = 74
+COMMUTE_CHIP_TEXT_INSET = 37
+COMMUTE_HERO_X1 = 380
+COMMUTE_HERO_TEXT_X = 52
+MIN_COMMUTE_CHIPS = 2
+
+
+def _layout_commute_chips(
+    draw: ImageDraw.ImageDraw,
+    chips: list[tuple[str, Any, str]],
+    font: ImageFont.ImageFont,
+) -> list[tuple[int, int, str, str]]:
+    """
+    Lay out mode comparison chips so every chip stays inside the canvas.
+
+    Only modes with a known travel time are shown, and the row is omitted
+    entirely unless at least two modes can be compared. Returns
+    ``(x0, x1, mode, text)`` boxes with each label ellipsized to fit.
+    """
+    known = [c for c in chips if _commute_minutes(c[1]) != "--"]
+    if len(known) < MIN_COMMUTE_CHIPS:
+        return []
+    avail = CANVAS_WIDTH - COMMUTE_MARGIN * 2 - COMMUTE_CHIP_GAP * (len(known) - 1)
+    max_chip_w = avail // len(known)
+    max_text_w = max_chip_w - COMMUTE_CHIP_PADDING
+    boxes: list[tuple[int, int, str, str]] = []
+    chip_x = COMMUTE_MARGIN
+    for mode, minutes, label in known:
+        text = _truncate_to_width(
+            draw, f"{_commute_minutes(minutes)} min • {label}", font, max_text_w
+        )
+        width = min(_text_width(draw, text, font) + COMMUTE_CHIP_PADDING, max_chip_w)
+        boxes.append((chip_x, chip_x + width, mode, text))
+        chip_x += width + COMMUTE_CHIP_GAP
+    return boxes
+
+
+def _commute_eta_text(c_data: dict[str, Any]) -> str:
+    """Build the hero card arrival line (clock ETA or relative trip length)."""
+    eta = str(c_data.get("eta") or "").strip()
+    distance = str(c_data.get("distance") or "").strip()
+    parts = []
+    if eta:
+        parts.append(eta if c_data.get("eta_is_relative") else f"Arrive around {eta}")
+    if distance:
+        parts.append(distance)
+    return " • ".join(parts)
+
+
+def _draw_google_nest_commute_slide(  # noqa: PLR0915
+    canvas: Image.Image,
+    card: dict[str, Any],
+    theme: SlideTheme | dict[str, Any] | None = None,
+) -> None:
+    """Render the Google Nest Hub commute HUD over the live route map."""
+    _ = theme
+    c_data = card.get("commute_data") or {}
+    selected = str(c_data.get("selected_mode") or "driving").lower()
+    faster = str(c_data.get("faster_mode") or selected).lower()
+    drive_time = c_data.get("drive_time")
+    transit_time = c_data.get("transit_time")
+    diff = c_data.get("diff_minutes")
+    drive_label = str(c_data.get("drive_summary") or "Driving")
+    transit_label = str(c_data.get("transit_summary") or "Transit")
+    is_faster = (
+        isinstance(diff, (int, float))
+        and not isinstance(diff, bool)
+        and diff > 0
+        and selected == faster
+    )
+
+    canvas.paste(_render_commute_map_background(c_data.get("map_image_path")), (0, 0))
+
+    # Readability vignette over the map.
+    vignette = Image.new("RGBA", canvas.size, (15, 23, 42, 115))
+    canvas.paste(Image.alpha_composite(canvas.convert("RGBA"), vignette).convert("RGB"))
+
+    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+
+    # Hero ETA card and mode chips (frosted slate).
+    od.rounded_rectangle(
+        (COMMUTE_MARGIN, 68, COMMUTE_HERO_X1, 205),
+        radius=16,
+        fill=(15, 23, 42, 224),
+        outline=(255, 255, 255, 36),
+        width=1,
+    )
+    chip_y0, chip_y1 = 515, 581
+    chip_font = _get_font(20, bold=True)
+    chip_boxes = _layout_commute_chips(
+        od,
+        [
+            ("driving", drive_time, drive_label),
+            ("transit", transit_time, transit_label),
+        ],
+        chip_font,
+    )
+    for x0, x1, mode, _text in chip_boxes:
+        is_sel = mode == selected
+        od.rounded_rectangle(
+            (x0, chip_y0, x1, chip_y1),
+            radius=14,
+            fill=(2, 132, 199, 90) if is_sel else (15, 23, 42, 199),
+            outline=(56, 189, 248, 255) if is_sel else (255, 255, 255, 31),
+            width=2 if is_sel else 1,
+        )
+
+    canvas.paste(Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB"))
+    draw = ImageDraw.Draw(canvas)
+
+    # Header pill + subtitle.
+    pill_font = _get_font(16, bold=True)
+    pill_text = "COMMUTE TO WORK"
+    pw = draw.textbbox((0, 0), pill_text, font=pill_font)[2]
+    draw.rounded_rectangle((30, 22, 30 + pw + 32, 52), radius=15, fill=(2, 132, 199))
+    draw.text((46, 28), pill_text, font=pill_font, fill=(255, 255, 255))
+    route_word = "Fastest route" if is_faster else "Route"
+    summary = str(c_data.get("summary") or "").strip()
+    traffic = str(c_data.get("traffic_condition") or "").strip()
+    sub_parts = [f"{route_word} {summary}".strip()]
+    if traffic:
+        sub_parts.append(f"{traffic.capitalize()} traffic")
+    sub_x = 30 + pw + 48
+    sub_font = _get_font(16)
+    draw.text(
+        (sub_x, 28),
+        _truncate_to_width(
+            draw, " • ".join(sub_parts), sub_font, CANVAS_WIDTH - COMMUTE_MARGIN - sub_x
+        ),
+        font=sub_font,
+        fill=(203, 213, 225),
+    )
+
+    # Hero card content.
+    sel_minutes = drive_time if selected == "driving" else transit_time
+    dur_font = _get_font(56, bold=True)
+    dur_text = _commute_minutes(sel_minutes)
+    draw.text((52, 80), dur_text, font=dur_font, fill=(16, 185, 129))
+    dw = draw.textbbox((52, 80), dur_text, font=dur_font)[2]
+    draw.text((dw + 8, 108), "min", font=_get_font(26, bold=True), fill=(16, 185, 129))
+    if is_faster:
+        badge = f"FASTER BY {_commute_minutes(diff)} MIN"
+        bfont = _get_font(14, bold=True)
+        bw = draw.textbbox((0, 0), badge, font=bfont)[2]
+        bx1 = 366
+        draw.rounded_rectangle(
+            (bx1 - bw - 20, 92, bx1, 120), radius=14, fill=(6, 95, 70)
+        )
+        draw.text((bx1 - bw - 10, 100), badge, font=bfont, fill=(52, 211, 153))
+
+    if eta_text := _commute_eta_text(c_data):
+        eta_font = _get_font(18)
+        draw.text(
+            (COMMUTE_HERO_TEXT_X, 160),
+            _truncate_to_width(
+                draw,
+                eta_text,
+                eta_font,
+                COMMUTE_HERO_X1 - COMMUTE_HERO_TEXT_X - COMMUTE_CHIP_GAP,
+            ),
+            font=eta_font,
+            fill=(148, 163, 184),
+        )
+
+    # Mode chip text.
+    for x0, _x1, mode, text in chip_boxes:
+        draw.text(
+            (x0 + COMMUTE_CHIP_TEXT_INSET, chip_y0 + 21),
+            text,
+            font=chip_font,
+            fill=(255, 255, 255) if mode == selected else (203, 213, 225),
+        )
 
 
 def _resolve_image_path(raw_path: Any) -> Path | None:  # noqa: PLR0911
@@ -1503,6 +2130,32 @@ def render_slide(  # noqa: PLR0912, PLR0915
         theme = resolve_slide_theme(effective_card)
         canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
         _draw_google_nest_weather_slide(canvas, effective_card, theme=theme)
+        output_path = Path(output_jpeg_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.suffix.lower() == ".png":
+            canvas.save(str(output_path), "PNG")
+        else:
+            canvas.save(str(output_path), "JPEG", quality=95)
+        return str(output_path)
+
+    # 3a. Google Nest Hub Commute slide layout
+    if step_name == "commute" and effective_card.get("commute_data"):
+        theme = resolve_slide_theme(effective_card)
+        canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
+        _draw_google_nest_commute_slide(canvas, effective_card, theme=theme)
+        output_path = Path(output_jpeg_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.suffix.lower() == ".png":
+            canvas.save(str(output_path), "PNG")
+        else:
+            canvas.save(str(output_path), "JPEG", quality=95)
+        return str(output_path)
+
+    # 3c. Daily encouragement slide layout
+    if step_name in ("daily_encouragement", "encouragement"):
+        theme = resolve_slide_theme(effective_card)
+        canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
+        _draw_daily_encouragement_slide(canvas, effective_card, theme=theme)
         output_path = Path(output_jpeg_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if output_path.suffix.lower() == ".png":

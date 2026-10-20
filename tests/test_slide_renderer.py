@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from custom_components.cast_studio.slide_renderer import (
     PhoneticLeakError,
+    _draw_daily_encouragement_slide,
+    _draw_google_nest_commute_slide,
     _draw_google_nest_weather_slide,
     _draw_two_column_agenda,
+    _get_font,
+    _layout_commute_chips,
     _load_image,
     _resolve_image_path,
     load_weather_icon,
@@ -707,3 +712,347 @@ def test_draw_two_column_agenda_direct_call() -> None:
     }
     _draw_two_column_agenda(canvas, card, theme={"badge": "AGENDA"})
     assert canvas.size == (1024, 600)
+
+
+def _commute_card(map_path: str | None, **overrides: object) -> dict:
+    data = {
+        "selected_mode": "driving",
+        "drive_time": 35,
+        "transit_time": 44,
+        "diff_minutes": 9,
+        "faster_mode": "driving",
+        "drive_summary": "I-66 W",
+        "transit_summary": "Silver Line",
+        "summary": "via I-66 W",
+        "distance": "24.5 mi",
+        "eta": "8:45 AM",
+        "traffic_condition": "typical",
+        "map_image_path": map_path,
+    }
+    data.update(overrides)
+    return {
+        "step_name": "commute",
+        "title": "Commute to Work",
+        "commute_data": data,
+    }
+
+
+def test_render_slide_google_nest_commute_layout(tmp_path: Path) -> None:
+    """Commute slide composites the live map and renders the dual-mode HUD."""
+    map_file = tmp_path / "map.png"
+    Image.new("RGB", (1024, 600), (250, 0, 0)).save(map_file)
+    out = tmp_path / "commute.png"
+
+    render_slide(_commute_card(str(map_file)), str(out))
+
+    img = Image.open(out)
+    assert img.size == (1024, 600)
+    # Far right-middle is map-only territory: the red map shows through the vignette.
+    r, g, b = img.convert("RGB").getpixel((990, 300))
+    assert r > g + 60
+    assert r > b + 60
+
+
+def test_render_slide_google_nest_commute_chips_differ_by_selection(
+    tmp_path: Path,
+) -> None:
+    """The selected mode chip is rendered differently from the unselected chip."""
+    drive = tmp_path / "drive.png"
+    transit = tmp_path / "transit.png"
+    render_slide(_commute_card(None), str(drive))
+    render_slide(
+        _commute_card(None, selected_mode="transit", faster_mode="driving"),
+        str(transit),
+    )
+    a = Image.open(drive).convert("RGB")
+    b = Image.open(transit).convert("RGB")
+    assert a.tobytes() != b.tobytes()
+
+
+def test_render_slide_google_nest_commute_single_mode_has_no_second_chip(
+    tmp_path: Path,
+) -> None:
+    """Without a transit time no comparison chip or FASTER badge is drawn."""
+    both = tmp_path / "both.png"
+    single = tmp_path / "single.png"
+    render_slide(_commute_card(None), str(both))
+    render_slide(
+        _commute_card(None, transit_time=None, diff_minutes=None, transit_summary=""),
+        str(single),
+    )
+    a = Image.open(both).convert("RGB")
+    b = Image.open(single).convert("RGB")
+    assert Image.open(single).size == (1024, 600)
+    # Second chip region (right of the drive chip, bottom band) differs.
+    assert (
+        a.crop((330, 510, 700, 590)).tobytes() != b.crop((330, 510, 700, 590)).tobytes()
+    )
+
+
+def test_render_slide_google_nest_commute_missing_map_file_falls_back(
+    tmp_path: Path,
+) -> None:
+    """A missing or unreadable map image falls back to the procedural dark map."""
+    out = tmp_path / "fallback.png"
+    render_slide(_commute_card(str(tmp_path / "does_not_exist.png")), str(out))
+    assert Image.open(out).size == (1024, 600)
+
+
+def test_draw_google_nest_commute_slide_direct_without_data() -> None:
+    """Direct call with empty commute_data does not raise and paints the canvas."""
+    canvas = Image.new("RGB", (1024, 600))
+    _draw_google_nest_commute_slide(canvas, {"commute_data": {}})
+    assert canvas.getpixel((990, 300)) != (0, 0, 0)
+
+
+def _weather_card(advisory: str | None) -> dict:
+    data = {
+        "current_temp": 52,
+        "condition": "rainy",
+        "high": 60,
+        "low": 48,
+        "humidity": 85,
+        "wind_speed": 12,
+        "precipitation_probability": 90,
+        "forecast_points": [{"time": "Now", "condition": "rainy", "temperature": 52}],
+    }
+    if advisory is not None:
+        data["advisory"] = advisory
+    return {"step_name": "weather", "title": "Weather", "weather_data": data}
+
+
+def test_render_slide_weather_advisory_chip(tmp_path: Path) -> None:
+    """Advisory chip is painted in the hero section."""
+    with_adv = tmp_path / "adv.png"
+    without = tmp_path / "none.png"
+    render_slide(_weather_card("Pack an umbrella for rain today"), str(with_adv))
+    render_slide(_weather_card(None), str(without))
+    a = Image.open(with_adv).convert("RGB")
+    b = Image.open(without).convert("RGB")
+    assert a.size == (1024, 600)
+    region = (260, 190, 860, 240)
+    assert a.crop(region).tobytes() != b.crop(region).tobytes()
+
+
+def test_render_slide_weather_long_advisory_fits(tmp_path: Path) -> None:
+    """A very long advisory is truncated and never reaches the hero icon column."""
+    long_text = "Pack an umbrella and waterproof boots for heavy rain today " * 6
+    with_adv = tmp_path / "long.png"
+    without = tmp_path / "none.png"
+    render_slide(_weather_card(long_text), str(with_adv))
+    render_slide(_weather_card(None), str(without))
+    a = Image.open(with_adv).convert("RGB")
+    b = Image.open(without).convert("RGB")
+    assert a.size == (1024, 600)
+    # Right of the chip limit (hero icon column and below) is untouched by the chip.
+    region = (856, 190, 1024, 245)
+    assert a.crop(region).tobytes() == b.crop(region).tobytes()
+
+
+def _enc_card(**overrides: object) -> dict:
+    card: dict = {
+        "step_name": "daily_encouragement",
+        "title": "Focus on what you can control, and take the day one step at a time.",
+        "bullets": [
+            "Keep your perspective: Don't let morning delays derail your peace.",
+            "Prioritize with care: Focus your energy on the people and tasks that "
+            "matter most today.",
+        ],
+        "host_signoff": "Have a great day, Javan!",
+    }
+    card.update(overrides)
+    return card
+
+
+def _render_enc(tmp_path: Path, name: str, card: dict) -> Image.Image:
+    out = tmp_path / f"{name}.png"
+    render_slide(card, str(out))
+    img = Image.open(out).convert("RGB")
+    assert img.size == (1024, 600)
+    return img
+
+
+def test_render_slide_daily_encouragement_layout(tmp_path: Path) -> None:
+    """Two-bullet encouragement slide renders at canvas size."""
+    _render_enc(tmp_path, "two", _enc_card())
+
+
+def test_render_slide_daily_encouragement_bullet_points_key(tmp_path: Path) -> None:
+    """The generator's bullet_points key renders the same as bullets."""
+    a = _render_enc(tmp_path, "a", _enc_card())
+    card = _enc_card()
+    card["bullet_points"] = card.pop("bullets")
+    b = _render_enc(tmp_path, "b", card)
+    assert a.tobytes() == b.tobytes()
+
+
+def test_render_slide_daily_encouragement_zero_and_one_bullet(tmp_path: Path) -> None:
+    """0 and 1 bullets lay out cleanly and differ from the 2-bullet layout."""
+    two = _render_enc(tmp_path, "two", _enc_card())
+    one = _render_enc(
+        tmp_path, "one", _enc_card(bullets=["Be kind: It costs nothing."])
+    )
+    zero = _render_enc(tmp_path, "zero", _enc_card(bullets=[]))
+    assert two.tobytes() != one.tobytes() != zero.tobytes()
+
+
+def test_render_slide_daily_encouragement_missing_signoff(tmp_path: Path) -> None:
+    """A missing host_signoff renders safely (no sign-off text)."""
+    card = _enc_card()
+    del card["host_signoff"]
+    with_sign = _render_enc(tmp_path, "s", _enc_card())
+    without = _render_enc(tmp_path, "n", card)
+    assert with_sign.crop((88, 480, 500, 540)).tobytes() != (
+        without.crop((88, 480, 500, 540)).tobytes()
+    )
+
+
+def test_render_slide_daily_encouragement_overlong_text(tmp_path: Path) -> None:
+    """Over-long headline, bullets and sign-off stay inside the card."""
+    long_words = "extraordinarily " * 40
+    card = _enc_card(
+        title=long_words,
+        bullets=[f"Lead words: {long_words}", long_words.replace(" ", "")],
+        host_signoff="Have a wonderful day, " + long_words,
+    )
+    img = _render_enc(tmp_path, "long", card)
+    ref = _render_enc(tmp_path, "ref", _enc_card())
+    # Margins outside the card are identical to the plain render.
+    for box in (
+        (0, 0, 1024, 38),
+        (0, 562, 1024, 600),
+        (0, 0, 38, 600),
+        (986, 0, 1024, 600),
+    ):
+        assert img.crop(box).tobytes() == ref.crop(box).tobytes()
+    # Right padding inside the card stays clear of text.
+    assert (
+        img.crop((938, 90, 982, 550)).tobytes()
+        == ref.crop((938, 90, 982, 550)).tobytes()
+    )
+
+
+def test_draw_daily_encouragement_slide_direct_empty() -> None:
+    """Direct call with an empty card paints the canvas without raising."""
+    canvas = Image.new("RGB", (1024, 600))
+    _draw_daily_encouragement_slide(canvas, {}, {})
+    assert canvas.getpixel((5, 5)) != (0, 0, 0)
+
+
+LONG_DRIVE = "I-495 Express Lanes and Dulles Access Rd and then some more"
+LONG_TRANSIT = "Silver Line to Ashburn via Wiehle-Reston East and Reston Town Center"
+
+
+def _spy_texts(card: dict) -> list[tuple[int, str]]:
+    """Render the commute HUD, recording every draw.text right edge and text."""
+    edges: list[tuple[int, str]] = []
+    orig = ImageDraw.ImageDraw.text
+
+    def spy(
+        draw_self: ImageDraw.ImageDraw, xy: Any, text: Any, *args: Any, **kwargs: Any
+    ) -> Any:
+        bbox = draw_self.textbbox(xy, text, font=kwargs.get("font"))
+        edges.append((int(bbox[2]), str(text)))
+        return orig(draw_self, xy, text, *args, **kwargs)
+
+    canvas = Image.new("RGB", (1024, 600))
+    with patch.object(ImageDraw.ImageDraw, "text", spy):
+        _draw_google_nest_commute_slide(canvas, card)
+    return edges
+
+
+def test_commute_hud_long_labels_stay_inside_canvas() -> None:
+    """Long route labels are ellipsized; no text or chip passes x=1024 (I2)."""
+    card = _commute_card(
+        None,
+        drive_summary=LONG_DRIVE,
+        transit_summary=LONG_TRANSIT,
+        summary=f"via {LONG_DRIVE}",
+        traffic_condition="heavy",
+        distance="39.43211 kilometres of road",
+        eta="10:45 AM",
+    )
+    edges = _spy_texts(card)
+    assert edges
+    assert all(right <= 1024 for right, _ in edges), edges
+    texts = [t for _, t in edges]
+    assert any(t.endswith("\u2026") for t in texts)
+    # Hero ETA row stays inside the 350px hero card.
+    eta_rows = [r for r, t in edges if t.startswith("Arrive around")]
+    assert eta_rows
+    assert all(r <= 380 for r in eta_rows)
+
+
+def test_layout_commute_chips_caps_width_for_long_labels() -> None:
+    """Pure chip layout keeps the right-most chip box within the canvas (I2)."""
+    draw = ImageDraw.Draw(Image.new("RGB", (1024, 600)))
+    font = _get_font(20, bold=True)
+    boxes = _layout_commute_chips(
+        draw, [("driving", 35, LONG_DRIVE), ("transit", 44, LONG_TRANSIT)], font
+    )
+    assert len(boxes) == 2
+    assert boxes[-1][1] <= 1024 - 30
+    assert boxes[0][1] < boxes[1][0]
+    assert all(text.endswith("\u2026") for *_, text in boxes)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "absent"),
+    [
+        (
+            {
+                "selected_mode": "transit",
+                "faster_mode": "transit",
+                "drive_time": None,
+                "diff_minutes": None,
+                "drive_summary": "Driving",
+            },
+            "Driving",
+        ),
+        (
+            {"transit_time": None, "diff_minutes": None},
+            "Silver Line",
+        ),
+    ],
+    ids=["transit_only", "drive_only"],
+)
+def test_commute_hud_single_mode_draws_no_placeholder_chip(
+    overrides: dict, absent: str
+) -> None:
+    """Single-mode renders draw no chip row and no '-- min' placeholder (I3)."""
+    texts = [t for _, t in _spy_texts(_commute_card(None, **overrides))]
+    assert not any("-- min" in t for t in texts)
+    assert not any(" min \u2022 " in t for t in texts)
+    assert not any(absent in t for t in texts)
+
+
+def test_commute_hud_both_unavailable_has_no_false_eta() -> None:
+    """With no travel times there is no arrival line and no chips (I3)."""
+    card = _commute_card(
+        None,
+        drive_time=None,
+        transit_time=None,
+        diff_minutes=None,
+        eta="",
+        distance="",
+    )
+    texts = [t for _, t in _spy_texts(card)]
+    assert not any("Arrive around" in t for t in texts)
+    assert not any("0 min" in t for t in texts)
+    assert not any("FASTER" in t for t in texts)
+
+
+def test_commute_hud_relative_eta_has_no_clock_prefix() -> None:
+    """A pregenerated (relative) ETA is shown as the trip length (I4)."""
+    card = _commute_card(None, eta="35 min trip", eta_is_relative=True)
+    texts = [t for _, t in _spy_texts(card)]
+    assert any(t.startswith("35 min trip") for t in texts)
+    assert not any("Arrive around" in t for t in texts)
+
+
+def test_commute_hud_tie_has_no_faster_badge() -> None:
+    """A zero-minute difference does not claim one mode is faster."""
+    card = _commute_card(None, transit_time=35, diff_minutes=0)
+    texts = [t for _, t in _spy_texts(card)]
+    assert not any("FASTER" in t for t in texts)
+    assert not any(t.startswith("Fastest route") for t in texts)

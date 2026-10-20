@@ -45,6 +45,17 @@ pregenerate_routine:
       required: false
       selector:
         action:
+    transportation_mode:
+      name: Transportation Mode Override
+      description: Override transportation mode for commute calculation ('fastest', 'driving', 'transit').
+      required: false
+      example: fastest
+      selector:
+        select:
+          options:
+            - fastest
+            - driving
+            - transit
 
 run_routine:
   name: Run Routine
@@ -100,6 +111,17 @@ run_routine:
       required: false
       selector:
         action:
+    transportation_mode:
+      name: Transportation Mode Override
+      description: Override transportation mode for commute calculation ('fastest', 'driving', 'transit').
+      required: false
+      example: fastest
+      selector:
+        select:
+          options:
+            - fastest
+            - driving
+            - transit
 
 compile_clip:
   name: Compile Static Clip

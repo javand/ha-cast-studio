@@ -11,14 +11,23 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_API_KEY,
+    CONF_COMMUTE_DESTINATION,
+    CONF_DEFAULT_TRANSPORTATION_MODE,
+    CONF_MAPS_API_KEY,
     CONF_OUTPUT_DIR,
     CONF_PHONETIC_NAME,
     CONF_RECIPIENT_NAME,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PHONETIC_NAME,
     DEFAULT_RECIPIENT_NAME,
+    DEFAULT_TRANSPORTATION_MODE,
     DOMAIN,
 )
+
+
+def _destination_selector() -> selector.EntitySelector:
+    """Select the commute destination from the existing HA zones."""
+    return selector.EntitySelector(selector.EntitySelectorConfig(domain="zone"))
 
 
 class CastStudioFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
@@ -48,6 +57,22 @@ class CastStudioFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                         type=selector.TextSelectorType.PASSWORD,
                     ),
                 ),
+                vol.Optional(CONF_MAPS_API_KEY): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.PASSWORD,
+                    ),
+                ),
+                vol.Optional(
+                    CONF_DEFAULT_TRANSPORTATION_MODE,
+                    description={"suggested_value": DEFAULT_TRANSPORTATION_MODE},
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=["fastest", "driving", "transit"],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                        translation_key="default_transportation_mode",
+                    ),
+                ),
+                vol.Optional(CONF_COMMUTE_DESTINATION): _destination_selector(),
                 vol.Required(
                     CONF_RECIPIENT_NAME,
                     default=DEFAULT_RECIPIENT_NAME,
@@ -106,6 +131,16 @@ class CastStudioOptionsFlowHandler(config_entries.OptionsFlowWithReload):
         data = entry.data if entry else {}
 
         current_api_key = options.get(CONF_API_KEY, data.get(CONF_API_KEY, ""))
+        current_maps_api_key = options.get(
+            CONF_MAPS_API_KEY, data.get(CONF_MAPS_API_KEY, "")
+        )
+        current_transport_mode = options.get(
+            CONF_DEFAULT_TRANSPORTATION_MODE,
+            data.get(CONF_DEFAULT_TRANSPORTATION_MODE, DEFAULT_TRANSPORTATION_MODE),
+        )
+        current_destination = options.get(
+            CONF_COMMUTE_DESTINATION, data.get(CONF_COMMUTE_DESTINATION)
+        )
         current_recipient = options.get(
             CONF_RECIPIENT_NAME, data.get(CONF_RECIPIENT_NAME, DEFAULT_RECIPIENT_NAME)
         )
@@ -131,6 +166,41 @@ class CastStudioOptionsFlowHandler(config_entries.OptionsFlowWithReload):
                     type=selector.TextSelectorType.PASSWORD,
                 )
             )
+
+        if current_maps_api_key:
+            schema_fields[
+                vol.Optional(CONF_MAPS_API_KEY, default=current_maps_api_key)
+            ] = selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.PASSWORD,
+                )
+            )
+        else:
+            schema_fields[vol.Optional(CONF_MAPS_API_KEY)] = selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.PASSWORD,
+                )
+            )
+
+        schema_fields[
+            vol.Optional(
+                CONF_DEFAULT_TRANSPORTATION_MODE,
+                description={"suggested_value": current_transport_mode},
+            )
+        ] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=["fastest", "driving", "transit"],
+                mode=selector.SelectSelectorMode.DROPDOWN,
+                translation_key="default_transportation_mode",
+            ),
+        )
+
+        schema_fields[
+            vol.Optional(
+                CONF_COMMUTE_DESTINATION,
+                description={"suggested_value": current_destination},
+            )
+        ] = _destination_selector()
 
         schema_fields[vol.Required(CONF_RECIPIENT_NAME, default=current_recipient)] = (
             selector.TextSelector(

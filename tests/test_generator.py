@@ -8,18 +8,26 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.cast_studio.const import CONF_COMMUTE_DESTINATION, DOMAIN
 from custom_components.cast_studio.generator import (
     GeneratorError,
     RoutineConfigError,
+    _ensure_encouragement_signoff,
     _extract_entity_context,
     _is_unconfigured_optional_step,
     async_compile_routine_media,
     async_compile_static_clip,
+    async_extract_commute_data,
     async_extract_entity_context,
     async_extract_weather_data,
+    async_fetch_commute_map,
+    async_resolve_google_maps_api_key,
+    compute_weather_advisory,
     get_audio_duration,
     is_step_image_dynamic,
 )
@@ -1393,14 +1401,18 @@ def test_is_step_image_dynamic_matrix() -> None:
     assert is_step_image_dynamic({"name": "bible"}, "bible") is False
     assert is_step_image_dynamic({"name": "weather"}, "weather") is False
 
-    # 2. Default rule: non-scripture / non-weather slides are dynamic
+    # 2. Default rule: strict allowlist (greeting, fun_fact, national_day)
     assert is_step_image_dynamic({"name": "greeting"}, "greeting") is True
     assert is_step_image_dynamic({"name": "national_day"}, "national_day") is True
     assert is_step_image_dynamic({"name": "fun_fact"}, "fun_fact") is True
-    assert is_step_image_dynamic({"name": "agenda"}, "agenda") is True
-    assert is_step_image_dynamic({"name": "calendar"}, "calendar") is True
-    assert is_step_image_dynamic({"name": "todo"}, "todo") is True
-    assert is_step_image_dynamic({"name": "commute"}, "commute") is True
+    assert (
+        is_step_image_dynamic({"name": "daily_encouragement"}, "daily_encouragement")
+        is False
+    )
+    assert is_step_image_dynamic({"name": "agenda"}, "agenda") is False
+    assert is_step_image_dynamic({"name": "calendar"}, "calendar") is False
+    assert is_step_image_dynamic({"name": "todo"}, "todo") is False
+    assert is_step_image_dynamic({"name": "commute"}, "commute") is False
 
     # 3. Explicit dynamic_image boolean overrides
     assert (
@@ -1512,7 +1524,7 @@ async def test_async_resolve_step_visual_assets_dynamic_generation(
     ) as mock_gen:
         await _async_resolve_step_visual_assets(
             mock_hass,
-            {"name": "agenda"},
+            {"name": "agenda", "dynamic_image": True},
             "agenda",
             card_agenda,
             ai_creds,
@@ -2223,3 +2235,1424 @@ async def test_async_compile_single_step_weather_data_overwrites_llm_hallucinati
         # Verified HA weather data must have overwritten the LLM hallucination
         assert rendered_card["weather_data"] == live_weather
         assert rendered_card["weather_data"]["current_temp"] == 72
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_multi_sensor_comparison(
+    hass: HomeAssistant, tmp_path: Path
+):
+    """Test multi-sensor commute extraction comparing driving and transit."""
+    hass.states.async_set(
+        "zone.test_office", "0", {"latitude": 40.1, "longitude": -75.1}
+    )
+    hass.states.async_set(
+        "sensor.javan_commute_drive_to_work",
+        "35",
+        {
+            "destination": "zone.test_office",
+            "mode": "driving",
+            "unit_of_measurement": "min",
+        },
+    )
+    hass.states.async_set(
+        "sensor.javan_commute_metro",
+        "44",
+        {"line": "Silver Line", "unit_of_measurement": "min"},
+    )
+    step = {
+        "name": "commute",
+        "type": "commute",
+        "commute_sensors": [
+            "sensor.javan_commute_drive_to_work",
+            "sensor.javan_commute_metro",
+        ],
+    }
+
+    with patch(
+        "custom_components.cast_studio.generator.async_fetch_commute_map",
+        return_value={
+            "summary": "I-66 W",
+            "distance": "24.5 mi",
+            "map_image_path": str(tmp_path / "map.png"),
+        },
+    ):
+        data = await async_extract_commute_data(hass, step, mode_override="fastest")
+
+    assert data["selected_mode"] == "driving"
+    assert data["drive_time"] == 35
+    assert data["transit_time"] == 44
+    assert data["diff_minutes"] == 9
+    assert data["faster_mode"] == "driving"
+    assert data["drive_summary"] == "I-66 W"
+    assert data["transit_summary"] == "Silver Line"
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_single_mode_fallback(hass: HomeAssistant):
+    """Test commute extraction when only driving sensor exists."""
+    hass.states.async_set(
+        "sensor.javan_commute_drive_to_work", "28", {"unit_of_measurement": "min"}
+    )
+    step = {
+        "name": "commute",
+        "type": "commute",
+        "commute_sensors": ["sensor.javan_commute_drive_to_work"],
+    }
+
+    data = await async_extract_commute_data(hass, step)
+    assert data["selected_mode"] == "driving"
+    assert data["drive_time"] == 28
+    assert data["transit_time"] is None
+    assert data["diff_minutes"] is None
+    assert data["distance"] == ""
+
+
+def _set_both_commute_sensors(hass: HomeAssistant) -> None:
+    hass.states.async_set(
+        "sensor.javan_commute_drive_to_work", "35", {"unit_of_measurement": "min"}
+    )
+    hass.states.async_set(
+        "sensor.javan_commute_metro",
+        "44",
+        {"line": "Silver Line", "unit_of_measurement": "min"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_singular_and_string_sensor_keys(
+    hass: HomeAssistant,
+):
+    """Singular commute_sensor and comma-separated strings resolve to full entity ids."""
+    _set_both_commute_sensors(hass)
+
+    singular = await async_extract_commute_data(
+        hass,
+        {"name": "commute", "commute_sensor": "sensor.javan_commute_drive_to_work"},
+    )
+    assert singular["drive_time"] == 35
+    assert singular["transit_time"] is None
+
+    as_string = await async_extract_commute_data(
+        hass,
+        {
+            "name": "commute",
+            "commute_sensors": (
+                "sensor.javan_commute_drive_to_work, sensor.javan_commute_metro"
+            ),
+        },
+    )
+    assert as_string["drive_time"] == 35
+    assert as_string["transit_time"] == 44
+
+
+@pytest.mark.asyncio
+async def test_extract_entity_context_routine_transportation_mode_override(
+    hass: HomeAssistant,
+):
+    """A routine-level transportation_mode on the step selects the commute mode."""
+    _set_both_commute_sensors(hass)
+    step = {
+        "name": "commute",
+        "type": "commute",
+        "commute_sensors": [
+            "sensor.javan_commute_drive_to_work",
+            "sensor.javan_commute_metro",
+        ],
+        "transportation_mode": "transit",
+    }
+
+    await async_extract_entity_context(hass, step)
+
+    assert step["card"]["commute_data"]["selected_mode"] == "transit"
+
+
+@pytest.mark.asyncio
+async def test_compile_single_step_forwards_commute_data(
+    hass: HomeAssistant, tmp_path: Path
+):
+    """Test that _async_compile_single_step forwards commute_data into card_data."""
+    from custom_components.cast_studio.generator import _async_compile_single_step
+
+    mock_hass = MagicMock(spec=hass)
+    live_commute = {
+        "selected_mode": "driving",
+        "drive_time": 30,
+        "transit_time": 45,
+        "diff_minutes": 15,
+        "faster_mode": "driving",
+        "drive_summary": "I-66 W",
+        "transit_summary": "Silver Line",
+        "summary": "via I-66 W",
+        "distance": "20.0 mi",
+        "eta": "8:30 AM",
+        "traffic_condition": "typical",
+        "map_image_path": str(tmp_path / "map.png"),
+    }
+    step = {
+        "name": "commute",
+        "type": "commute",
+        "card": {
+            "commute_data": live_commute,
+            "title": "Old LLM Title",
+        },
+    }
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    ai_creds = {"platform": "mock"}
+
+    audio_target = str(tmp_path / "audio.wav")
+    slide_target = str(tmp_path / "slide.jpg")
+    clip_target = str(tmp_path / "clip.mp4")
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_generate_step_content",
+            new=AsyncMock(
+                return_value={
+                    "visual_card": {
+                        "title": "Hallucinated Commute",
+                        "commute_data": {"selected_mode": "walking", "drive_time": 999},
+                    },
+                    "narration_script": "Commute looks fine.",
+                }
+            ),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            new=AsyncMock(return_value=audio_target),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value=slide_target,
+        ) as mock_render,
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        await _async_compile_single_step(
+            mock_hass,
+            step,
+            "commute",
+            recipient,
+            ai_creds,
+            is_visual=True,
+            default_pad_seconds=0.5,
+            audio_target_path=audio_target,
+            slide_target_path=slide_target,
+            clip_target_path=clip_target,
+        )
+
+        assert mock_render.called
+        rendered_card = mock_render.call_args[0][0]
+        assert rendered_card["commute_data"] == live_commute
+        assert rendered_card["commute_data"]["drive_time"] == 30
+
+
+@pytest.mark.asyncio
+async def test_resolve_google_maps_api_key_from_config_entry(hass: HomeAssistant):
+    """Test resolving Google Maps API key from CastStudio config entry."""
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.cast_studio.const import CONF_MAPS_API_KEY, DOMAIN
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={CONF_MAPS_API_KEY: "entry_maps_key_123"},
+        data={},
+    )
+    entry.add_to_hass(hass)
+
+    key = await async_resolve_google_maps_api_key(hass)
+    assert key == "entry_maps_key_123"
+
+
+@pytest.mark.asyncio
+async def test_resolve_google_maps_api_key_from_secrets_yaml(
+    hass: HomeAssistant, tmp_path: Path
+):
+    """Test resolving Google Maps API key from secrets.yaml."""
+    secrets_file = tmp_path / "secrets.yaml"
+    secrets_file.write_text("google_maps_api_key: secret_gmaps_key_456\n")
+
+    with patch.object(hass.config, "path", return_value=str(secrets_file)):
+        key = await async_resolve_google_maps_api_key(hass)
+    assert key == "secret_gmaps_key_456"
+
+
+@pytest.mark.asyncio
+async def test_resolve_google_maps_api_key_from_travel_time_entry(hass: HomeAssistant):
+    """Test resolving Google Maps API key from google_travel_time entry."""
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    entry = MockConfigEntry(
+        domain="google_travel_time",
+        data={"api_key": "travel_time_key_789"},
+    )
+    entry.add_to_hass(hass)
+
+    key = await async_resolve_google_maps_api_key(hass)
+    assert key == "travel_time_key_789"
+
+
+@pytest.mark.asyncio
+async def test_resolve_google_maps_api_key_none(hass: HomeAssistant):
+    """Test resolving Google Maps API key returns None when none configured."""
+    key = await async_resolve_google_maps_api_key(hass)
+    assert key is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_commute_map_success(hass: HomeAssistant, tmp_path: Path):
+    """Test fetching Directions overview and Static Maps dark route image."""
+    api_key = "test_key_abc"
+    origin = (40.0, -75.0)
+    destination = (40.1, -75.1)
+
+    mock_dir_response = {
+        "status": "OK",
+        "routes": [
+            {
+                "summary": "I-66 W",
+                "overview_polyline": {"points": "encoded_polyline_points"},
+                "legs": [
+                    {
+                        "distance": {"text": "24.5 mi"},
+                        "duration": {"text": "35 mins", "value": 2100},
+                    }
+                ],
+            }
+        ],
+    }
+    dummy_image_bytes = b"\x89PNG\r\n\x1a\nfake_png_data"
+
+    mock_resp_dir = AsyncMock()
+    mock_resp_dir.status = 200
+    mock_resp_dir.json = AsyncMock(return_value=mock_dir_response)
+
+    mock_resp_static = AsyncMock()
+    mock_resp_static.status = 200
+    mock_resp_static.read = AsyncMock(return_value=dummy_image_bytes)
+
+    class MockGetContext:
+        def __init__(self, resp: Any) -> None:
+            self.resp = resp
+
+        async def __aenter__(self) -> Any:
+            return self.resp
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: object,
+        ) -> None:
+            pass
+
+    def mock_get(url: str, params: Any = None) -> MockGetContext:
+        if "directions" in url:
+            assert params["origin"] == f"{origin[0]},{origin[1]}"
+            assert params["destination"] == f"{destination[0]},{destination[1]}"
+            assert params["mode"] == "driving"
+            assert params["key"] == api_key
+            return MockGetContext(mock_resp_dir)
+        if "staticmap" in url:
+            # Check params contain dark mode styling and polyline
+            param_dict = dict(params) if isinstance(params, list) else params
+            assert "path" in param_dict or any(p[0] == "path" for p in params)
+            return MockGetContext(mock_resp_static)
+        msg = f"Unexpected url {url}"
+        raise ValueError(msg)
+
+    mock_session = MagicMock()
+    mock_session.get.side_effect = mock_get
+
+    with patch(
+        "custom_components.cast_studio.generator.async_get_clientsession",
+        return_value=mock_session,
+    ):
+        result = await async_fetch_commute_map(
+            hass, origin, destination, "driving", api_key, str(tmp_path)
+        )
+
+    assert result is not None
+    assert result["summary"] == "I-66 W"
+    assert result["distance"] == "24.5 mi"
+    assert result["duration"] == "35 mins"
+    assert result["polyline"] == "encoded_polyline_points"
+    saved_path = Path(result["map_image_path"])
+    assert saved_path.is_file()
+    assert saved_path.read_bytes() == dummy_image_bytes
+
+
+@pytest.mark.asyncio
+async def test_fetch_commute_map_directions_error(hass: HomeAssistant, tmp_path: Path):
+    """Test fetch commute map gracefully returns None on Directions error."""
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(
+        return_value={"status": "REQUEST_DENIED", "error_message": "Invalid key"}
+    )
+
+    class MockGetContext:
+        async def __aenter__(self) -> Any:
+            return mock_resp
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: object,
+        ) -> None:
+            pass
+
+    mock_session = MagicMock()
+    mock_session.get.return_value = MockGetContext()
+
+    with patch(
+        "custom_components.cast_studio.generator.async_get_clientsession",
+        return_value=mock_session,
+    ):
+        result = await async_fetch_commute_map(
+            hass, (40.0, -75.0), (40.1, -75.1), "driving", "bad_key", str(tmp_path)
+        )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_commute_map_missing_key(hass: HomeAssistant, tmp_path: Path):
+    """Test fetch commute map returns None when api_key is missing."""
+    result = await async_fetch_commute_map(
+        hass, (40.0, -75.0), (40.1, -75.1), "driving", "", str(tmp_path)
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_transit_faster(hass: HomeAssistant, tmp_path: Path):
+    """Test commute extraction when transit is faster than driving."""
+    hass.states.async_set("sensor.javan_commute_drive", "45", {"mode": "driving"})
+    hass.states.async_set("sensor.javan_commute_transit", "32", {"line": "Orange Line"})
+    step = {
+        "name": "commute",
+        "type": "commute",
+        "commute_sensors": [
+            "sensor.javan_commute_drive",
+            "sensor.javan_commute_transit",
+        ],
+    }
+
+    with patch(
+        "custom_components.cast_studio.generator.async_fetch_commute_map",
+        return_value={
+            "summary": "Orange Line",
+            "distance": "18.2 mi",
+            "map_image_path": str(tmp_path / "map.png"),
+        },
+    ):
+        data = await async_extract_commute_data(hass, step)
+
+    assert data["selected_mode"] == "transit"
+    assert data["faster_mode"] == "transit"
+    assert data["diff_minutes"] == 13
+    assert data["drive_time"] == 45
+    assert data["transit_time"] == 32
+    assert data["transit_summary"] == "Orange Line"
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_mode_override_driving(
+    hass: HomeAssistant, tmp_path: Path
+):
+    """Test mode_override forces driving even when transit is faster."""
+    hass.states.async_set("sensor.javan_commute_drive", "45", {"mode": "driving"})
+    hass.states.async_set("sensor.javan_commute_transit", "32", {"line": "Orange Line"})
+    step = {
+        "name": "commute",
+        "type": "commute",
+        "commute_sensors": [
+            "sensor.javan_commute_drive",
+            "sensor.javan_commute_transit",
+        ],
+    }
+
+    with patch(
+        "custom_components.cast_studio.generator.async_fetch_commute_map",
+        return_value={
+            "summary": "I-66 W",
+            "distance": "22.0 mi",
+            "map_image_path": str(tmp_path / "map.png"),
+        },
+    ):
+        data = await async_extract_commute_data(hass, step, mode_override="driving")
+
+    assert data["selected_mode"] == "driving"
+    assert data["faster_mode"] == "transit"
+    assert data["diff_minutes"] == 13
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_transit_only_fallback(hass: HomeAssistant):
+    """Test commute extraction when only transit sensor is present."""
+    hass.states.async_set("sensor.commute_metro", "30", {"line": "Silver Line"})
+    step = {
+        "name": "commute",
+        "type": "commute",
+        "commute_sensors": ["sensor.commute_metro"],
+    }
+
+    data = await async_extract_commute_data(hass, step)
+    assert data["selected_mode"] == "transit"
+    assert data["faster_mode"] == "transit"
+    assert data["transit_time"] == 30
+    assert data["drive_time"] is None
+    assert data["diff_minutes"] is None
+    assert data["transit_summary"] == "Silver Line"
+
+
+@pytest.mark.asyncio
+async def test_async_extract_entity_context_commute_integration(
+    hass: HomeAssistant, tmp_path: Path
+):
+    """Test async_extract_entity_context extracts and attaches commute_data."""
+    hass.states.async_set(
+        "zone.test_office", "0", {"latitude": 40.1, "longitude": -75.1}
+    )
+    hass.states.async_set(
+        "sensor.javan_commute_drive_to_work",
+        "35",
+        {"destination": "zone.test_office", "mode": "driving"},
+    )
+    hass.states.async_set(
+        "sensor.javan_commute_metro",
+        "44",
+        {"line": "Silver Line"},
+    )
+    step = {
+        "name": "commute",
+        "type": "commute",
+        "commute_sensors": [
+            "sensor.javan_commute_drive_to_work",
+            "sensor.javan_commute_metro",
+        ],
+    }
+
+    with patch(
+        "custom_components.cast_studio.generator.async_fetch_commute_map",
+        return_value={
+            "summary": "I-66 W",
+            "distance": "24.5 mi",
+            "map_image_path": str(tmp_path / "map.png"),
+        },
+    ):
+        ctx = await async_extract_entity_context(hass, step)
+
+    assert "card" in step
+    assert "commute_data" in step["card"]
+    assert step["card"]["commute_data"]["selected_mode"] == "driving"
+    assert step["card"]["commute_data"]["drive_time"] == 35
+    assert "Commute Comparison" in ctx
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_fragment"),
+    [
+        ({"condition": "rainy", "current_temp": 60}, "umbrella"),
+        ({"condition": "sunny", "current_temp": 70, "precip_prob": 40}, "umbrella"),
+        ({"condition": "cloudy", "current_temp": 45}, "coat"),
+        ({"condition": "cloudy", "current_temp": 60, "high": 52}, "coat"),
+        ({"condition": "sunny", "current_temp": 62, "high": 70}, "light jacket"),
+        ({"condition": "sunny", "current_temp": 72, "low": 48}, "light jacket"),
+        ({"condition": "sunny", "current_temp": 90}, "Dress light"),
+        ({"condition": "sunny", "current_temp": 75, "high": 88}, "Dress light"),
+        ({"condition": "sunny", "current_temp": 74, "high": 78}, "Comfortable"),
+        ({"condition": "sunny", "current_temp": 90, "aqi": 150}, "air quality"),
+        ({"condition": "rainy", "current_temp": 50, "aqi": 101}, "air quality"),
+        (
+            {"condition": "sunny", "current_temp": 30, "temperature_unit": "°C"},
+            "Dress light",
+        ),
+        (
+            {"condition": "sunny", "current_temp": 5, "temperature_unit": "°C"},
+            "coat",
+        ),
+    ],
+)
+def test_compute_weather_advisory(kwargs: dict, expected_fragment: str) -> None:
+    """Advisory covers rain, cold, cool, hot, comfortable, AQI and Celsius input."""
+    assert expected_fragment.lower() in compute_weather_advisory(**kwargs).lower()
+
+
+def test_compute_weather_advisory_no_data_returns_empty() -> None:
+    """With no usable weather data no advice is invented."""
+    assert compute_weather_advisory(condition="unknown") == ""
+    assert (
+        compute_weather_advisory(condition="unavailable", current_temp="unavailable")
+        == ""
+    )
+
+
+def test_compute_weather_advisory_aqi_boundary_is_exclusive() -> None:
+    """AQI of exactly 100 is not flagged; 101 is."""
+    ok = compute_weather_advisory(condition="sunny", current_temp=72, aqi=100)
+    bad = compute_weather_advisory(condition="sunny", current_temp=72, aqi=101)
+    assert "air quality" not in ok.lower()
+    assert "air quality" in bad.lower()
+
+
+@pytest.mark.asyncio
+async def test_extract_weather_data_actionable_advisory(hass: HomeAssistant) -> None:
+    """async_extract_weather_data attaches an actionable advisory string."""
+    hass.states.async_set(
+        "weather.home",
+        "rainy",
+        {"temperature": 58, "precipitation_probability": 80},
+    )
+    data = await async_extract_weather_data(hass, "weather.home")
+    assert "umbrella" in data["advisory"].lower()
+
+
+@pytest.mark.asyncio
+async def test_extract_weather_data_reads_aqi_from_weather_attributes(
+    hass: HomeAssistant,
+) -> None:
+    """A weather entity exposing air_quality_index above 100 yields the AQI advisory."""
+    hass.states.async_set(
+        "weather.home",
+        "sunny",
+        {"temperature": 72, "air_quality_index": 160},
+    )
+    data = await async_extract_weather_data(hass, "weather.home")
+    assert "air quality" in data["advisory"].lower()
+
+
+@pytest.mark.asyncio
+async def test_entity_context_for_weather_includes_advisory(
+    hass: HomeAssistant,
+) -> None:
+    """The LLM context for a weather step carries the advisory to be spoken."""
+    hass.states.async_set(
+        "weather.home",
+        "rainy",
+        {"temperature": 58, "precipitation_probability": 80},
+    )
+    step = {"name": "weather", "entity_id": "weather.home"}
+    context = await async_extract_entity_context(hass, step)
+    assert "umbrella" in context.lower()
+
+
+def test_is_step_image_dynamic_allowlist() -> None:
+    """Dynamic Imagen: greeting, fun_fact, national_day only."""
+    for name in ("greeting", "fun_fact", "national_day"):
+        assert is_step_image_dynamic({"name": name}) is True
+    for name in ("daily_encouragement", "weather", "agenda", "commute", "scripture"):
+        assert is_step_image_dynamic({"name": name}) is False
+    # Everything else (including custom steps) is static by default.
+    assert is_step_image_dynamic({"name": "wind_down"}) is False
+
+
+def test_daily_encouragement_never_skipped_when_scripture_absent() -> None:
+    """daily_encouragement is never skipped, even when its scripture entity is absent."""
+    from custom_components.cast_studio.generator import _is_unconfigured_optional_step
+
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = None
+    step = {"name": "daily_encouragement", "entity_id": "sensor.missing_daily_text"}
+    assert _is_unconfigured_optional_step(mock_hass, step) is False
+    assert (
+        _is_unconfigured_optional_step(mock_hass, {"name": "daily_encouragement"})
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_national_day_image_prompt_includes_holiday_name(tmp_path: Path) -> None:
+    """The national_day Imagen prompt is built from the day's holiday name."""
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    def _gen(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    card: dict[str, Any] = {"title": "National Pancake Day"}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(side_effect=_gen),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {"name": "national_day"},
+            "national_day",
+            card,
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+        )
+    assert "National Pancake Day" in mock_gen.call_args.args[1]
+    assert card["image_type"] == "dynamic"
+
+
+def test_step_prompt_guidelines_encouragement_and_weather_advice() -> None:
+    """Prompt guidance asks for weather advice and a jargon-free encouragement."""
+    from custom_components.cast_studio.ai_client import STEP_PROMPT_GUIDELINES
+
+    weather = STEP_PROMPT_GUIDELINES["weather"].lower()
+    assert "umbrella" in weather
+    assert "jacket" in weather
+    enc = STEP_PROMPT_GUIDELINES["daily_encouragement"]
+    assert "blessed" in enc  # instructs the model to avoid the word
+    assert "do not" in enc.lower() or "never" in enc.lower()
+    assert "exactly 2" in enc.lower()
+    assert "have a great day" not in STEP_PROMPT_GUIDELINES["scripture"].lower()
+
+
+@pytest.mark.asyncio
+async def test_compile_single_step_sets_daily_encouragement_signoff(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """The renderer card gets a deterministic 'Have a great day, <name>!' sign-off."""
+    from custom_components.cast_studio.generator import _async_compile_single_step
+
+    mock_hass = MagicMock(spec=hass)
+    step = {"name": "daily_encouragement", "type": "daily_encouragement"}
+    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    audio_target = str(tmp_path / "audio.wav")
+    slide_target = str(tmp_path / "slide.jpg")
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_generate_step_content",
+            new=AsyncMock(
+                return_value={
+                    "visual_card": {
+                        "title": "Take it one step at a time.",
+                        "bullet_points": ["One", "Two"],
+                        "host_signoff": "Have a blessed day!",
+                    },
+                    "narration_script": "Take it one step at a time.",
+                }
+            ),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            new=AsyncMock(return_value=audio_target),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value=slide_target,
+        ) as mock_render,
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_generate_ai_image",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        await _async_compile_single_step(
+            mock_hass,
+            step,
+            "daily_encouragement",
+            recipient,
+            {"platform": "mock"},
+            is_visual=True,
+            default_pad_seconds=0.5,
+            audio_target_path=audio_target,
+            slide_target_path=slide_target,
+            clip_target_path=str(tmp_path / "clip.mp4"),
+        )
+
+    card = mock_render.call_args[0][0]
+    assert card["host_signoff"] == "Have a great day, Javan!"
+
+
+async def _run_compile_step(
+    tmp_path: Path,
+    step: dict[str, Any],
+    llm_content: dict[str, Any],
+    recipient: dict[str, Any],
+    ai_creds: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Run the real _async_compile_single_step with a mocked LLM; return card, TTS text."""
+    from custom_components.cast_studio.generator import _async_compile_single_step
+
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = None
+    audio_target = str(tmp_path / "audio.wav")
+    slide_target = str(tmp_path / "slide.jpg")
+    tts = AsyncMock(return_value=audio_target)
+
+    def _img(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_generate_step_content",
+            new=AsyncMock(return_value=llm_content),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech", new=tts
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value=slide_target,
+        ) as mock_render,
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_generate_ai_image",
+            new=AsyncMock(side_effect=_img),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.get_audio_duration",
+            return_value=3.0,
+        ),
+    ):
+        await _async_compile_single_step(
+            mock_hass,
+            step,
+            step["name"],
+            recipient,
+            ai_creds or {"platform": "mock"},
+            is_visual=True,
+            default_pad_seconds=0.5,
+            audio_target_path=audio_target,
+            slide_target_path=slide_target,
+            clip_target_path=str(tmp_path / "clip.mp4"),
+        )
+    return mock_render.call_args[0][0], tts.call_args[0][1]
+
+
+@pytest.mark.asyncio
+async def test_compile_single_step_preserves_weather_advisory(tmp_path: Path) -> None:
+    """The weather advisory on the step card reaches the rendered card_data."""
+    step = {
+        "name": "weather",
+        "type": "weather",
+        "card": {"weather_data": {"advisory": "Pack an umbrella for rain today"}},
+    }
+    card, _ = await _run_compile_step(
+        tmp_path,
+        step,
+        {"visual_card": {"title": "Weather"}, "narration_script": "Rainy today."},
+        {"name": "Javan"},
+    )
+    assert card["weather_data"]["advisory"] == "Pack an umbrella for rain today"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("narration", "expected"),
+    [
+        ("Be patient today.", "Be patient today. Have a great day, Jay-ven!"),
+        (
+            "Be patient today. Have a wonderful day!",
+            "Be patient today. Have a great day, Jay-ven!",
+        ),
+        (
+            "Be patient today. Have a great day, Jay-ven!",
+            "Be patient today. Have a great day, Jay-ven!",
+        ),
+    ],
+)
+async def test_daily_encouragement_narration_always_ends_with_signoff(
+    tmp_path: Path, narration: str, expected: str
+) -> None:
+    """Spoken narration is forced to end with the sign-off (phonetic name for TTS)."""
+    card, spoken = await _run_compile_step(
+        tmp_path,
+        {"name": "daily_encouragement", "type": "daily_encouragement"},
+        {
+            "visual_card": {
+                "title": "Be patient",
+                "host_signoff": "Have a blessed day!",
+            },
+            "narration_script": narration,
+        },
+        {"name": "Javan", "phonetic_name": "Jay-ven"},
+    )
+    assert spoken == expected
+    assert card["host_signoff"] == "Have a great day, Javan!"
+
+
+@pytest.mark.asyncio
+async def test_daily_encouragement_without_scripture_runs_general_path(
+    tmp_path: Path,
+) -> None:
+    """No/unavailable scripture sensor: step still runs, gets sign-off and backdrop."""
+    from types import SimpleNamespace
+
+    from custom_components.cast_studio.generator import (
+        NO_DAILY_TEXT_CONTEXT,
+        async_extract_entity_context,
+        get_executable_steps,
+    )
+
+    unavailable = {
+        "sensor.daily_text": SimpleNamespace(
+            entity_id="sensor.daily_text", state="unavailable", attributes={}
+        )
+    }
+    for step in (
+        {"name": "daily_encouragement", "visual": True},
+        {
+            "name": "daily_encouragement",
+            "visual": True,
+            "entity_id": "sensor.daily_text",
+        },
+    ):
+        hass = MagicMock()
+        hass.states.get.side_effect = unavailable.get
+        assert get_executable_steps(hass, {"visuals": True, "steps": [step]}) == [step]
+        assert await async_extract_entity_context(hass, dict(step)) == (
+            NO_DAILY_TEXT_CONTEXT
+        )
+
+    card, spoken = await _run_compile_step(
+        tmp_path,
+        {"name": "daily_encouragement", "type": "daily_encouragement"},
+        {
+            "visual_card": {"title": "Make today a good one"},
+            "narration_script": "A small kind act can change your whole day.",
+        },
+        {"name": "Javan"},
+        {"platform": "gemini", "api_key": "k"},
+    )
+    assert spoken.endswith("Have a great day, Javan!")
+    assert card["host_signoff"] == "Have a great day, Javan!"
+    # No AI backdrop for daily_encouragement (local layout in the renderer).
+    assert card["image_type"] == "static"
+
+
+@pytest.mark.asyncio
+async def test_daily_encouragement_with_scripture_uses_scripture_context() -> None:
+    """With a live scripture sensor the real daily text is passed to the LLM."""
+    from types import SimpleNamespace
+
+    from custom_components.cast_studio.generator import async_extract_entity_context
+
+    hass = MagicMock()
+    hass.states.get.side_effect = {
+        "sensor.daily_text": SimpleNamespace(
+            entity_id="sensor.daily_text",
+            state="1 John 4:8",
+            attributes={"text": "God is love"},
+        )
+    }.get
+    ctx = await async_extract_entity_context(
+        hass, {"name": "daily_encouragement", "entity_id": "sensor.daily_text"}
+    )
+    assert "1 John 4:8" in ctx or "God is love" in ctx
+    assert "No daily scripture" not in ctx
+
+
+def test_daily_encouragement_prompt_requires_exact_signoff() -> None:
+    """The LLM prompt tells the model the exact closing line with the real name."""
+    from custom_components.cast_studio.ai_client import _build_prompt
+
+    prompt = _build_prompt(
+        {"name": "daily_encouragement", "type": "daily_encouragement"},
+        {"name": "Javan", "phonetic_name": "Jay-ven"},
+    )
+    assert '"Have a great day, Jay-ven!"' in prompt
+    assert "under 30 words" in prompt
+
+
+@pytest.mark.asyncio
+async def test_greeting_image_regenerated_on_every_run(tmp_path: Path) -> None:
+    """Greeting never reuses a previous image: each compile calls Imagen again."""
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    def _gen(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(side_effect=_gen),
+    ) as mock_gen:
+        for _ in range(2):
+            card: dict[str, Any] = {}
+            await _async_resolve_step_visual_assets(
+                MagicMock(),
+                {"name": "greeting"},
+                "greeting",
+                card,
+                {"platform": "gemini", "api_key": "k"},
+                scratch_dir=str(tmp_path),
+            )
+            assert card["image_type"] == "dynamic"
+    assert mock_gen.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fun_fact_image_prompt_grounded_in_fact_content(tmp_path: Path) -> None:
+    """The fun_fact Imagen prompt is built from the generated fact, not a theme."""
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    def _gen(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    card: dict[str, Any] = {
+        "title": "Octopuses have three hearts",
+        "subtitle": "Fun Fact",
+        "bullet_points": ["Two pump blood to the gills"],
+    }
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(side_effect=_gen),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {"name": "fun_fact", "subtitle": "Fun Fact"},
+            "fun_fact",
+            card,
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+            narration="Did you know an octopus has three hearts?",
+        )
+    prompt = mock_gen.call_args.args[1]
+    assert "octopus" in prompt.lower()
+    assert "gills" in prompt.lower()
+    assert "Fun Fact" not in prompt
+
+    # Falls back to the narration when the card carries no title or bullets.
+    card2: dict[str, Any] = {}
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(side_effect=_gen),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {"name": "fun_fact"},
+            "fun_fact",
+            card2,
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+            narration="Octopus hearts are fascinating.",
+        )
+    assert "octopus" in mock_gen.call_args.args[1].lower()
+
+
+# --- Final-review fixes: commute destination, fetch failures, ETA, sign-off ---
+
+FAKE_HOME = (40.0, -75.0)
+FAKE_WORK = (40.1, -75.1)
+
+
+class _FakeGetContext:
+    """Async context manager returned by a fake aiohttp session.get()."""
+
+    def __init__(self, resp: Any = None, exc: BaseException | None = None) -> None:
+        self.resp = resp
+        self.exc = exc
+
+    async def __aenter__(self) -> Any:
+        if self.exc is not None:
+            raise self.exc
+        return self.resp
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+def _directions_ok_response() -> AsyncMock:
+    resp = AsyncMock()
+    resp.status = 200
+    resp.json = AsyncMock(
+        return_value={
+            "status": "OK",
+            "routes": [
+                {
+                    "summary": "Test Pike",
+                    "overview_polyline": {"points": "abc"},
+                    "legs": [
+                        {
+                            "distance": {"text": "10 mi"},
+                            "duration": {"text": "20 mins", "value": 1200},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    return resp
+
+
+def _set_fake_home(hass: HomeAssistant) -> None:
+    hass.states.async_remove("zone.home")
+    hass.config.latitude, hass.config.longitude = FAKE_HOME
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_without_destination_skips_map_fetch(
+    hass: HomeAssistant,
+) -> None:
+    """No configured destination: no Google call, procedural map (C1)."""
+    _set_fake_home(hass)
+    hass.states.async_set("sensor.commute_drive", "30", {"mode": "driving"})
+    step = {"name": "commute", "commute_sensors": ["sensor.commute_drive"]}
+
+    with patch(
+        "custom_components.cast_studio.generator.async_fetch_commute_map",
+        new=AsyncMock(return_value={"map_image_path": "/nope.png"}),
+    ) as mock_fetch:
+        data = await async_extract_commute_data(hass, step)
+
+    mock_fetch.assert_not_called()
+    assert data["map_image_path"] is None
+    assert data["drive_time"] == 30
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_uses_configured_destination_zone(
+    hass: HomeAssistant,
+) -> None:
+    """The commute_destination_zone option selects the destination zone (C1)."""
+    _set_fake_home(hass)
+    hass.states.async_set(
+        "zone.fake_office", "0", {"latitude": 40.1, "longitude": -75.1}
+    )
+    MockConfigEntry(
+        domain=DOMAIN,
+        data={},
+        options={CONF_COMMUTE_DESTINATION: "zone.fake_office"},
+    ).add_to_hass(hass)
+    hass.states.async_set("sensor.commute_drive", "30", {"mode": "driving"})
+    step = {"name": "commute", "commute_sensors": ["sensor.commute_drive"]}
+
+    with patch(
+        "custom_components.cast_studio.generator.async_fetch_commute_map",
+        new=AsyncMock(return_value=None),
+    ) as mock_fetch:
+        await async_extract_commute_data(hass, step)
+
+    mock_fetch.assert_awaited_once()
+    args = mock_fetch.await_args.args
+    assert args[1] == FAKE_HOME
+    assert args[2] == FAKE_WORK
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_destination_lat_lon_attribute(
+    hass: HomeAssistant,
+) -> None:
+    """A "lat,lon" sensor destination attribute is accepted (C1)."""
+    _set_fake_home(hass)
+    hass.states.async_set(
+        "sensor.commute_drive", "30", {"mode": "driving", "destination": "40.1,-75.1"}
+    )
+    step = {"name": "commute", "commute_sensors": ["sensor.commute_drive"]}
+
+    with patch(
+        "custom_components.cast_studio.generator.async_fetch_commute_map",
+        new=AsyncMock(return_value=None),
+    ) as mock_fetch:
+        await async_extract_commute_data(hass, step)
+
+    assert mock_fetch.await_args.args[2] == FAKE_WORK
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_step_destination_and_zone_home_origin(
+    hass: HomeAssistant,
+) -> None:
+    """Step destination_zone wins; zone.home is the origin when it has coords."""
+    hass.states.async_set("zone.home", "0", {"latitude": 40.0, "longitude": -75.0})
+    hass.states.async_set("zone.step_dest", "0", {"latitude": 40.2, "longitude": -75.2})
+    hass.states.async_set("zone.work", "0", {"latitude": 40.1, "longitude": -75.1})
+    hass.states.async_set("sensor.commute_drive", "30", {"mode": "driving"})
+    step = {
+        "name": "commute",
+        "commute_sensors": ["sensor.commute_drive"],
+        "destination_zone": "zone.step_dest",
+    }
+
+    with patch(
+        "custom_components.cast_studio.generator.async_fetch_commute_map",
+        new=AsyncMock(return_value=None),
+    ) as mock_fetch:
+        await async_extract_commute_data(hass, step)
+
+    assert mock_fetch.await_args.args[1] == FAKE_HOME
+    assert mock_fetch.await_args.args[2] == (40.2, -75.2)
+
+
+@pytest.mark.asyncio
+async def test_fetch_commute_map_requests_size_within_google_limit(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """Static Maps is asked for 512x300 at scale 2, i.e. exactly 1024x600 (I1)."""
+    static_resp = AsyncMock()
+    static_resp.status = 200
+    static_resp.read = AsyncMock(return_value=b"png")
+    seen: dict[str, Any] = {}
+
+    def fake_get(url: str, params: Any = None) -> _FakeGetContext:
+        if "directions" in url:
+            return _FakeGetContext(_directions_ok_response())
+        seen["params"] = params
+        return _FakeGetContext(static_resp)
+
+    session = MagicMock()
+    session.get.side_effect = fake_get
+    with patch(
+        "custom_components.cast_studio.generator.async_get_clientsession",
+        return_value=session,
+    ):
+        result = await async_fetch_commute_map(
+            hass, FAKE_HOME, FAKE_WORK, "driving", "k", str(tmp_path)
+        )
+
+    assert result is not None
+    params = dict(p for p in seen["params"] if p[0] in ("size", "scale"))
+    assert params == {"size": "512x300", "scale": "2"}
+    width, height = (int(v) for v in params["size"].split("x"))
+    assert width <= 640
+    assert height <= 640
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [TimeoutError(), aiohttp.ClientConnectionError("boom")],
+    ids=["timeout", "network_error"],
+)
+async def test_fetch_commute_map_directions_timeout_or_network_error(
+    hass: HomeAssistant, tmp_path: Path, exc: BaseException
+) -> None:
+    """A Directions timeout or network error returns None (I6)."""
+    session = MagicMock()
+    session.get.return_value = _FakeGetContext(exc=exc)
+    with patch(
+        "custom_components.cast_studio.generator.async_get_clientsession",
+        return_value=session,
+    ):
+        result = await async_fetch_commute_map(
+            hass, FAKE_HOME, FAKE_WORK, "driving", "k", str(tmp_path)
+        )
+    assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "static_ctx",
+    [
+        "http_500",
+        "timeout",
+    ],
+)
+async def test_fetch_commute_map_static_maps_failure_after_directions_ok(
+    hass: HomeAssistant, tmp_path: Path, static_ctx: str
+) -> None:
+    """Static Maps non-200 or timeout after Directions succeeds returns None (I6)."""
+    static_resp = AsyncMock()
+    static_resp.status = 500
+    static_resp.read = AsyncMock(return_value=b"")
+
+    def fake_get(url: str, params: Any = None) -> _FakeGetContext:
+        if "directions" in url:
+            return _FakeGetContext(_directions_ok_response())
+        if static_ctx == "timeout":
+            return _FakeGetContext(exc=TimeoutError())
+        return _FakeGetContext(static_resp)
+
+    session = MagicMock()
+    session.get.side_effect = fake_get
+    with patch(
+        "custom_components.cast_studio.generator.async_get_clientsession",
+        return_value=session,
+    ):
+        result = await async_fetch_commute_map(
+            hass, FAKE_HOME, FAKE_WORK, "driving", "k", str(tmp_path)
+        )
+    assert result is None
+    assert not any((tmp_path / "cache").glob("*.png"))
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_eta_uses_ha_timezone(
+    hass: HomeAssistant, freezer: Any
+) -> None:
+    """The clock ETA is formatted in HA's configured local timezone (I6)."""
+    await hass.config.async_set_time_zone("America/Los_Angeles")
+    freezer.move_to("2026-10-20 14:00:00+00:00")  # 07:00 PDT
+    hass.states.async_set("sensor.commute_drive", "35", {"mode": "driving"})
+    step = {"name": "commute", "commute_sensors": ["sensor.commute_drive"]}
+
+    data = await async_extract_commute_data(hass, step)
+
+    assert data["eta"] == "7:35 AM"
+    assert data["eta_is_relative"] is False
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_relative_eta_for_pregeneration(
+    hass: HomeAssistant,
+) -> None:
+    """Pregenerated compiles get a relative trip length, not a clock time (I4)."""
+    hass.states.async_set("sensor.commute_drive", "35", {"mode": "driving"})
+    step = {
+        "name": "commute",
+        "commute_sensors": ["sensor.commute_drive"],
+        "relative_eta": True,
+    }
+
+    ctx = await async_extract_entity_context(hass, step)
+    data = step["card"]["commute_data"]
+
+    assert data["eta"] == "35 min trip"
+    assert data["eta_is_relative"] is True
+    assert "about 35 minutes" in ctx
+    assert "AM" not in ctx
+    assert "PM" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_extract_entity_context_live_commute_hint_has_clock_eta(
+    hass: HomeAssistant, freezer: Any
+) -> None:
+    """Live compiles tell the narration the same clock ETA the HUD shows (I4)."""
+    await hass.config.async_set_time_zone("America/Los_Angeles")
+    freezer.move_to("2026-10-20 14:00:00+00:00")
+    hass.states.async_set("sensor.commute_drive", "35", {"mode": "driving"})
+    step = {"name": "commute", "commute_sensors": ["sensor.commute_drive"]}
+
+    ctx = await async_extract_entity_context(hass, step)
+
+    assert "Commute (tell the listener): driving" in ctx
+    assert "arriving around 7:35 AM" in ctx
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_all_sensors_unavailable_has_no_eta(
+    hass: HomeAssistant,
+) -> None:
+    """Both sensors unavailable: no '0 min' ETA and no narration hint (I3)."""
+    hass.states.async_set("sensor.commute_drive", "unavailable", {"mode": "driving"})
+    hass.states.async_set("sensor.commute_metro", "unknown", {"line": "Test Line"})
+    step = {
+        "name": "commute",
+        "commute_sensors": ["sensor.commute_drive", "sensor.commute_metro"],
+    }
+
+    ctx = await async_extract_entity_context(hass, step)
+    data = step["card"]["commute_data"]
+
+    assert data["eta"] == ""
+    assert data["selected_time"] is None
+    assert data["drive_time"] is None
+    assert data["transit_time"] is None
+    assert "Commute (tell the listener)" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_compile_routine_media_relative_eta_marks_steps(tmp_path: Path) -> None:
+    """relative_eta=True is propagated onto every compiled step (I4)."""
+    seen_steps: list[dict[str, Any]] = []
+
+    async def fake_ctx(_hass: Any, step: dict[str, Any]) -> str:
+        seen_steps.append(dict(step))
+        return ""
+
+    hass = MagicMock()
+    routine_config = {"visuals": False, "steps": [{"name": "commute"}]}
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_discover_ai_credentials",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.get_executable_steps",
+            return_value=routine_config["steps"],
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_extract_entity_context",
+            new=fake_ctx,
+        ),
+        patch(
+            "custom_components.cast_studio.generator._async_compile_single_step",
+            new=AsyncMock(return_value=("a.wav", 1.0, 0.0, {})),
+        ),
+        patch(
+            "custom_components.cast_studio.generator._async_finalize_routine_media",
+            new=AsyncMock(return_value={"ok": True}),
+        ),
+        patch(
+            "custom_components.cast_studio.generator._async_run_in_executor",
+            new=AsyncMock(return_value=str(tmp_path)),
+        ),
+    ):
+        await async_compile_routine_media(
+            hass,
+            "morning",
+            routine_config,
+            {"name": "A"},
+            str(tmp_path),
+            relative_eta=True,
+        )
+        await async_compile_routine_media(
+            hass, "morning", routine_config, {"name": "A"}, str(tmp_path)
+        )
+
+    assert seen_steps[0].get("relative_eta") is True
+    assert "relative_eta" not in seen_steps[1]
+
+
+@pytest.mark.parametrize(
+    ("narration", "expected"),
+    [
+        (
+            "Take it slow. I hope you have a wonderful day!",
+            "Take it slow. Have a great day, Jay-ven!",
+        ),
+        (
+            "Keep moving, and have a good day!",
+            "Keep moving, and have a good day! Have a great day, Jay-ven!",
+        ),
+        (
+            "Be kind. I hope you have a great day, Javan!",
+            "Be kind. Have a great day, Jay-ven!",
+        ),
+        (
+            "Be kind. Have a great day, Javan!",
+            "Be kind. Have a great day, Jay-ven!",
+        ),
+        ("Be kind. Have a blessed day ahead.", "Be kind. Have a great day, Jay-ven!"),
+        (
+            "Rest when you need to",
+            "Rest when you need to. Have a great day, Jay-ven!",
+        ),
+        (
+            "Remember that you have a day full of chances. Go well.",
+            "Remember that you have a day full of chances. Go well. "
+            "Have a great day, Jay-ven!",
+        ),
+        (
+            "Be kind. Have a great day, Jay-ven!",
+            "Be kind. Have a great day, Jay-ven!",
+        ),
+    ],
+)
+def test_ensure_encouragement_signoff_never_cuts_a_sentence(
+    narration: str, expected: str
+) -> None:
+    """Only a whole generic send-off sentence is replaced; nothing is cut (I5)."""
+    result = _ensure_encouragement_signoff(
+        narration, {"name": "Javan", "phonetic_name": "Jay-ven"}
+    )
+    assert result == expected
+    # Every sentence of the result is whole: no dangling "you." / "and." fragments.
+    assert " you." not in result
+    assert " and." not in result
+    assert result.count("Have a great day, Jay-ven!") == 1

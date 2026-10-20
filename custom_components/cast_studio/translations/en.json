@@ -6,9 +6,15 @@
         "description": "Configure default recipient profile, output directory, and optional Gemini API key for multimedia routine generation.",
         "data": {
           "api_key": "API Key (Optional)",
+          "maps_api_key": "Google Maps API Key (Optional)",
+          "default_transportation_mode": "Default Transportation Mode",
+          "commute_destination_zone": "Commute Destination Zone (Optional)",
           "recipient_name": "Recipient Name",
           "phonetic_name": "Phonetic Pronunciation Name",
           "output_dir": "Output Directory"
+        },
+        "data_description": {
+          "commute_destination_zone": "Zone used as the commute map destination. Leave empty to use zone.work or zone.office if they exist; otherwise the map is skipped."
         }
       }
     },
@@ -23,10 +29,25 @@
         "description": "Update recipient profile, output directory, and API key preferences.",
         "data": {
           "api_key": "API Key (Optional)",
+          "maps_api_key": "Google Maps API Key (Optional)",
+          "default_transportation_mode": "Default Transportation Mode",
+          "commute_destination_zone": "Commute Destination Zone (Optional)",
           "recipient_name": "Recipient Name",
           "phonetic_name": "Phonetic Pronunciation Name",
           "output_dir": "Output Directory"
+        },
+        "data_description": {
+          "commute_destination_zone": "Zone used as the commute map destination. Leave empty to use zone.work or zone.office if they exist; otherwise the map is skipped."
         }
+      }
+    }
+  },
+  "selector": {
+    "default_transportation_mode": {
+      "options": {
+        "fastest": "Fastest",
+        "driving": "Driving",
+        "transit": "Transit"
       }
     }
   }

@@ -9,15 +9,19 @@ and intermediate scratchpad lifecycle management in a finally block.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import inspect
 import json
+import re
 import wave
 from collections.abc import Mapping
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .ai_client import (
@@ -26,7 +30,16 @@ from .ai_client import (
     async_generate_ai_image,
     async_generate_step_content,
 )
-from .const import DEFAULT_HOST_VOICE, DEFAULT_OUTPUT_DIR, LOGGER
+from .const import (
+    CONF_COMMUTE_DESTINATION,
+    CONF_DEFAULT_TRANSPORTATION_MODE,
+    CONF_MAPS_API_KEY,
+    DEFAULT_HOST_VOICE,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_TRANSPORTATION_MODE,
+    DOMAIN,
+    LOGGER,
+)
 from .ffmpeg_runner import (
     async_run_ffmpeg,
     build_concat_command,
@@ -65,6 +78,8 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
     for key in (
         "entity_id",
         "entity_ids",
+        "commute_sensor",
+        "commute_sensors",
         "calendar_entity",
         "calendar_entities",
         "todo_entity",
@@ -87,6 +102,9 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
     return eids
 
 
+DYNAMIC_IMAGE_STEP_KEYS = frozenset({"greeting", "fun_fact", "national_day"})
+
+
 def is_step_image_dynamic(step: dict[str, Any], step_name: str = "") -> bool:
     """Determine whether a step should generate a dynamic AI image or static asset."""
     # 1. Explicit dynamic_image boolean on step
@@ -105,12 +123,12 @@ def is_step_image_dynamic(step: dict[str, Any], step_name: str = "") -> bool:
     if step.get("image_path") or step.get("icon_path"):
         return False
 
-    # 5. Default rule: scripture / daily_text / bible / weather are static by default
+    # 5. Strict allowlist: only these slides generate dynamic AI imagery.
     step_key = (
         str(step.get("type") or step_name or step.get("name") or "").strip().lower()
     )
-    # 6. Non-scripture / non-weather slides default to dynamic
-    return step_key not in ("scripture", "daily_text", "bible", "weather")
+    # 6. Everything else uses bundled artwork or local renderers.
+    return step_key in DYNAMIC_IMAGE_STEP_KEYS
 
 
 def _format_weather_service_response(
@@ -260,6 +278,522 @@ def _format_commute_comparison(
         f"Commute Comparison: {fastest_label} ({fastest_val:g}{unit_str}) is "
         f"{delta:g} minutes faster than {second_label} ({second_val:g}{sec_unit_str})."
     )
+
+
+HTTP_OK = 200
+
+DARK_MAP_STYLES = (
+    "element:geometry|color:0x212121",
+    "element:labels.icon|visibility:off",
+    "element:labels.text.fill|color:0x757575",
+    "element:labels.text.stroke|color:0x212121",
+    "feature:administrative|element:geometry|color:0x757575",
+    "feature:administrative.country|element:labels.text.fill|color:0x9e9e9e",
+    "feature:administrative.land_parcel|visibility:off",
+    "feature:administrative.locality|element:labels.text.fill|color:0xbdbdbd",
+    "feature:poi|element:labels.text.fill|color:0x757575",
+    "feature:poi.park|element:geometry|color:0x181818",
+    "feature:poi.park|element:labels.text.fill|color:0x616161",
+    "feature:poi.park|element:labels.text.stroke|color:0x1b1b1b",
+    "feature:road|element:geometry.fill|color:0x2c2c2c",
+    "feature:road|element:labels.text.fill|color:0x8a8a8a",
+    "feature:road.arterial|element:geometry|color:0x373737",
+    "feature:road.highway|element:geometry|color:0x3c3c3c",
+    "feature:road.highway.controlled_access|element:geometry|color:0x4e4e4e",
+    "feature:road.local|element:labels.text.fill|color:0x616161",
+    "feature:transit|element:labels.text.fill|color:0x757575",
+    "feature:water|element:geometry|color:0x000000",
+    "feature:water|element:labels.text.fill|color:0x3d3d3d",
+)
+
+
+def _write_bytes_to_file(path: Path, data: bytes) -> None:
+    """Write binary data to file atomically or ensuring parent dir exists."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+async def async_resolve_google_maps_api_key(  # noqa: PLR0912
+    hass: HomeAssistant,
+) -> str | None:
+    """Resolve Google Maps API key from config entry, secrets.yaml, or hass.data."""
+    # 1. Check CastStudio config entries
+    if hasattr(hass, "config_entries") and hasattr(
+        hass.config_entries, "async_entries"
+    ):
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            options = getattr(entry, "options", {}) or {}
+            data = getattr(entry, "data", {}) or {}
+            for key_name in (
+                CONF_MAPS_API_KEY,
+                "google_maps_api_key",
+                "google_maps_key",
+                "gmaps_api_key",
+            ):
+                if val := options.get(key_name) or data.get(key_name):
+                    val_str = str(val).strip()
+                    if val_str:
+                        return val_str
+
+    # 2. Check secrets.yaml via hass.config.path("secrets.yaml")
+    if hasattr(hass, "config") and hasattr(hass.config, "path"):
+        try:
+            secrets_path = Path(hass.config.path("secrets.yaml"))
+            if secrets_path.is_file():
+
+                def _read_secrets() -> dict[str, Any]:
+                    with secrets_path.open("r", encoding="utf-8") as f:
+                        return yaml.safe_load(f) or {}
+
+                secrets_data = await _async_run_in_executor(hass, _read_secrets)
+                if isinstance(secrets_data, dict):
+                    for key_name in (
+                        "google_maps_api_key",
+                        "google_maps_key",
+                        "gmaps_api_key",
+                        "maps_api_key",
+                        "google_directions_api_key",
+                    ):
+                        if val := secrets_data.get(key_name):
+                            val_str = str(val).strip()
+                            if val_str:
+                                return val_str
+        except Exception as err:  # noqa: BLE001
+            LOGGER.debug("Could not inspect secrets.yaml for Google Maps key: %s", err)
+
+    # 3. Check other integrations in config_entries and hass.data
+    if hasattr(hass, "config_entries") and hasattr(
+        hass.config_entries, "async_entries"
+    ):
+        for domain in ("google_travel_time", "google_maps"):
+            for entry in hass.config_entries.async_entries(domain):
+                options = getattr(entry, "options", {}) or {}
+                data = getattr(entry, "data", {}) or {}
+                if val := options.get("api_key") or data.get("api_key"):
+                    val_str = str(val).strip()
+                    if val_str:
+                        return val_str
+
+    if hasattr(hass, "data") and isinstance(hass.data, dict):
+        domain_data = hass.data.get(DOMAIN, {})
+        if isinstance(domain_data, dict) and domain_data.get(CONF_MAPS_API_KEY):
+            return str(domain_data[CONF_MAPS_API_KEY]).strip()
+        for key_name in ("google_maps_api_key", "maps_api_key"):
+            if val := hass.data.get(key_name):
+                return str(val).strip()
+
+    return None
+
+
+async def async_fetch_commute_map(  # noqa: PLR0913
+    hass: HomeAssistant,
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    mode: str,
+    api_key: str,
+    output_dir: str,
+) -> dict[str, Any] | None:
+    """Fetch route polyline and dark-mode static map image from Google Maps API."""
+    if not api_key or not origin or not destination:
+        return None
+
+    try:
+        session = async_get_clientsession(hass)
+        dir_mode = "transit" if mode == "transit" else "driving"
+        dir_params = {
+            "origin": f"{origin[0]},{origin[1]}",
+            "destination": f"{destination[0]},{destination[1]}",
+            "mode": dir_mode,
+            "key": api_key,
+        }
+
+        async with asyncio.timeout(10):
+            async with session.get(
+                "https://maps.googleapis.com/maps/api/directions/json",
+                params=dir_params,
+            ) as resp:
+                if resp.status != HTTP_OK:
+                    LOGGER.warning("Google Directions API error HTTP %s", resp.status)
+                    return None
+                dir_data = await resp.json()
+
+        if dir_data.get("status") != "OK" or not dir_data.get("routes"):
+            LOGGER.warning(
+                "Google Directions API response not OK: status=%s, msg=%s",
+                dir_data.get("status"),
+                dir_data.get("error_message"),
+            )
+            return None
+
+        route = dir_data["routes"][0]
+        summary = route.get("summary") or (
+            "Driving" if dir_mode == "driving" else "Transit"
+        )
+        overview_polyline = route.get("overview_polyline", {}).get("points", "")
+        legs = route.get("legs", [])
+        leg = legs[0] if legs else {}
+        distance = leg.get("distance", {}).get("text", "")
+        duration = leg.get("duration", {}).get("text", "")
+        duration_sec = leg.get("duration", {}).get("value")
+
+        date_str = dt_util.now().strftime("%Y-%m-%d")
+        cache_dir = Path(output_dir) / "cache"
+        map_image_path = cache_dir / f"commute_map_{mode}_{date_str}.png"
+
+        if not map_image_path.is_file() or map_image_path.stat().st_size == 0:
+            static_params: list[tuple[str, str]] = [
+                # 512x300 at scale 2 returns exactly 1024x600 and stays within
+                # Google's documented 640x640 size limit.
+                ("size", "512x300"),
+                ("scale", "2"),
+                ("format", "png"),
+                ("maptype", "roadmap"),
+                ("key", api_key),
+            ]
+            static_params.extend(("style", style) for style in DARK_MAP_STYLES)
+            if overview_polyline:
+                static_params.append(
+                    ("path", f"weight:6|color:0x38bdf8ff|enc:{overview_polyline}")
+                )
+            static_params.append(
+                ("markers", f"color:blue|label:H|{origin[0]},{origin[1]}")
+            )
+            static_params.append(
+                ("markers", f"color:red|label:W|{destination[0]},{destination[1]}")
+            )
+
+            async with asyncio.timeout(15):
+                async with session.get(
+                    "https://maps.googleapis.com/maps/api/staticmap",
+                    params=static_params,
+                ) as resp:
+                    if resp.status != HTTP_OK:
+                        LOGGER.warning(
+                            "Google Static Maps API error HTTP %s", resp.status
+                        )
+                        return None
+                    image_bytes = await resp.read()
+
+            await _async_run_in_executor(
+                hass, _write_bytes_to_file, map_image_path, image_bytes
+            )
+
+        return {
+            "summary": summary,
+            "distance": distance,
+            "duration": duration,
+            "duration_sec": duration_sec,
+            "polyline": overview_polyline,
+            "map_image_path": str(map_image_path),
+        }
+    except Exception as err:  # noqa: BLE001
+        LOGGER.warning("Failed to fetch commute map from Google Maps: %s", err)
+        return None
+
+
+def _parse_coordinates(value: Any) -> tuple[float, float] | None:
+    """Parse a ``"lat,lon"`` string into a coordinate tuple."""
+    if not isinstance(value, str) or "," not in value:
+        return None
+    lat_str, _, lon_str = value.partition(",")
+    try:
+        lat, lon = float(lat_str.strip()), float(lon_str.strip())
+    except ValueError:
+        return None
+    if -90 <= lat <= 90 and -180 <= lon <= 180:  # noqa: PLR2004
+        return (lat, lon)
+    return None
+
+
+def _resolve_location(  # noqa: PLR0911
+    hass: HomeAssistant, value: Any
+) -> tuple[float, float] | None:
+    """Resolve a zone/entity id with lat/lon attributes, or a "lat,lon" string."""
+    if not value or not isinstance(value, str):
+        return None
+    if coords := _parse_coordinates(value):
+        return coords
+    if not hasattr(hass, "states"):
+        return None
+    state = hass.states.get(value.strip())
+    attrs = getattr(state, "attributes", None) or {}
+    if not hasattr(attrs, "get"):
+        return None
+    lat, lon = attrs.get("latitude"), attrs.get("longitude")
+    if not isinstance(lat, (int, float, str)) or not isinstance(lon, (int, float, str)):
+        return None
+    try:
+        return (float(lat), float(lon))
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_entry_setting(hass: HomeAssistant, key: str) -> Any:
+    """Read a CastStudio config entry option, falling back to entry data."""
+    if not hasattr(hass, "config_entries"):
+        return None
+    try:
+        entries = hass.config_entries.async_entries(DOMAIN)
+    except Exception:  # noqa: BLE001
+        return None
+    if not entries:
+        return None
+    entry = entries[0]
+    options = getattr(entry, "options", None) or {}
+    data = getattr(entry, "data", None) or {}
+    if not hasattr(options, "get") or not hasattr(data, "get"):
+        return None
+    value = options.get(key)
+    return value if value not in (None, "") else data.get(key)
+
+
+def _resolve_commute_origin(hass: HomeAssistant) -> tuple[float, float] | None:
+    """Resolve the commute origin: zone.home, then the HA configured location."""
+    if coords := _resolve_location(hass, "zone.home"):
+        return coords
+    config = getattr(hass, "config", None)
+    lat = getattr(config, "latitude", None)
+    lon = getattr(config, "longitude", None)
+    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+        return (float(lat), float(lon))
+    return None
+
+
+def _resolve_commute_destination(
+    hass: HomeAssistant,
+    step: dict[str, Any],
+    sensor_destination: str | None,
+) -> tuple[float, float] | None:
+    """
+    Resolve the commute destination from configuration only.
+
+    Order: step ``destination_zone``/``destination``, the configured
+    ``commute_destination_zone`` option, the drive sensor's ``destination``
+    attribute (zone id or "lat,lon"), then the generic ``zone.work`` and
+    ``zone.office``. Returns None when nothing resolves so the map fetch is
+    skipped and the procedural map is used.
+    """
+    for candidate in (
+        step.get("destination_zone"),
+        step.get("destination"),
+        _get_entry_setting(hass, CONF_COMMUTE_DESTINATION),
+        sensor_destination,
+        "zone.work",
+        "zone.office",
+    ):
+        if coords := _resolve_location(hass, candidate):
+            return coords
+    return None
+
+
+async def async_extract_commute_data(  # noqa: C901, PLR0912, PLR0915
+    hass: HomeAssistant,
+    step: dict[str, Any],
+    mode_override: str | None = None,
+) -> dict[str, Any]:
+    """Extract commute data, compare drive and transit times, and fetch route map."""
+    raw_candidates = (
+        step.get("commute_sensors")
+        or step.get("commute_sensor")
+        or step.get("entity_ids")
+        or step.get("entity_id")
+        or []
+    )
+    if isinstance(raw_candidates, str):
+        candidates = [p.strip() for p in raw_candidates.split(",") if p.strip()]
+    elif isinstance(raw_candidates, (list, tuple)):
+        candidates = []
+        for item in raw_candidates:
+            if isinstance(item, str):
+                candidates.extend(p.strip() for p in item.split(",") if p.strip())
+            elif item is not None:
+                candidates.append(str(item))
+    else:
+        candidates = []
+
+    if not candidates and hasattr(hass, "states") and hasattr(hass.states, "async_all"):
+        try:
+            candidates = [
+                s.entity_id
+                for s in hass.states.async_all()
+                if "commute" in s.entity_id.lower()
+                or "travel_time" in s.entity_id.lower()
+            ]
+        except Exception:  # noqa: BLE001
+            candidates = []
+
+    drive_sensor: str | None = None
+    transit_sensor: str | None = None
+
+    for eid in candidates:
+        if not isinstance(eid, str):
+            continue
+        lower_eid = eid.lower()
+        state_obj = hass.states.get(eid) if hasattr(hass, "states") else None
+        attrs = getattr(state_obj, "attributes", {}) or {}
+        if not isinstance(attrs, dict):
+            attrs = {}
+        mode_attr = str(attrs.get("mode", "")).lower()
+        line_attr = str(attrs.get("line", "")).lower()
+        dev_class = str(attrs.get("device_class", "")).lower()
+        icon = str(attrs.get("icon", "")).lower()
+
+        is_transit = (
+            any(k in lower_eid for k in ("metro", "transit", "subway", "train", "bus"))
+            or mode_attr in ("transit", "subway", "train", "bus")
+            or bool(line_attr)
+            or icon in ("mdi:train", "mdi:subway", "mdi:bus", "mdi:train-car")
+        )
+        is_drive = (
+            any(k in lower_eid for k in ("drive", "waze", "car", "traffic"))
+            or mode_attr in ("driving", "drive", "car")
+            or "destination" in attrs
+            or dev_class == "duration"
+        )
+
+        if is_transit and not transit_sensor:
+            transit_sensor = eid
+        elif (is_drive and not drive_sensor) or not drive_sensor:
+            drive_sensor = eid
+        elif not transit_sensor:
+            transit_sensor = eid
+
+    drive_time: int | None = None
+    drive_summary = "Driving"
+    destination_zone: str | None = None
+    distance_str: str | None = None
+    traffic_condition = "typical"
+
+    if drive_sensor and hasattr(hass, "states"):
+        s_obj = hass.states.get(drive_sensor)
+        if s_obj and s_obj.state not in ("unknown", "unavailable", None):
+            with contextlib.suppress(ValueError, TypeError):
+                drive_time = round(float(s_obj.state))
+            attrs = getattr(s_obj, "attributes", {}) or {}
+            if isinstance(attrs, dict):
+                dest_val = attrs.get("destination")
+                if isinstance(dest_val, str):
+                    destination_zone = dest_val
+                if attrs.get("route"):
+                    drive_summary = str(attrs["route"])
+                if attrs.get("distance"):
+                    distance_str = str(attrs["distance"])
+                if attrs.get("traffic_condition"):
+                    traffic_condition = str(attrs["traffic_condition"])
+
+    transit_time: int | None = None
+    transit_summary = "Metro Transit"
+    if transit_sensor and hasattr(hass, "states"):
+        s_obj = hass.states.get(transit_sensor)
+        if s_obj and s_obj.state not in ("unknown", "unavailable", None):
+            with contextlib.suppress(ValueError, TypeError):
+                transit_time = round(float(s_obj.state))
+            attrs = getattr(s_obj, "attributes", {}) or {}
+            if isinstance(attrs, dict):
+                if attrs.get("line"):
+                    transit_summary = str(attrs["line"])
+                elif attrs.get("route"):
+                    transit_summary = str(attrs["route"])
+
+    diff_minutes: int | None = None
+    if drive_time is not None and transit_time is not None:
+        diff_minutes = abs(transit_time - drive_time)
+        faster_mode = "driving" if drive_time <= transit_time else "transit"
+    elif transit_time is not None and drive_time is None:
+        faster_mode = "transit"
+    else:
+        faster_mode = "driving"
+
+    effective_mode_pref = (
+        mode_override or step.get("transportation_mode") or step.get("mode_override")
+    )
+    if not effective_mode_pref and hasattr(hass, "config_entries"):
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if entries:
+            effective_mode_pref = entries[0].options.get(
+                CONF_DEFAULT_TRANSPORTATION_MODE,
+                entries[0].data.get(
+                    CONF_DEFAULT_TRANSPORTATION_MODE, DEFAULT_TRANSPORTATION_MODE
+                ),
+            )
+    if not effective_mode_pref:
+        effective_mode_pref = "fastest"
+
+    effective_mode_pref = str(effective_mode_pref).lower().strip()
+    if effective_mode_pref == "transit" and transit_time is not None:
+        selected_mode = "transit"
+    elif effective_mode_pref == "driving" and drive_time is not None:
+        selected_mode = "driving"
+    elif effective_mode_pref == "fastest":
+        selected_mode = faster_mode
+    else:
+        selected_mode = "driving" if drive_time is not None else "transit"
+
+    origin_coords = _resolve_commute_origin(hass)
+    dest_coords = _resolve_commute_destination(hass, step, destination_zone)
+
+    api_key = await async_resolve_google_maps_api_key(hass) or ""
+    output_dir = step.get("output_dir") or (
+        hass.data.get(DOMAIN, {}).get("output_dir", DEFAULT_OUTPUT_DIR)
+        if hasattr(hass, "data")
+        else DEFAULT_OUTPUT_DIR
+    )
+
+    map_image_path: str | None = None
+    map_info = None
+    if origin_coords and dest_coords:
+        map_info = await async_fetch_commute_map(
+            hass, origin_coords, dest_coords, selected_mode, api_key, output_dir
+        )
+    else:
+        LOGGER.debug("No commute origin/destination configured; using fallback map")
+    if map_info:
+        if map_info.get("summary") and selected_mode == "driving":
+            drive_summary = str(map_info["summary"])
+        if map_info.get("distance"):
+            distance_str = str(map_info["distance"])
+        map_image_path = map_info.get("map_image_path")
+
+    selected_time = drive_time if selected_mode == "driving" else transit_time
+    if selected_time is None:
+        selected_time = drive_time if drive_time is not None else transit_time
+    eta_is_relative = bool(step.get("relative_eta"))
+    if selected_time is None:
+        eta_str = ""
+    elif eta_is_relative:
+        # Pregenerated media plays hours later, so a clock time would be wrong.
+        eta_str = f"{selected_time} min trip"
+    else:
+        arrival_dt = dt_util.now() + timedelta(minutes=float(selected_time))
+        eta_str = arrival_dt.strftime("%I:%M %p").lstrip("0")
+
+    summary_label = drive_summary if selected_mode == "driving" else transit_summary
+    if not summary_label.startswith("via ") and summary_label not in (
+        "Driving",
+        "Transit",
+    ):
+        route_summary = f"via {summary_label}"
+    else:
+        route_summary = summary_label
+
+    commute_data = {
+        "selected_mode": selected_mode,
+        "drive_time": drive_time,
+        "transit_time": transit_time,
+        "diff_minutes": diff_minutes,
+        "faster_mode": faster_mode,
+        "drive_summary": drive_summary,
+        "transit_summary": transit_summary,
+        "summary": route_summary,
+        "distance": distance_str or "",
+        "eta": eta_str,
+        "eta_is_relative": eta_is_relative,
+        "selected_time": selected_time,
+        "traffic_condition": traffic_condition,
+        "map_image_path": map_image_path,
+    }
+    step.setdefault("card", {})["commute_data"] = commute_data
+    return commute_data
 
 
 def _format_scripture_sensor(
@@ -419,7 +953,13 @@ def _extract_entity_context(
     step_type = str(step.get("type", "")).lower()
     is_fun_fact = step_name == "fun_fact" or step_type == "fun_fact"
     is_national_day = step_name == "national_day" or step_type == "national_day"
-    is_commute = step_name == "commute" or step_type == "commute"
+    is_encouragement = "daily_encouragement" in (step_name, step_type)
+    is_commute = (
+        step_name in ("commute", "traffic", "transit")
+        or step_type in ("commute", "traffic", "transit")
+        or "commute_sensors" in step
+        or "commute_sensor" in step
+    )
     has_states_getter = hasattr(hass, "states") and hasattr(hass.states, "get")
     commute_candidates: list[tuple[str, float, str]] = []
 
@@ -436,7 +976,9 @@ def _extract_entity_context(
             continue
 
         state_val = getattr(state_obj, "state", "unknown")
-        if (is_fun_fact or is_national_day) and str(state_val).lower() in (
+        if (is_fun_fact or is_national_day or is_encouragement) and str(
+            state_val
+        ).lower() in (
             "unknown",
             "unavailable",
             "",
@@ -513,6 +1055,91 @@ def _extract_forecast_list(res: Any, eid: str) -> list[dict[str, Any]]:
     if isinstance(fc, list):
         return [item for item in fc if isinstance(item, dict)]
     return []
+
+
+AQI_UNHEALTHY_THRESHOLD = 100
+RAIN_PROBABILITY_THRESHOLD = 30
+RAIN_CONDITION_KEYWORDS = ("rain", "storm", "pour", "drizzle", "lightning", "shower")
+COAT_MAX_F = 50
+COAT_HIGH_MAX_F = 55
+JACKET_MAX_F = 65
+JACKET_LOW_MAX_F = 50
+HOT_MIN_F = 85
+
+
+def _to_float(value: Any) -> float | None:
+    """Convert a state or attribute value to float, ignoring non-numeric text."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_weather_advisory(  # noqa: PLR0911, PLR0913
+    *,
+    condition: str,
+    current_temp: Any = None,
+    high: Any = None,
+    low: Any = None,
+    precip_prob: Any = None,
+    temperature_unit: str = "°F",
+    aqi: Any = None,
+) -> str:
+    """Return one practical preparation tip for today's weather, or '' if no data."""
+    cur = _to_float(current_temp)
+    hi = _to_float(high)
+    lo = _to_float(low)
+    prob = _to_float(precip_prob)
+    aqi_val = _to_float(aqi)
+    cond = str(condition or "").lower()
+
+    if "c" in str(temperature_unit).lower():
+        cur, hi, lo = (None if v is None else v * 9 / 5 + 32 for v in (cur, hi, lo))
+
+    if aqi_val is not None and aqi_val > AQI_UNHEALTHY_THRESHOLD:
+        return "Limit outdoor exertion due to poor air quality"
+    if (prob is not None and prob >= RAIN_PROBABILITY_THRESHOLD) or any(
+        word in cond for word in RAIN_CONDITION_KEYWORDS
+    ):
+        return "Pack an umbrella for rain today"
+    if (cur is not None and cur <= COAT_MAX_F) or (
+        hi is not None and hi <= COAT_HIGH_MAX_F
+    ):
+        return "Wear a warm coat today, it's chilly"
+    if (cur is not None and cur <= JACKET_MAX_F) or (
+        lo is not None and lo <= JACKET_LOW_MAX_F
+    ):
+        return "Grab a light jacket or sweater"
+    if (cur is not None and cur >= HOT_MIN_F) or (hi is not None and hi >= HOT_MIN_F):
+        return "Dress light and stay hydrated, it's going to be hot"
+    if cur is None and hi is None and lo is None and prob is None:
+        return ""
+    return "Comfortable weather expected today"
+
+
+def _find_outdoor_aqi(hass: HomeAssistant, attrs: dict[str, Any]) -> float | None:
+    """Find an outdoor AQI from weather attributes or outdoor air-quality sensors."""
+    for key in ("air_quality_index", "aqi"):
+        if (val := _to_float(attrs.get(key))) is not None:
+            return val
+    try:
+        states = hass.states.async_all("sensor")
+    except (AttributeError, TypeError):
+        return None
+    if not isinstance(states, (list, tuple)):
+        return None
+    for state in states:
+        eid = str(getattr(state, "entity_id", "")).lower()
+        is_outdoor = "airnow" in eid or "waqi" in eid or "outdoor" in eid
+        if (
+            is_outdoor
+            and ("aqi" in eid or "air_quality" in eid)
+            and (val := _to_float(getattr(state, "state", None))) is not None
+        ):
+            return val
+    return None
 
 
 async def async_extract_weather_data(  # noqa: PLR0912, PLR0915
@@ -654,13 +1281,22 @@ async def async_extract_weather_data(  # noqa: PLR0912, PLR0915
         "precipitation_probability": precip_prob,
         "temperature_unit": temp_unit,
         "location": location,
+        "advisory": compute_weather_advisory(
+            condition=str(condition),
+            current_temp=current_temp,
+            high=high,
+            low=low,
+            precip_prob=precip_prob,
+            temperature_unit=str(temp_unit),
+            aqi=_find_outdoor_aqi(hass, attrs),
+        ),
         "forecast_points": forecast_points,
         "daily_forecast": daily_forecast,
         "hourly_forecast": hourly_forecast,
     }
 
 
-async def async_extract_entity_context(  # noqa: PLR0912, PLR0915
+async def async_extract_entity_context(  # noqa: C901, PLR0912, PLR0915
     hass: HomeAssistant,
     step: dict[str, Any],
 ) -> str:
@@ -783,22 +1419,77 @@ async def async_extract_entity_context(  # noqa: PLR0912, PLR0915
             "todo_items": agenda_tasks,
         }
 
-    return _extract_entity_context(hass, step, service_overrides=service_overrides)
+    is_commute_step = (
+        step_name in ("commute", "traffic", "transit")
+        or step_type in ("commute", "traffic", "transit")
+        or "commute_sensors" in step
+        or "commute_sensor" in step
+    )
+    commute_line = ""
+    if is_commute_step:
+        mode_override = step.get("transportation_mode") or step.get("mode_override")
+        commute_data = await async_extract_commute_data(
+            hass, step, mode_override=mode_override
+        )
+        commute_line = _format_commute_narration_hint(commute_data)
+
+    context = _extract_entity_context(hass, step, service_overrides=service_overrides)
+    if "daily_encouragement" in (step_name, step_type) and not context.strip():
+        context = NO_DAILY_TEXT_CONTEXT
+    advisory = (step.get("card") or {}).get("weather_data", {}).get("advisory")
+    if advisory:
+        context = (
+            f"{context}\nWeather Advisory (tell the listener): {advisory}"
+        ).strip()
+    if commute_line:
+        context = f"{context}\n{commute_line}".strip()
+    return context
+
+
+def _format_commute_narration_hint(commute_data: dict[str, Any]) -> str:
+    """
+    Describe the HUD's selected commute so the narration matches the slide.
+
+    Pregenerated media (``eta_is_relative``) plays hours after compilation,
+    so it gets a relative trip length and an explicit ban on clock times.
+    """
+    minutes = commute_data.get("selected_time")
+    if minutes is None:
+        return ""
+    mode = "transit" if commute_data.get("selected_mode") == "transit" else "driving"
+    route = str(commute_data.get("summary") or "").strip()
+    route_part = f" {route}" if route.startswith("via ") else ""
+    if commute_data.get("eta_is_relative"):
+        return (
+            f"Commute (tell the listener): {mode}{route_part}, "
+            f"about {minutes} minutes. Do not mention a clock arrival time."
+        )
+    eta = str(commute_data.get("eta") or "").strip()
+    eta_part = f", arriving around {eta}" if eta else ""
+    return (
+        f"Commute (tell the listener): {mode}{route_part}, {minutes} minutes{eta_part}."
+    )
+
+
+NO_DAILY_TEXT_CONTEXT = (
+    "No daily scripture or daily text is available today. Give a short, general "
+    "encouraging remark for having a good day."
+)
 
 
 def _is_unconfigured_optional_step(hass: HomeAssistant, step: dict[str, Any]) -> bool:
     """Check if an entity step is unconfigured or missing with no fallback."""
     step_name = str(step.get("name", "")).lower()
     step_type = str(step.get("type", "")).lower()
-    if step_name in ("fun_fact", "national_day") or step_type in (
-        "fun_fact",
-        "national_day",
-    ):
+    always_run = ("fun_fact", "national_day", "daily_encouragement")
+    if step_name in always_run or step_type in always_run:
         return False
 
     has_entity_key = (
         "entity_id" in step
         or "entity_ids" in step
+        or "commute_sensor" in step
+        or "commute_sensors" in step
         or "calendar_entity" in step
         or "calendar_entities" in step
         or "todo_entity" in step
@@ -964,6 +1655,7 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
     card_data: dict[str, Any],
     ai_creds: dict[str, Any],
     scratch_dir: str | None = None,
+    narration: str = "",
 ) -> None:
     """Resolve dynamic and AI-generated visual background assets for a visual slide."""
     is_dynamic = is_step_image_dynamic(step_to_process, step_name)
@@ -1004,16 +1696,35 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
         )
     elif step_key in ("fun_fact", "trivia") or name_key in ("fun_fact", "trivia"):
         fallback_asset = "fun_fact.jpg"
-        topic = (
-            card_data.get("subtitle")
-            or card_data.get("title")
-            or step_to_process.get("context")
-            or "morning fun fact"
-        )
+        bullets = card_data.get("bullet_points") or []
+        fact_parts = [
+            str(card_data.get("title") or ""),
+            *(str(b) for b in bullets if isinstance(bullets, list)),
+        ]
+        fact_text = " ".join(p.strip() for p in fact_parts if p.strip())
+        if not fact_text:
+            fact_text = (
+                str(narration).strip()[:300]
+                or str(card_data.get("subtitle") or "")
+                or str(step_to_process.get("context") or "")
+                or "morning fun fact"
+            )
         dynamic_prompt = (
-            f"An intriguing, cinematic photograph representing {topic}, "
-            "curious and fascinating, detailed, beautiful natural lighting, "
-            "16:9 widescreen aspect ratio"
+            f"A cinematic photograph that visually illustrates this specific fact: "
+            f"{fact_text}. Show the actual subject of the fact, "
+            "detailed, beautiful natural lighting, 16:9 widescreen aspect ratio, "
+            "no text, no words, no typography"
+        )
+    elif step_key in ("daily_encouragement", "encouragement") or name_key in (
+        "daily_encouragement",
+        "encouragement",
+    ):
+        fallback_asset = "greeting_rooster.jpg"
+        dynamic_prompt = (
+            "A serene, uplifting cinematic photograph of a calm sunrise over a "
+            "peaceful path through open countryside, warm golden light, hopeful "
+            "fresh start to a good day, 16:9 widescreen aspect ratio, "
+            "no text, no words, no typography"
         )
     elif step_key == "weather" or name_key == "weather":
         cond = str(
@@ -1160,7 +1871,43 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
     )
 
 
-async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
+# A sentence that is *entirely* a generic send-off, e.g. "Have a wonderful
+# day!", "I hope you have a great day, Javan!" or "Have a blessed day ahead."
+_GENERIC_SENDOFF_SENTENCE_RE = re.compile(
+    r"^(?:(?:i\s+)?hope\s+you\s+|may\s+you\s+|and\s+)?"
+    r"have\s+an?\s+(?:\w+\s+){0,2}day(?:\s+(?:today|ahead))?"
+    r"(?:\s*,\s*[\w' .-]{1,40})?\s*[.!?]*$",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _ensure_encouragement_signoff(narration: str, recipient: dict[str, Any]) -> str:
+    """
+    Ensure narration ends with 'Have a great day, <name>!'.
+
+    Only a final sentence that is wholly a generic send-off is replaced; any
+    other ending is kept intact and the sign-off is appended as a new
+    sentence, so a sentence is never cut mid-way.
+    """
+    name = str(recipient.get("name") or "").strip()
+    spoken_name = str(recipient.get("phonetic_name") or name).strip()
+    signoff = (
+        f"Have a great day, {spoken_name}!" if spoken_name else "Have a great day!"
+    )
+    text = narration.strip()
+    if text.lower().endswith(signoff.lower()):
+        return text
+    sentences = [p for p in _SENTENCE_SPLIT_RE.split(text) if p.strip()]
+    if sentences and _GENERIC_SENDOFF_SENTENCE_RE.match(sentences[-1].strip()):
+        sentences.pop()
+    text = " ".join(sentences).strip()
+    if text and text[-1] not in ".!?":
+        text += "."
+    return f"{text} {signoff}".strip()
+
+
+async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
     hass: HomeAssistant,
     step_to_process: dict[str, Any],
     step_name: str,
@@ -1243,6 +1990,8 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
             card_data["weather_data"] = step_to_process["card"]["weather_data"]
         if "agenda_data" in step_to_process["card"]:
             card_data["agenda_data"] = step_to_process["card"]["agenda_data"]
+        if "commute_data" in step_to_process["card"]:
+            card_data["commute_data"] = step_to_process["card"]["commute_data"]
     for key in (
         "image_path",
         "icon_path",
@@ -1267,6 +2016,11 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
         card_data["subtitle"] = step_to_process["subtitle"]
 
     card_data.setdefault("step_name", step_name)
+    if step_key in ("daily_encouragement", "encouragement"):
+        real_name = str(recipient.get("name") or "").strip()
+        card_data["host_signoff"] = (
+            f"Have a great day, {real_name}!" if real_name else "Have a great day!"
+        )
     if weather_cond := _detect_step_weather_condition(hass, step_to_process):
         card_data.setdefault("weather_condition", weather_cond)
 
@@ -1279,9 +2033,14 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
             card_data,
             ai_creds,
             scratch_dir=scratch_dir,
+            narration=str(content.get("narration_script", "")),
         )
 
     narration_script = content.get("narration_script", "")
+    if step_key in ("daily_encouragement", "encouragement"):
+        narration_script = _ensure_encouragement_signoff(
+            str(narration_script), recipient
+        )
     if not narration_script:
         fallback_msg = (
             step_to_process.get("context")
@@ -1424,12 +2183,27 @@ async def _async_finalize_routine_media(  # noqa: PLR0913
     return metadata
 
 
-async def async_compile_routine_media(
+def _apply_routine_overrides(
+    step: dict[str, Any], routine_config: dict[str, Any]
+) -> None:
+    """
+    Propagate routine-level overrides (e.g. transportation_mode) onto a step.
+
+    A routine/service-call ``transportation_mode`` wins over the step's static
+    value so a per-day or per-call override takes effect.
+    """
+    if routine_config.get("transportation_mode"):
+        step["transportation_mode"] = routine_config["transportation_mode"]
+
+
+async def async_compile_routine_media(  # noqa: PLR0912, PLR0913, PLR0915
     hass: HomeAssistant,
     routine_name: str,
     routine_config: dict[str, Any],
     recipient: dict[str, Any],
     output_dir: str = DEFAULT_OUTPUT_DIR,
+    *,
+    relative_eta: bool = False,
 ) -> dict[str, Any]:
     """
     Compile multimedia routine into MP4 or audio file with companion metadata.
@@ -1440,6 +2214,9 @@ async def async_compile_routine_media(
         routine_config: Routine definition containing steps, visuals flag, etc.
         recipient: Profile containing real 'name' and 'phonetic_name'.
         output_dir: Destination directory for compiled media and metadata.
+        relative_eta: Render commute ETAs as a trip length ("35 min trip")
+            instead of a clock time. Used for pregenerated media, which plays
+            hours after it is compiled.
 
     Returns:
         Metadata dictionary with media path, duration, and slide_timestamps.
@@ -1492,6 +2269,9 @@ async def async_compile_routine_media(
             is_last_step = idx == len(executable_steps) - 1
             step_to_process = dict(step)
             step_to_process["is_first_step"] = idx == 0
+            _apply_routine_overrides(step_to_process, routine_config)
+            if relative_eta:
+                step_to_process["relative_eta"] = True
             if extracted_context := await async_extract_entity_context(
                 hass, step_to_process
             ):

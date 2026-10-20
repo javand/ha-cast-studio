@@ -20,6 +20,9 @@ from custom_components.cast_studio.config_flow import (
 )
 from custom_components.cast_studio.const import (
     CONF_API_KEY,
+    CONF_COMMUTE_DESTINATION,
+    CONF_DEFAULT_TRANSPORTATION_MODE,
+    CONF_MAPS_API_KEY,
     CONF_OUTPUT_DIR,
     CONF_PHONETIC_NAME,
     CONF_RECIPIENT_NAME,
@@ -219,3 +222,68 @@ def test_translations_en_structure() -> None:
     init_step = data["options"]["step"]["init"]
     assert init_step["title"] == "CastStudio Options"
     assert "recipient_name" in init_step["data"]
+
+
+@pytest.mark.asyncio
+async def test_config_flow_maps_api_key_and_transport_mode():
+    """Test user step and options flow accept maps_api_key and default_transportation_mode."""
+    flow = CastStudioFlowHandler()
+    flow.hass = MagicMock()
+    flow.hass.config_entries.async_entry_for_domain_unique_id.return_value = None
+    flow.context = {}
+
+    user_input = {
+        CONF_API_KEY: "test_gemini_key",
+        CONF_MAPS_API_KEY: "test_maps_key",
+        CONF_DEFAULT_TRANSPORTATION_MODE: "transit",
+        CONF_RECIPIENT_NAME: "Alice",
+        CONF_PHONETIC_NAME: "Al-iss",
+        CONF_OUTPUT_DIR: "/config/www/briefings",
+    }
+
+    result = await flow.async_step_user(user_input=user_input)
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_MAPS_API_KEY] == "test_maps_key"
+    assert result["data"][CONF_DEFAULT_TRANSPORTATION_MODE] == "transit"
+
+
+@pytest.mark.asyncio
+async def test_commute_destination_zone_in_user_and_options_flows(
+    hass: HomeAssistant,
+) -> None:
+    """Both flows offer an optional zone selector for the commute destination."""
+    flow = CastStudioFlowHandler()
+    flow.hass = hass
+    flow.context = {}
+    result = await flow.async_step_user()
+    user_keys = {str(k): k for k in result["data_schema"].schema}
+    assert CONF_COMMUTE_DESTINATION in user_keys
+    sel = result["data_schema"].schema[user_keys[CONF_COMMUTE_DESTINATION]]
+    assert sel.config["domain"] == ["zone"]
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="test_cast_studio",
+        data={CONF_RECIPIENT_NAME: "Alice", CONF_OUTPUT_DIR: "/tmp/out"},  # noqa: S108
+        options={CONF_COMMUTE_DESTINATION: "zone.fake_office"},
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    opt_key = next(
+        k for k in result["data_schema"].schema if str(k) == CONF_COMMUTE_DESTINATION
+    )
+    assert opt_key.description == {"suggested_value": "zone.fake_office"}
+
+
+def test_commute_destination_zone_has_translations() -> None:
+    """strings.json and en.json label the destination field and mode options."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert CONF_COMMUTE_DESTINATION in data["config"]["step"]["user"]["data"]
+        assert CONF_COMMUTE_DESTINATION in data["options"]["step"]["init"]["data"]
+        assert set(data["selector"]["default_transportation_mode"]["options"]) == {
+            "fastest",
+            "driving",
+            "transit",
+        }

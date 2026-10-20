@@ -313,6 +313,19 @@ def _build_default_morning_routine_config(
                 "voice": DEFAULT_SCRIPTURE_VOICE,
                 "voice_personality": "life_coach",
             },
+            {
+                "name": "daily_encouragement",
+                "visual": True,
+                "title": "Today's Takeaway",
+                "subtitle": "Daily Encouragement",
+                **(
+                    {"entity_id": discovered["scripture_sensor"]}
+                    if discovered["scripture_sensor"]
+                    else {}
+                ),
+                "voice": DEFAULT_SCRIPTURE_VOICE,
+                "voice_personality": "life_coach",
+            },
         ],
     }
 
@@ -417,6 +430,7 @@ async def async_pregenerate_routine(  # noqa: PLR0913
             routine_config=routine_config,
             recipient=recipient,
             output_dir=output_dir,
+            relative_eta=True,
         )
     except Exception as err:
         sensor.update_state("error", active_task=None)
@@ -471,8 +485,14 @@ async def async_run_routine(  # noqa: PLR0913, PLR0915
     recipient: dict[str, Any] | None = None,
     output_dir: str | None = None,
     force_regenerate: bool = False,  # noqa: FBT001, FBT002
+    transportation_mode: str | None = None,
 ) -> dict[str, Any]:
-    """Execute routine with instant playback or fallback on-demand generation."""
+    """
+    Execute routine with instant playback or fallback on-demand generation.
+
+    A ``transportation_mode`` override always compiles fresh media, because
+    cached pregenerated media was built for the default mode.
+    """
     if not routine_name or not str(routine_name).strip():
         msg = "Missing or empty required parameter 'routine_name'"
         raise ValueError(msg)
@@ -480,6 +500,9 @@ async def async_run_routine(  # noqa: PLR0913, PLR0915
     routine_config, recipient, output_dir = _resolve_routine_invocation(
         hass, routine_name, routine_config, recipient, output_dir
     )
+    if transportation_mode:
+        routine_config = {**routine_config, "transportation_mode": transportation_mode}
+        force_regenerate = True
     target_player = _extract_target_player(
         {"target_player": target_player}
     ) or _extract_target_player(routine_config)
@@ -618,16 +641,24 @@ def _merge_service_post_actions(
     routine_name: str,
     data: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Merge top-level post_routine_actions into routine_config if provided."""
+    """Merge post_routine_actions and transportation_mode into routine_config."""
     routine_config = data.get("routine_config")
-    if "post_routine_actions" in data:
-        if routine_config is None:
-            domain_data = hass.data.get(DOMAIN, {})
-            routine_config = dict(domain_data.get("routines", {}).get(routine_name, {}))
-        else:
-            routine_config = dict(routine_config)
-        if "post_routine_actions" not in routine_config:
+    if routine_config is None and (
+        "post_routine_actions" in data or "transportation_mode" in data
+    ):
+        domain_data = hass.data.get(DOMAIN, {})
+        routine_config = dict(domain_data.get("routines", {}).get(routine_name, {}))
+    elif routine_config is not None:
+        routine_config = dict(routine_config)
+
+    if routine_config is not None:
+        if (
+            "post_routine_actions" in data
+            and "post_routine_actions" not in routine_config
+        ):
             routine_config["post_routine_actions"] = data["post_routine_actions"]
+        if "transportation_mode" in data:
+            routine_config["transportation_mode"] = data["transportation_mode"]
     return routine_config
 
 
@@ -691,6 +722,7 @@ async def async_setup(
             recipient=data.get("recipient"),
             output_dir=data.get("output_dir"),
             force_regenerate=data.get("force_regenerate", False),
+            transportation_mode=data.get("transportation_mode"),
         )
 
     async def _async_handle_compile_clip(call: ServiceCall) -> None:

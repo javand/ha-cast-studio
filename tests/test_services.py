@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
 DURATION_4_0 = 4.0
 DURATION_5_0 = 5.0
+DURATION_10_0 = 10.0
+DURATION_12_0 = 12.0
 DURATION_15_0 = 15.0
 DURATION_18_5 = 18.5
 DURATION_20_0 = 20.0
@@ -989,6 +991,7 @@ async def test_run_routine_forwards_post_actions_to_metadata(
             {"name": "greeting", "timestamp": 0.0},
             {"name": "national_day", "timestamp": 5.0},
             {"name": "fun_fact", "timestamp": 10.0},
+            {"name": "daily_encouragement", "timestamp": 15.0},
         ],
         "last_pregenerated": datetime.now(UTC).isoformat(),
     }
@@ -1183,6 +1186,9 @@ async def test_run_routine_auto_builds_default_morning_briefing_steps(
         assert "agenda" in step_names
         assert "commute" in step_names
         assert "scripture" in step_names
+        assert step_names.index("daily_encouragement") == (
+            step_names.index("scripture") + 1
+        )
 
         await dummy_play_task
 
@@ -1293,10 +1299,19 @@ def test_discover_morning_entities_collects_multiple_commute_sensors(
         "agenda",
         "commute",
         "scripture",
+        "daily_encouragement",
     ]
     agenda_step = next(s for s in cfg["steps"] if s["name"] == "agenda")
     assert "calendar_entities" in agenda_step
     assert "todo_entity" in agenda_step
+
+    enc_step = next(s for s in cfg["steps"] if s["name"] == "daily_encouragement")
+    scripture_step = next(s for s in cfg["steps"] if s["name"] == "scripture")
+    assert enc_step["visual"] is True
+    # No scripture sensor discovered: entity_id stays optional but the step exists.
+    assert "entity_id" not in enc_step
+    assert scripture_step["entity_id"] == ""
+    assert enc_step["voice_personality"] == "life_coach"
 
     commute_step = next(s for s in cfg["steps"] if s["name"] == "commute")
     assert commute_step["entity_ids"] == [
@@ -1380,3 +1395,180 @@ async def test_run_routine_accepts_media_player_and_entity_id_aliases(
         assert mock_play.await_args[0][2] == "media_player.kitchen_display"
 
         await dummy_play_task
+
+
+def test_default_morning_routine_includes_daily_encouragement(
+    mock_hass: MagicMock,
+) -> None:
+    """Default morning routine orders daily_encouragement right after scripture."""
+    from custom_components.cast_studio import _build_default_morning_routine_config
+
+    cfg = _build_default_morning_routine_config(mock_hass, {"name": "Javan"})
+    names = [s["name"] for s in cfg["steps"]]
+    assert names.index("daily_encouragement") == names.index("scripture") + 1
+
+
+def test_default_morning_routine_encouragement_uses_scripture_sensor_when_present(
+    mock_hass: MagicMock,
+) -> None:
+    """When a scripture sensor exists, daily_encouragement is wired to it."""
+    from custom_components.cast_studio import _build_default_morning_routine_config
+
+    s = MagicMock(entity_id="sensor.jw_library_daily_text_today")
+    mock_hass.states.async_all = MagicMock(return_value=[s])
+    cfg = _build_default_morning_routine_config(mock_hass, {"name": "Javan"})
+    enc = next(x for x in cfg["steps"] if x["name"] == "daily_encouragement")
+    assert enc["entity_id"] == "sensor.jw_library_daily_text_today"
+
+
+@pytest.mark.asyncio
+async def test_pregenerate_routine_compiles_with_relative_commute_eta(
+    mock_hass: MagicMock, sample_config: dict[str, Any], tmp_path: Path
+) -> None:
+    """Pregeneration renders a relative commute ETA; it plays hours later (I4)."""
+    await async_setup(mock_hass, sample_config)
+    mock_compile = AsyncMock(
+        return_value={"video_path": str(tmp_path / "m.mp4"), "duration": 1.0}
+    )
+    with patch(
+        "custom_components.cast_studio.async_compile_routine_media", new=mock_compile
+    ):
+        await async_pregenerate_routine(mock_hass, "morning", output_dir=str(tmp_path))
+    assert mock_compile.await_args.kwargs["relative_eta"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_routine_on_demand_compile_keeps_clock_eta(
+    mock_hass: MagicMock, sample_config: dict[str, Any], tmp_path: Path
+) -> None:
+    """A live run_routine compile does not request a relative ETA (I4)."""
+    await async_setup(mock_hass, sample_config)
+    mock_compile = AsyncMock(
+        return_value={"video_path": str(tmp_path / "m.mp4"), "duration": 1.0}
+    )
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=mock_compile,
+        ),
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+    ):
+        await async_run_routine(
+            mock_hass,
+            "fresh",
+            routine_config={"output_dir": str(tmp_path)},
+            output_dir=str(tmp_path),
+        )
+    mock_compile.assert_awaited_once()
+    assert not mock_compile.await_args.kwargs.get("relative_eta", False)
+
+
+def _write_fresh_cached_media(tmp_path: Path, name: str) -> None:
+    video_file = tmp_path / f"{name}.mp4"
+    video_file.write_bytes(b"video")
+    (tmp_path / f"{name}.metadata.json").write_text(
+        json.dumps(
+            {
+                "video_path": str(video_file),
+                "duration": 10.0,
+                "last_pregenerated": datetime.now(UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_routine_transportation_mode_bypasses_cached_media(
+    mock_hass: MagicMock, sample_config: dict[str, Any], tmp_path: Path
+) -> None:
+    """run_routine with transportation_mode compiles fresh media (I4)."""
+    await async_setup(mock_hass, sample_config)
+    _write_fresh_cached_media(tmp_path, "welcome")
+    mock_compile = AsyncMock(
+        return_value={"video_path": str(tmp_path / "welcome.mp4"), "duration": 12.0}
+    )
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=mock_compile,
+        ),
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+    ):
+        cached = await async_run_routine(
+            mock_hass,
+            "welcome",
+            routine_config={"output_dir": str(tmp_path)},
+            output_dir=str(tmp_path),
+        )
+        assert cached["duration"] == DURATION_10_0
+        mock_compile.assert_not_called()
+
+        fresh = await async_run_routine(
+            mock_hass,
+            "welcome",
+            routine_config={"output_dir": str(tmp_path)},
+            output_dir=str(tmp_path),
+            transportation_mode="transit",
+        )
+    assert fresh["duration"] == DURATION_12_0
+    mock_compile.assert_awaited_once()
+    compiled_config = mock_compile.await_args.kwargs["routine_config"]
+    assert compiled_config["transportation_mode"] == "transit"
+    assert not mock_compile.await_args.kwargs.get("relative_eta", False)
+
+
+@pytest.mark.asyncio
+async def test_run_routine_service_transportation_mode_bypasses_cache(
+    mock_hass: MagicMock, sample_config: dict[str, Any], tmp_path: Path
+) -> None:
+    """The run_routine service with transportation_mode ignores cached media (I4)."""
+    await async_setup(mock_hass, sample_config)
+    calls = mock_hass.services.async_register.call_args_list
+    run_handler = next(c.args[2] for c in calls if c.args[1] == "run_routine")
+    _write_fresh_cached_media(tmp_path, "welcome")
+    mock_compile = AsyncMock(
+        return_value={"video_path": str(tmp_path / "welcome.mp4"), "duration": 12.0}
+    )
+    with (
+        patch(
+            "custom_components.cast_studio.async_compile_routine_media",
+            new=mock_compile,
+        ),
+        patch(
+            "custom_components.cast_studio.async_execute_background_actions",
+            new=AsyncMock(),
+        ),
+    ):
+        await run_handler(
+            ServiceCall(
+                mock_hass,
+                DOMAIN,
+                "run_routine",
+                {"routine_name": "welcome", "output_dir": str(tmp_path)},
+            )
+        )
+        mock_compile.assert_not_called()
+        await run_handler(
+            ServiceCall(
+                mock_hass,
+                DOMAIN,
+                "run_routine",
+                {
+                    "routine_name": "welcome",
+                    "output_dir": str(tmp_path),
+                    "transportation_mode": "driving",
+                },
+            )
+        )
+    mock_compile.assert_awaited_once()
+    assert (
+        mock_compile.await_args.kwargs["routine_config"]["transportation_mode"]
+        == "driving"
+    )

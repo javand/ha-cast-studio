@@ -29,7 +29,10 @@ STEP_PROMPT_GUIDELINES: dict[str, str] = {
     "weather": (
         "4. WEATHER NARRATION: State the current sky condition and temperature, "
         "then highlight today's expected high/low forecast and any rain or wind "
-        "outlook.\n"
+        "outlook. Close with one practical recommendation based on the conditions "
+        "(for example: pack an umbrella for rain, wear a warm coat or a light "
+        "jacket if it is chilly, dress light if it is hot, or limit time outdoors "
+        "if air quality is poor). Use the provided Weather Advisory when present.\n"
     ),
     "national_day": (
         "4. NATIONAL DAY NARRATION: Announce today's official National Day holiday "
@@ -75,9 +78,23 @@ STEP_PROMPT_GUIDELINES: dict[str, str] = {
     "scripture": (
         "4. SCRIPTURE NARRATION: Read the scripture passage and commentary verbatim "
         "without summarizing or altering the text. "
-        "Conclude the narration with an uplifting, encouraging thought "
-        "along the lines of walking with purpose, focusing on what matters, "
-        "and having a wonderful day.\n"
+        "Conclude after the passage and commentary in an uplifting, encouraging tone; "
+        "a separate encouragement slide follows, so do not add a closing pep talk.\n"
+    ),
+    "daily_encouragement": (
+        "4. DAILY ENCOURAGEMENT: Using today's scripture or daily text if it is "
+        "provided, give short, warm remarks for having a good day, in plain "
+        "conversational language. Do not use religious jargon and never use the "
+        "word 'blessed'. Offer exactly 2 short, practical ways to apply it today "
+        "(for example patience in traffic, focusing on what matters, or "
+        "encouraging someone). If no daily text is available, give a short general "
+        "encouraging remark for a good day instead: a 'title' plus at most 2 short "
+        "bullets (or title only) and narration under 30 words.\n"
+        "   - In 'visual_card', set 'title' to one calm, memorable sentence "
+        "(max 12 words) and 'bullet_points' to exactly 2 items in the form "
+        "'<Bold lead>: <short sentence>'.\n"
+        "   - The narration should be under 60 words and end with a friendly "
+        "send-off.\n"
     ),
     "wind_down": (
         "4. BEDTIME NARRATION: Deliver a calm, soothing evening wind-down message "
@@ -181,6 +198,14 @@ def _build_prompt(
     )
     if guideline:
         prompt += guideline
+
+    if step_key == "daily_encouragement" or name_key == "daily_encouragement":
+        prompt += (
+            "   - EXCEPTION to the name rule above: the final sentence of "
+            "'narration_script' MUST be exactly "
+            f'"Have a great day, {phonetic_name}!" (this is the only place the '
+            "recipient is named on this slide).\n"
+        )
 
     if is_first:
         prompt += (
