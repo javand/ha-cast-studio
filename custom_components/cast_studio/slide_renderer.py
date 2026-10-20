@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from homeassistant.util import dt as dt_util
 from PIL import Image, ImageDraw, ImageFont
 
 _LOGGER = logging.getLogger(__name__)
@@ -754,6 +755,8 @@ def _draw_google_nest_weather_slide(  # noqa: C901, PLR0912, PLR0915
 
         for i in range(num_pts):
             pt = forecast_points[i]
+            if not isinstance(pt, dict):
+                continue
             col_center = cont_x0 + (i + 0.5) * col_w
 
             time_label = str(pt.get("time") or "").strip()
@@ -1096,193 +1099,313 @@ def _draw_header(  # noqa: PLR0913
     return curr_y
 
 
-def _draw_two_column_agenda(  # noqa: PLR0912, PLR0915
-    draw: ImageDraw.ImageDraw,
-    card_data: dict[str, Any],
-    start_y: int,
-    theme: dict[str, Any] | None = None,
+def _draw_two_column_agenda(  # noqa: C901, PLR0912, PLR0915
+    canvas_or_draw: Image.Image | ImageDraw.ImageDraw,
+    card_or_start_y: dict[str, Any] | int = 0,
+    theme_or_card: SlideTheme | dict[str, Any] | int | None = None,
+    theme: SlideTheme | dict[str, Any] | None = None,
     canvas: Image.Image | None = None,
 ) -> int:
-    """Render 2-column side-by-side agenda: Schedule on the left, Tasks on the right."""
-    accent_left = (theme or {}).get("accent_color", (56, 189, 248))
-    accent_right = (251, 191, 36)
-
-    col_left_x0 = CONTENT_LEFT
-    col_left_x1 = 488
-    col_width = col_left_x1 - col_left_x0
-
-    divider_x = 512
-    col_right_x0 = 536
-    col_right_x1 = CONTENT_RIGHT
-
-    eyebrow_font = _get_font(14, bold=True)
-    time_font = _get_font(14, bold=True)
-    item_font = _get_font(17, bold=False)
-    sub_font = _get_font(14, bold=False)
-
-    curr_y = start_y + 4
-    body_start_y = curr_y + 28
-
-    # Draw Frosted High-Contrast Panels for both columns when canvas is available
-    if canvas is not None:
-        panel_overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-        d_panel = ImageDraw.Draw(panel_overlay)
-        # Left Schedule Panel (Slate-950 at ~88% opacity)
-        d_panel.rounded_rectangle(
-            (col_left_x0 - 15, start_y, col_left_x1 + 10, CARD_Y1 - 20),
-            radius=16,
-            fill=(10, 16, 30, 225),
-            outline=(51, 65, 85, 180),
-            width=1,
-        )
-        # Right Priority Tasks Panel (Slate-950 at ~88% opacity)
-        d_panel.rounded_rectangle(
-            (col_right_x0 - 10, start_y, col_right_x1 + 15, CARD_Y1 - 20),
-            radius=16,
-            fill=(10, 16, 30, 225),
-            outline=(51, 65, 85, 180),
-            width=1,
-        )
-        # Translucent pill badges for column headers
-        d_panel.rounded_rectangle(
-            [(col_left_x0 - 4, curr_y - 2), (col_left_x0 + 105, curr_y + 24)],
-            radius=13,
-            fill=(56, 189, 248, 40),
-            outline=(56, 189, 248, 160),
-            width=1,
-        )
-        d_panel.rounded_rectangle(
-            [(col_right_x0 - 4, curr_y - 2), (col_right_x0 + 135, curr_y + 24)],
-            radius=13,
-            fill=(251, 191, 36, 40),
-            outline=(251, 191, 36, 160),
-            width=1,
-        )
-        comp = Image.alpha_composite(canvas.convert("RGBA"), panel_overlay).convert(
-            "RGB"
-        )
-        canvas.paste(comp)
-
-    # Draw Column Headers text
-    draw.text(
-        (col_left_x0 + 12, curr_y + 3), "SCHEDULE", font=eyebrow_font, fill=accent_left
-    )
-    draw.text(
-        (col_right_x0 + 12, curr_y + 3),
-        "PRIORITY TASKS",
-        font=eyebrow_font,
-        fill=accent_right,
-    )
-
-    # Draw Center Vertical Rule
-    draw.line(
-        [(divider_x, body_start_y), (divider_x, CARD_Y1 - 25)],
-        fill=(255, 255, 255, 25),
-        width=1,
-    )
-
-    # 1. Left Column: Calendar Events (max 4)
-    cal_items = card_data.get("calendar_items") or []
-    cal_y = body_start_y
-    if not cal_items:
-        draw.text(
-            (col_left_x0, cal_y + 8),
-            "Schedule Clear",
-            font=item_font,
-            fill=(148, 163, 184),
-        )
-        draw.text(
-            (col_left_x0, cal_y + 32),
-            "No meetings scheduled for today.",
-            font=sub_font,
-            fill=(100, 116, 139),
+    """Render Option B Dual-Focused Agenda: meetings left, to-dos right."""
+    if isinstance(canvas_or_draw, Image.Image):
+        actual_canvas = canvas_or_draw
+        card = card_or_start_y if isinstance(card_or_start_y, dict) else {}
+        actual_theme = (
+            theme
+            if isinstance(theme, dict)
+            else (
+                theme_or_card
+                if isinstance(theme_or_card, dict)
+                else resolve_slide_theme(card)
+            )
         )
     else:
-        for item in cal_items[:4]:
-            if cal_y + 35 > CARD_Y1 - 20:
-                break
-            raw_text = str(item).strip()
-            time_part = ""
-            desc_part = raw_text
-            for sep in (" — ", " - ", " : "):
-                if sep in raw_text:
-                    parts = raw_text.split(sep, 1)
-                    time_part = parts[0].strip()
-                    desc_part = parts[1].strip()
-                    break
+        # Legacy caller passed (draw, card_data, start_y, theme=theme, canvas=canvas)
+        actual_canvas = (
+            canvas
+            if canvas is not None
+            else Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
+        )
+        card = (
+            card_or_start_y
+            if isinstance(card_or_start_y, dict)
+            else (theme_or_card if isinstance(theme_or_card, dict) else {})
+        )
+        actual_theme = theme if isinstance(theme, dict) else resolve_slide_theme(card)
 
-            if time_part:
+    # 1. Background
+    img, _ = _load_image(card)
+    if img is not None:
+        bg = _render_photo_background(img)
+        actual_canvas.paste(bg, (0, 0))
+    else:
+        bg = _render_gradient_background(theme=actual_theme)
+        actual_canvas.paste(bg, (0, 0))
+
+    draw = ImageDraw.Draw(actual_canvas)
+
+    # 2. Extract structured agenda data (with fallback to legacy bullets/items)
+    raw_agenda = card.get("agenda_data")
+    agenda_data: dict[str, Any] = raw_agenda if isinstance(raw_agenda, dict) else {}
+
+    # Resolve date string
+    date_str = str(agenda_data.get("date_str") or "").strip()
+    if not date_str:
+        if card.get("date_str"):
+            date_str = str(card["date_str"]).strip()
+        elif card.get("subtitle"):
+            sub = str(card["subtitle"]).strip()
+            date_str = sub.split(" • ")[0].strip() if " • " in sub else sub
+        else:
+            now_dt = dt_util.now()
+            try:
+                date_str = now_dt.strftime("%A, %b %-d")
+            except (ValueError, TypeError):
+                date_str = f"{now_dt.strftime('%A, %b')} {now_dt.day}"
+
+    # Resolve calendar events
+    events: list[dict[str, str]] = []
+    if "calendar_events" in agenda_data and isinstance(
+        agenda_data["calendar_events"], list
+    ):
+        events.extend(
+            {
+                "time": str(ev.get("time") or "").strip(),
+                "title": str(
+                    ev.get("title")
+                    or ev.get("summary")
+                    or ev.get("message")
+                    or "Scheduled Event"
+                ).strip(),
+                "location": str(ev.get("location") or "").strip(),
+            }
+            for ev in agenda_data["calendar_events"]
+            if isinstance(ev, dict)
+        )
+    elif "calendar_items" in card and isinstance(card["calendar_items"], list):
+        for item in card["calendar_items"]:
+            if isinstance(item, dict):
+                events.append(
+                    {
+                        "time": str(item.get("time") or "").strip(),
+                        "title": str(
+                            item.get("title")
+                            or item.get("summary")
+                            or "Scheduled Event"
+                        ).strip(),
+                        "location": str(item.get("location") or "").strip(),
+                    }
+                )
+            elif isinstance(item, str) and item.strip():
+                raw = item.strip()
+                t_part = ""
+                d_part = raw
+                for sep in (" — ", " - ", " : "):
+                    if sep in raw:
+                        parts = raw.split(sep, 1)
+                        t_part = parts[0].strip()
+                        d_part = parts[1].strip()
+                        break
+                events.append({"time": t_part, "title": d_part, "location": ""})
+
+    # Resolve todo items
+    tasks: list[str] = []
+    if "todo_items" in agenda_data and isinstance(agenda_data["todo_items"], list):
+        for t in agenda_data["todo_items"]:
+            if isinstance(t, dict):
+                s = t.get("summary") or t.get("description") or t.get("title")
+                if s and str(s).strip():
+                    tasks.append(str(s).strip())
+            elif isinstance(t, str) and t.strip():
+                tasks.append(t.strip())
+    elif "todo_items" in card and isinstance(card["todo_items"], list):
+        for t in card["todo_items"]:
+            if isinstance(t, dict):
+                s = t.get("summary") or t.get("description") or t.get("title")
+                if s and str(s).strip():
+                    tasks.append(str(s).strip())
+            elif isinstance(t, str) and t.strip():
+                tasks.append(t.strip())
+    elif (
+        "bullet_points" in card
+        and isinstance(card["bullet_points"], list)
+        and not events
+    ):
+        tasks.extend(
+            str(bp).strip() for bp in card["bullet_points"] if bp and str(bp).strip()
+        )
+
+    # 3. Header (Y: 30 to 75)
+    # Title on left: TODAY'S SCHEDULE & TASKS (#f8fafc, size 26)
+    title_text = str(card.get("title") or "TODAY'S SCHEDULE & TASKS").upper()
+    title_font = _get_font(26, bold=True)
+    draw.text((35, 36), title_text, font=title_font, fill=(248, 250, 252))
+
+    # Date Pill on right: background #0284c7, text white, font size 18
+    date_font = _get_font(18, bold=True)
+    tb = draw.textbbox((0, 0), date_str, font=date_font)
+    tw = tb[2] - tb[0]
+    th = tb[3] - tb[1]
+    pill_pad_x = 18
+    pill_pad_y = 8
+    pill_w = tw + (pill_pad_x * 2)
+    pill_h = th + (pill_pad_y * 2)
+    pill_x1 = 985
+    pill_x0 = pill_x1 - pill_w
+    pill_y0 = 33
+    pill_y1 = pill_y0 + pill_h
+    draw.rounded_rectangle(
+        [(pill_x0, pill_y0), (pill_x1, pill_y1)],
+        radius=pill_h // 2,
+        fill=(2, 132, 199),
+    )
+    draw.text(
+        (pill_x0 + pill_pad_x, pill_y0 + pill_pad_y - 1),
+        date_str,
+        font=date_font,
+        fill=(255, 255, 255),
+    )
+
+    # 4. Frosted Slate Panels (#1e293b with accent borders)
+    # Left: X: 35 to 495, width 460, fill #1e293b, border #38bdf8
+    # Right: X: 525 to 985, width 460, fill #1e293b, border #10b981
+    panel_overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+    d_panel = ImageDraw.Draw(panel_overlay)
+    col_y0 = 88
+    col_y1 = 565
+
+    d_panel.rounded_rectangle(
+        [(35, col_y0), (495, col_y1)],
+        radius=16,
+        fill=(30, 41, 59, 230),
+        outline=(56, 189, 248, 220),
+        width=2,
+    )
+    d_panel.rounded_rectangle(
+        [(525, col_y0), (985, col_y1)],
+        radius=16,
+        fill=(30, 41, 59, 230),
+        outline=(16, 185, 129, 220),
+        width=2,
+    )
+    comp = Image.alpha_composite(actual_canvas.convert("RGBA"), panel_overlay).convert(
+        "RGB"
+    )
+    actual_canvas.paste(comp, (0, 0))
+    draw = ImageDraw.Draw(actual_canvas)
+
+    # 5. Left Column Content: Meetings & Events
+    header_font = _get_font(18, bold=True)
+    draw.text((55, 108), "📅 MEETINGS & EVENTS", font=header_font, fill=(56, 189, 248))
+    draw.line([(55, 138), (475, 138)], fill=(51, 65, 85, 160), width=1)
+
+    ev_y = 152
+    if not events:
+        empty_font = _get_font(16, bold=False)
+        draw.text(
+            (55, ev_y),
+            "Schedule is wide open today.\nNo meetings scheduled.",
+            font=empty_font,
+            fill=(148, 163, 184),
+            spacing=6,
+        )
+        ev_y += 60
+    else:
+        time_chip_font = _get_font(15, bold=True)
+        ev_title_font = _get_font(18, bold=True)
+        loc_font = _get_font(14, bold=False)
+
+        for ev in events[:4]:
+            if ev_y + 40 > col_y1 - 10:
+                break
+            time_str = ev.get("time", "")
+            title_str = ev.get("title", "Scheduled Event")
+            location_str = ev.get("location", "")
+
+            # Time chip (Sky-400 #38bdf8, font 15, bold)
+            if time_str:
+                chip_tb = draw.textbbox((0, 0), time_str, font=time_chip_font)
+                chip_w = chip_tb[2] - chip_tb[0] + 16
+                chip_h = chip_tb[3] - chip_tb[1] + 8
                 draw.rounded_rectangle(
-                    [(col_left_x0, cal_y), (col_left_x0 + 85, cal_y + 24)],
+                    [(55, ev_y), (55 + chip_w, ev_y + chip_h)],
                     radius=6,
-                    fill=(30, 41, 59),
-                    outline=(71, 85, 105),
+                    fill=(15, 23, 42),
+                    outline=(56, 189, 248, 180),
                     width=1,
                 )
                 draw.text(
-                    (col_left_x0 + 8, cal_y + 4),
-                    time_part,
-                    font=time_font,
+                    (63, ev_y + 3),
+                    time_str,
+                    font=time_chip_font,
                     fill=(56, 189, 248),
                 )
-                text_x = col_left_x0 + 95
-                text_max_w = col_left_x1 - text_x
-            else:
-                text_x = col_left_x0
-                text_max_w = col_width
+                ev_y += chip_h + 6
 
-            wrapped = _wrap_text(desc_part, item_font, text_max_w, draw)
-            for line in wrapped[:2]:
-                bbox = draw.textbbox((text_x, cal_y), line, font=item_font)
-                lh = bbox[3] - bbox[1]
-                draw.text(
-                    (text_x, cal_y + 2), line, font=item_font, fill=(248, 250, 252)
-                )
-                cal_y += lh + 4
-            cal_y += 8
-
-    # 2. Right Column: To-Do Tasks (max 4)
-    todo_items = card_data.get("todo_items") or []
-    todo_y = body_start_y
-    if not todo_items:
-        draw.text(
-            (col_right_x0, todo_y + 8),
-            "All Caught Up",
-            font=item_font,
-            fill=(148, 163, 184),
-        )
-        draw.text(
-            (col_right_x0, todo_y + 32),
-            "No pending tasks on your to-do list.",
-            font=sub_font,
-            fill=(100, 116, 139),
-        )
-    else:
-        for item in todo_items[:4]:
-            if todo_y + 30 > CARD_Y1 - 20:
-                break
-            raw_text = str(item).strip()
-            cb_size = 16
-            cb_y = todo_y + 3
-            draw.rounded_rectangle(
-                [(col_right_x0, cb_y), (col_right_x0 + cb_size, cb_y + cb_size)],
-                radius=4,
-                outline=(148, 163, 184),
-                width=1,
+            # Bold title (#ffffff, font 18)
+            wrapped_title = _wrap_text(
+                title_str, ev_title_font, max_width=410, draw=draw
             )
-            text_x = col_right_x0 + cb_size + 12
-            text_max_w = col_right_x1 - text_x
-            wrapped = _wrap_text(raw_text, item_font, text_max_w, draw)
-            for line in wrapped[:2]:
-                bbox = draw.textbbox((text_x, todo_y), line, font=item_font)
-                lh = bbox[3] - bbox[1]
-                draw.text(
-                    (text_x, todo_y + 2), line, font=item_font, fill=(241, 245, 249)
-                )
-                todo_y += lh + 4
-            todo_y += 8
+            for t_line in wrapped_title[:2]:
+                draw.text((55, ev_y), t_line, font=ev_title_font, fill=(255, 255, 255))
+                ev_y += 23
 
-    return max(cal_y, todo_y)
+            # Location subtext (#94a3b8, font 14)
+            if location_str:
+                loc_text = (
+                    location_str
+                    if location_str.startswith("📍")
+                    else f"📍 {location_str}"
+                )
+                draw.text((55, ev_y), loc_text, font=loc_font, fill=(148, 163, 184))
+                ev_y += 18
+
+            ev_y += 12
+
+    # 6. Right Column Content: Pending To-Dos
+    todo_count = len(tasks)
+    draw.text(
+        (545, 108),
+        f"✓ PENDING TO-DOS ({todo_count})",
+        font=header_font,
+        fill=(52, 211, 153),
+    )
+    draw.line([(545, 138), (965, 138)], fill=(51, 65, 85, 160), width=1)
+
+    task_y = 152
+    if not tasks:
+        empty_font = _get_font(16, bold=False)
+        draw.text(
+            (545, task_y),
+            "All caught up!\nNo pending to-do tasks.",
+            font=empty_font,
+            fill=(148, 163, 184),
+            spacing=6,
+        )
+        task_y += 60
+    else:
+        task_font = _get_font(17, bold=False)
+        cb_size = 18
+
+        for task in tasks[:5]:
+            if task_y + 30 > col_y1 - 10:
+                break
+            # Checkbox [ ] (Emerald-400, font 18)
+            draw.rounded_rectangle(
+                [(545, task_y + 2), (545 + cb_size, task_y + 2 + cb_size)],
+                radius=4,
+                outline=(52, 211, 153),
+                width=2,
+            )
+            text_x = 545 + cb_size + 14
+            max_w = 965 - text_x
+            wrapped_task = _wrap_text(task, task_font, max_width=max_w, draw=draw)
+            for line in wrapped_task[:2]:
+                draw.text((text_x, task_y), line, font=task_font, fill=(241, 245, 249))
+                task_y += 22
+            task_y += 14
+
+    return max(ev_y, task_y)
 
 
 def _draw_bullets(  # noqa: PLR0913
@@ -1352,16 +1475,20 @@ def render_slide(  # noqa: PLR0912, PLR0915
 
     # 1. Resolve slide envelope if passed {step_name: ..., card: {...}}
     if "card" in card_data and isinstance(card_data["card"], dict):
-        effective_card = dict(card_data["card"])
-        if "step_name" in card_data and "step_name" not in effective_card:
-            effective_card["step_name"] = card_data["step_name"]
+        effective_card = {k: v for k, v in card_data.items() if k != "card"}
+        effective_card.update(card_data["card"])
         step_name = (
-            str(card_data.get("step_name") or effective_card.get("step_name") or "")
+            str(
+                effective_card.get("step_name")
+                or card_data.get("step_name")
+                or effective_card.get("type")
+                or ""
+            )
             .strip()
             .lower()
         )
     else:
-        effective_card = card_data
+        effective_card = dict(card_data)
         step_name = (
             str(effective_card.get("step_name") or effective_card.get("type") or "")
             .strip()
@@ -1376,6 +1503,24 @@ def render_slide(  # noqa: PLR0912, PLR0915
         theme = resolve_slide_theme(effective_card)
         canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
         _draw_google_nest_weather_slide(canvas, effective_card, theme=theme)
+        output_path = Path(output_jpeg_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.suffix.lower() == ".png":
+            canvas.save(str(output_path), "PNG")
+        else:
+            canvas.save(str(output_path), "JPEG", quality=95)
+        return str(output_path)
+
+    # 3b. Dual-Focused Agenda slide layout
+    if (
+        step_name in ("agenda", "calendar")
+        or "agenda_data" in effective_card
+        or effective_card.get("layout") == "agenda_split"
+        or ("calendar_items" in effective_card and "todo_items" in effective_card)
+    ):
+        theme = resolve_slide_theme(effective_card)
+        canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
+        _draw_two_column_agenda(canvas, effective_card, theme=theme)
         output_path = Path(output_jpeg_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if output_path.suffix.lower() == ".png":
@@ -1424,7 +1569,7 @@ def render_slide(  # noqa: PLR0912, PLR0915
     if card_data.get("layout") == "agenda_split" or (
         "calendar_items" in card_data and "todo_items" in card_data
     ):
-        _draw_two_column_agenda(draw, card_data, curr_y, theme=theme, canvas=canvas)
+        _draw_two_column_agenda(canvas, card_data, theme=theme)
     else:
         raw_bullets = card_data.get("bullet_points")
         if isinstance(raw_bullets, list):

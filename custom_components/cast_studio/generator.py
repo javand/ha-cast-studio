@@ -14,9 +14,11 @@ import inspect
 import json
 import wave
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from homeassistant.util import dt as dt_util
 
 from .ai_client import (
     _enforce_recipient_separation,
@@ -190,6 +192,46 @@ def _format_todo_service_response(eid: str, items: list[Any]) -> str:
     if summaries:
         return f"To-do ({eid}): {len(summaries)} tasks pending: {', '.join(summaries)}"
     return f"To-do ({eid}): 0 tasks pending"
+
+
+ISO_DATE_LENGTH = 10
+ISO_DATE_DASH_COUNT = 2
+
+
+def _format_event_time_range(start: Any, end: Any) -> str:
+    """Format calendar start and end into a human-readable time chip string."""
+
+    def _parse_part(val: Any) -> tuple[str, bool]:
+        if isinstance(val, dict):
+            val = val.get("dateTime") or val.get("date")
+        if not val:
+            return "", False
+        val_str = str(val).strip()
+        if not val_str:
+            return "", False
+        if (
+            len(val_str) == ISO_DATE_LENGTH
+            and val_str.count("-") == ISO_DATE_DASH_COUNT
+        ):
+            return "All Day", True
+        if "AM" in val_str.upper() or "PM" in val_str.upper():
+            return val_str, False
+        for parse_fn in (datetime.fromisoformat, time.fromisoformat):
+            try:
+                parsed = parse_fn(val_str)
+                return parsed.strftime("%I:%M %p").lstrip("0"), False
+            except (ValueError, TypeError):
+                continue
+        return val_str, False
+
+    start_str, is_start_all_day = _parse_part(start)
+    end_str, _ = _parse_part(end)
+
+    if is_start_all_day or start_str == "All Day":
+        return "All Day"
+    if start_str and end_str and start_str != end_str:
+        return f"{start_str} \u2013 {end_str}"
+    return start_str or end_str or "All Day"
 
 
 MIN_COMMUTE_ENTRIES_FOR_COMPARISON = 2
@@ -488,6 +530,7 @@ async def async_extract_weather_data(  # noqa: PLR0912, PLR0915
     wind_speed = attrs.get("wind_speed")
     precip_prob = attrs.get("precipitation_probability")
     location = str(attrs.get("friendly_name") or "")
+    temp_unit = attrs.get("temperature_unit") or "°F"
 
     condition_map = {
         "partlycloudy": "Partly Cloudy",
@@ -597,6 +640,7 @@ async def async_extract_weather_data(  # noqa: PLR0912, PLR0915
         "humidity": humidity,
         "wind_speed": wind_speed,
         "precipitation_probability": precip_prob,
+        "temperature_unit": temp_unit,
         "location": location,
         "forecast_points": forecast_points,
         "daily_forecast": daily_forecast,
@@ -604,7 +648,7 @@ async def async_extract_weather_data(  # noqa: PLR0912, PLR0915
     }
 
 
-async def async_extract_entity_context(
+async def async_extract_entity_context(  # noqa: PLR0912, PLR0915
     hass: HomeAssistant,
     step: dict[str, Any],
 ) -> str:
@@ -632,8 +676,18 @@ async def async_extract_entity_context(
                         eid, state_obj, forecasts
                     )
 
+    step_name = str(step.get("name", "")).lower()
+    step_type = str(step.get("type", "")).lower()
+    is_agenda_step = (
+        any(eid.startswith(("calendar.", "todo.")) for eid in eids)
+        or step_name in ("agenda", "calendar")
+        or step_type in ("agenda", "calendar")
+    )
+    agenda_events: list[dict[str, str]] = []
+    agenda_tasks: list[str] = []
+
     if callable(async_call):
-        now = datetime.now().astimezone()
+        now = dt_util.now()
         start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         end_dt = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
 
@@ -655,6 +709,29 @@ async def async_extract_entity_context(
                         service_overrides[eid] = _format_calendar_service_response(
                             eid, events
                         )
+                        for ev in events:
+                            if not isinstance(ev, dict):
+                                continue
+                            ev_time = str(ev.get("time") or "")
+                            if not ev_time:
+                                ev_time = _format_event_time_range(
+                                    ev.get("start"), ev.get("end")
+                                )
+                            ev_title = str(
+                                ev.get("title")
+                                or ev.get("summary")
+                                or ev.get("message")
+                                or ev.get("description")
+                                or "Scheduled Event"
+                            ).strip()
+                            ev_loc = str(ev.get("location") or "").strip()
+                            agenda_events.append(
+                                {
+                                    "time": ev_time,
+                                    "title": ev_title,
+                                    "location": ev_loc,
+                                }
+                            )
 
             elif eid.startswith("todo."):
                 res = await _async_call_service_for_entity(
@@ -669,6 +746,30 @@ async def async_extract_entity_context(
                         service_overrides[eid] = _format_todo_service_response(
                             eid, items
                         )
+                        for item in items:
+                            if isinstance(item, dict):
+                                summary = (
+                                    item.get("summary")
+                                    or item.get("description")
+                                    or item.get("title")
+                                )
+                                if summary and str(summary).strip():
+                                    agenda_tasks.append(str(summary).strip())
+                            elif isinstance(item, str) and item.strip():
+                                agenda_tasks.append(item.strip())
+
+    if is_agenda_step:
+        now_dt = dt_util.now()
+        try:
+            date_str = now_dt.strftime("%A, %b %-d")
+        except (ValueError, TypeError):
+            date_str = f"{now_dt.strftime('%A, %b')} {now_dt.day}"
+
+        step.setdefault("card", {})["agenda_data"] = {
+            "date_str": date_str,
+            "calendar_events": agenda_events,
+            "todo_items": agenda_tasks,
+        }
 
     return _extract_entity_context(hass, step, service_overrides=service_overrides)
 
@@ -1126,6 +1227,8 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
     if "card" in step_to_process and isinstance(step_to_process["card"], dict):
         for c_key, c_val in step_to_process["card"].items():
             card_data.setdefault(c_key, c_val)
+        if "agenda_data" in step_to_process["card"]:
+            card_data["agenda_data"] = step_to_process["card"]["agenda_data"]
     for key in (
         "image_path",
         "icon_path",

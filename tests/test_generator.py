@@ -1958,3 +1958,77 @@ async def test_async_extract_entity_context_attaches_weather_data() -> None:
     assert step["card"]["weather_data"]["current_temp"] == 68
     assert step["card"]["weather_data"]["high"] == 74
     assert step["card"]["weather_data"]["low"] == 54
+
+
+async def test_async_extract_entity_context_attaches_structured_agenda_data() -> None:
+    """Verify structured agenda_data is extracted with calendar events, todo items, and date_str."""
+    from custom_components.cast_studio.generator import async_extract_entity_context
+
+    def _mock_call(
+        domain: str, service: Any, data: Any, **kwargs: Any
+    ) -> dict[str, Any]:
+        if domain == "calendar":
+            return {
+                "calendar.personal": {
+                    "events": [
+                        {
+                            "summary": "Team Architecture Alignment",
+                            "start": "2026-10-19T10:00:00",
+                            "end": "2026-10-19T11:00:00",
+                            "location": "Room A",
+                        }
+                    ]
+                }
+            }
+        if domain == "todo":
+            return {
+                "todo.daily": {
+                    "items": [
+                        {"summary": "Review pull request"},
+                        {"summary": "Prescription refill reminder"},
+                    ]
+                }
+            }
+        return {}
+
+    mock_hass = MagicMock()
+    mock_hass.services.async_call = AsyncMock(side_effect=_mock_call)
+
+    step = {
+        "name": "agenda",
+        "calendar_entities": ["calendar.personal"],
+        "todo_entity": "todo.daily",
+    }
+    context = await async_extract_entity_context(mock_hass, step)
+    assert "calendar.personal" in context
+    assert "Team Architecture Alignment" in context
+    assert "Review pull request" in context
+
+    assert "card" in step
+    assert "agenda_data" in step["card"]
+    agenda_data = step["card"]["agenda_data"]
+    assert "date_str" in agenda_data
+    assert len(agenda_data["calendar_events"]) == 1
+    assert agenda_data["calendar_events"][0] == {
+        "time": "10:00 AM – 11:00 AM",  # noqa: RUF001
+        "title": "Team Architecture Alignment",
+        "location": "Room A",
+    }
+    assert len(agenda_data["todo_items"]) == 2
+    assert agenda_data["todo_items"] == [
+        "Review pull request",
+        "Prescription refill reminder",
+    ]
+
+
+async def test_async_extract_weather_data_includes_temperature_unit() -> None:
+    """Verify async_extract_weather_data returns temperature_unit."""
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = MagicMock(
+        state="sunny",
+        attributes={"temperature": 72, "temperature_unit": "°F"},
+    )
+    mock_hass.services.async_call = AsyncMock(return_value={})
+
+    data = await async_extract_weather_data(mock_hass, "weather.home")
+    assert data.get("temperature_unit") == "°F"

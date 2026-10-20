@@ -12,6 +12,7 @@ from PIL import Image
 from custom_components.cast_studio.slide_renderer import (
     PhoneticLeakError,
     _draw_google_nest_weather_slide,
+    _draw_two_column_agenda,
     _load_image,
     _resolve_image_path,
     load_weather_icon,
@@ -629,4 +630,80 @@ def test_draw_google_nest_weather_slide_direct_call() -> None:
         },
     }
     _draw_google_nest_weather_slide(canvas, card, theme={"badge": "WEATHER"})
+    assert canvas.size == (1024, 600)
+
+
+def test_render_slide_dual_focus_agenda_layout(tmp_path: Path) -> None:
+    output_png = str(tmp_path / "slide_agenda.png")
+    slide_data = {
+        "step_name": "agenda",
+        "card": {
+            "title": "Today's Schedule & Tasks",
+            "agenda_data": {
+                "date_str": "Monday, Oct 19",
+                "calendar_events": [
+                    {
+                        "time": "10:00 AM – 11:00 AM",  # noqa: RUF001
+                        "title": "Team Architecture Alignment",
+                        "location": "Room A",
+                    },
+                    {
+                        "time": "2:30 PM – 3:30 PM",  # noqa: RUF001
+                        "title": "Weekly Project Review",
+                        "location": "Google Meet",
+                    },
+                ],
+                "todo_items": [
+                    "50 push-ups & morning mobility",
+                    "Prescription refill reminder",
+                    "Review pull request",
+                ],
+            },
+        },
+    }
+    render_slide(slide_data, output_png)
+    assert Path(output_png).is_file()
+    with Image.open(output_png) as img:
+        assert img.size == (1024, 600)
+        assert img.mode == "RGB"
+
+
+def test_render_slide_dual_focus_agenda_empty_states(tmp_path: Path) -> None:
+    output_png = str(tmp_path / "slide_agenda_empty.png")
+    slide_data = {
+        "step_name": "agenda",
+        "card": {
+            "title": "Today's Schedule & Tasks",
+            "agenda_data": {
+                "date_str": "Monday, Oct 19",
+                "calendar_events": [],
+                "todo_items": [],
+            },
+        },
+    }
+    render_slide(slide_data, output_png)
+    assert Path(output_png).is_file()
+    with Image.open(output_png) as img:
+        assert img.size == (1024, 600)
+        assert img.mode == "RGB"
+
+
+def test_draw_two_column_agenda_direct_call() -> None:
+    """Test _draw_two_column_agenda direct canvas rendering interface."""
+    canvas = Image.new("RGB", (1024, 600))
+    card = {
+        "title": "Today's Schedule & Tasks",
+        "agenda_data": {
+            "date_str": "Monday, Oct 19",
+            "calendar_events": [
+                {
+                    "time": "10:00 AM – 11:00 AM",  # noqa: RUF001
+                    "title": "Team Architecture Alignment",
+                    "location": "Room A",
+                }
+            ],
+            "todo_items": ["Review pull request"],
+        },
+    }
+    _draw_two_column_agenda(canvas, card, theme={"badge": "AGENDA"})
     assert canvas.size == (1024, 600)
