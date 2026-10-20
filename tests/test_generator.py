@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.core import HomeAssistant
 
 from custom_components.cast_studio.generator import (
     GeneratorError,
@@ -2032,3 +2033,193 @@ async def test_async_extract_weather_data_includes_temperature_unit() -> None:
 
     data = await async_extract_weather_data(mock_hass, "weather.home")
     assert data.get("temperature_unit") == "°F"
+
+
+@pytest.mark.asyncio
+async def test_format_event_time_range_utc_timezone_converted_to_local(
+    hass: HomeAssistant,
+) -> None:
+    """Verify UTC ISO timestamps in calendar events are converted to local time."""
+    from custom_components.cast_studio.generator import _format_event_time_range
+
+    await hass.config.async_set_time_zone("America/New_York")
+
+    # 14:00 UTC on Oct 19 is 10:00 EDT (UTC-4)
+    # 15:30 UTC on Oct 19 is 11:30 EDT (UTC-4)
+    formatted = _format_event_time_range(
+        "2026-10-19T14:00:00Z",
+        "2026-10-19T15:30:00+00:00",
+    )
+    assert formatted == "10:00 AM \u2013 11:30 AM"
+
+
+@pytest.mark.asyncio
+async def test_async_extract_entity_context_calendar_utc_converted_to_local(
+    hass: HomeAssistant,
+) -> None:
+    """Verify UTC ISO timestamps in calendar.get_events are formatted in local time."""
+    await hass.config.async_set_time_zone("America/New_York")
+
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = MagicMock(state="on", attributes={})
+    mock_hass.services.async_call = AsyncMock(
+        return_value={
+            "calendar.personal": {
+                "events": [
+                    {
+                        "summary": "Sprint Planning",
+                        "start": "2026-10-19T14:00:00Z",
+                        "end": "2026-10-19T15:00:00Z",
+                    }
+                ]
+            }
+        }
+    )
+
+    step = {
+        "name": "agenda",
+        "calendar_entities": ["calendar.personal"],
+    }
+    await async_extract_entity_context(mock_hass, step)
+    agenda_events = step["card"]["agenda_data"]["calendar_events"]
+    assert len(agenda_events) == 1
+    # 14:00 - 15:00 UTC is 10:00 AM - 11:00 AM EDT
+    assert agenda_events[0]["time"] == "10:00 AM \u2013 11:00 AM"
+
+
+@pytest.mark.asyncio
+async def test_async_extract_weather_data_utc_hourly_converted_to_local(
+    hass: HomeAssistant,
+) -> None:
+    """Verify UTC ISO timestamps in hourly forecast points are converted to local time."""
+    await hass.config.async_set_time_zone("America/New_York")
+
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = MagicMock(
+        state="sunny",
+        attributes={"temperature": 70, "temperature_unit": "°F"},
+    )
+    mock_hass.services.async_call = AsyncMock(
+        return_value={
+            "weather.home": {
+                "forecast": [
+                    {
+                        "datetime": "2026-10-19T14:00:00Z",
+                        "temperature": 72,
+                        "condition": "sunny",
+                    },
+                    {
+                        "datetime": "2026-10-19T15:00:00+00:00",
+                        "temperature": 74,
+                        "condition": "sunny",
+                    },
+                ]
+            }
+        }
+    )
+
+    data = await async_extract_weather_data(mock_hass, "weather.home")
+    # 14:00 UTC is 10 AM EDT, 15:00 UTC is 11 AM EDT
+    assert data["forecast_points"][0]["time"] == "10 AM"
+    assert data["forecast_points"][1]["time"] == "11 AM"
+
+
+@pytest.mark.asyncio
+async def test_async_extract_weather_data_temp_unit_fallback_to_hass_config() -> None:
+    """Verify temperature unit falls back to hass.config.units.temperature_unit when not in state attrs."""
+    mock_hass = MagicMock()
+    mock_hass.states.get.return_value = MagicMock(
+        state="sunny",
+        attributes={"temperature": 21},  # no temperature_unit in attrs
+    )
+    mock_hass.config.units.temperature_unit = "°C"
+    mock_hass.services.async_call = AsyncMock(return_value={})
+
+    data = await async_extract_weather_data(mock_hass, "weather.home")
+    assert data["temperature_unit"] == "°C"
+
+
+@pytest.mark.asyncio
+async def test_async_compile_single_step_weather_data_overwrites_llm_hallucination(
+    tmp_path: Path,
+) -> None:
+    """Verify live HA weather_data in step['card'] overwrites any dummy weather_data returned by LLM."""
+    from custom_components.cast_studio.generator import _async_compile_single_step
+
+    mock_hass = MagicMock()
+    live_weather = {
+        "current_temp": 72,
+        "condition": "sunny",
+        "condition_text": "Sunny",
+        "forecast_points": [{"time": "12 PM", "temp": 75}],
+    }
+    hallucinated_weather = {
+        "current_temp": 999,
+        "condition": "blizzard",
+        "condition_text": "Hallucinated Blizzard",
+    }
+
+    step = {
+        "name": "weather",
+        "type": "weather",
+        "card": {
+            "weather_data": live_weather,
+        },
+    }
+    recipient = {"name": "Javan"}
+    ai_creds = {"platform": "conversation_agent"}
+
+    audio_target = str(tmp_path / "audio.wav")
+    slide_target = str(tmp_path / "slide.jpg")
+    clip_target = str(tmp_path / "clip.mp4")
+
+    with wave.open(audio_target, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"\x00\x00" * 24000)
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_generate_step_content",
+            new=AsyncMock(
+                return_value={
+                    "visual_card": {
+                        "title": "Weather Today",
+                        "weather_data": hallucinated_weather,
+                    },
+                    "narration_script": "Here is the weather forecast.",
+                }
+            ),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_synthesize_speech",
+            new=AsyncMock(return_value=audio_target),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.render_slide",
+            return_value=slide_target,
+        ) as mock_render,
+        patch(
+            "custom_components.cast_studio.generator.async_run_ffmpeg",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        await _async_compile_single_step(
+            mock_hass,
+            step,
+            "weather",
+            recipient,
+            ai_creds,
+            is_visual=True,
+            default_pad_seconds=0.5,
+            audio_target_path=audio_target,
+            slide_target_path=slide_target,
+            clip_target_path=clip_target,
+        )
+
+        assert mock_render.called
+        rendered_card = mock_render.call_args[0][0]
+        # Verified HA weather data must have overwritten the LLM hallucination
+        assert rendered_card["weather_data"] == live_weather
+        assert rendered_card["weather_data"]["current_temp"] == 72

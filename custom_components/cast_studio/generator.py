@@ -219,6 +219,8 @@ def _format_event_time_range(start: Any, end: Any) -> str:
         for parse_fn in (datetime.fromisoformat, time.fromisoformat):
             try:
                 parsed = parse_fn(val_str)
+                if isinstance(parsed, datetime) and parsed.tzinfo is not None:
+                    parsed = dt_util.as_local(parsed)
                 return parsed.strftime("%I:%M %p").lstrip("0"), False
             except (ValueError, TypeError):
                 continue
@@ -530,7 +532,15 @@ async def async_extract_weather_data(  # noqa: PLR0912, PLR0915
     wind_speed = attrs.get("wind_speed")
     precip_prob = attrs.get("precipitation_probability")
     location = str(attrs.get("friendly_name") or "")
-    temp_unit = attrs.get("temperature_unit") or "°F"
+    temp_unit = (
+        attrs.get("temperature_unit")
+        or getattr(
+            getattr(getattr(hass, "config", None), "units", None),
+            "temperature_unit",
+            "°F",
+        )
+        or "°F"
+    )
 
     condition_map = {
         "partlycloudy": "Partly Cloudy",
@@ -617,6 +627,8 @@ async def async_extract_weather_data(  # noqa: PLR0912, PLR0915
             if "datetime" in p:
                 try:
                     dt_val = datetime.fromisoformat(str(p["datetime"]))
+                    if dt_val.tzinfo is not None:
+                        dt_val = dt_util.as_local(dt_val)
                     if hourly_forecast:
                         p["time"] = dt_val.strftime("%I %p").lstrip("0")
                     elif idx == 0:
@@ -1227,6 +1239,8 @@ async def _async_compile_single_step(  # noqa: PLR0912, PLR0913, PLR0915
     if "card" in step_to_process and isinstance(step_to_process["card"], dict):
         for c_key, c_val in step_to_process["card"].items():
             card_data.setdefault(c_key, c_val)
+        if "weather_data" in step_to_process["card"]:
+            card_data["weather_data"] = step_to_process["card"]["weather_data"]
         if "agenda_data" in step_to_process["card"]:
             card_data["agenda_data"] = step_to_process["card"]["agenda_data"]
     for key in (
