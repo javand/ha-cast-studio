@@ -26,15 +26,10 @@ from custom_components.cast_studio.const import (
 
 @pytest.mark.asyncio
 async def test_setup_component(hass: HomeAssistant) -> None:
-    """Test setting up the cast_studio component via yaml."""
+    """Setting up the component registers only the briefing actions."""
     assert await async_setup(hass, {}) is True
     assert DOMAIN in hass.data
-    assert "recipient" in hass.data[DOMAIN]
-    assert "routines" in hass.data[DOMAIN]
-    assert hass.services.has_service(DOMAIN, "pregenerate_routine")
-    assert hass.services.has_service(DOMAIN, "run_routine")
-    assert hass.services.has_service(DOMAIN, "compile_clip")
-    assert hass.services.has_service(DOMAIN, "reload")
+    assert set(hass.services.async_services()[DOMAIN]) == {"prebuild", "play"}
 
 
 @pytest.mark.asyncio
@@ -57,10 +52,7 @@ async def test_setup_unload_entry(hass: HomeAssistant) -> None:
     ) as mock_forward:
         assert await async_setup_entry(hass, entry) is True
         mock_forward.assert_awaited_once()
-        assert hass.data[DOMAIN]["recipient"] == {
-            "name": "Alice",
-            "phonetic_name": "Al-iss",
-        }
+        entry.mock_state(hass, ConfigEntryState.LOADED)
 
     with patch(
         "homeassistant.config_entries.ConfigEntries.async_unload_platforms",

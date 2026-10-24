@@ -29,7 +29,7 @@ def test_render_slide_dimensions_and_output(tmp_path: Path) -> None:
     """Test standard slide rendering dimensions, mode, and file output (from brief)."""
     output_path = str(tmp_path / "slide_01.jpg")
     card_data = {
-        "title": "Good Morning, Javan!",
+        "title": "Good Morning, Alex!",
         "subtitle": "Saturday, October 17, 2026",
         "bullet_points": ["Sunny 72°F", "2 Events scheduled"],
     }
@@ -46,14 +46,12 @@ def test_render_slide_phonetic_leak_in_title_raises(tmp_path: Path) -> None:
     """Assert that phonetic spelling in visual card title raises PhoneticLeakError."""
     output_path = str(tmp_path / "slide_leak_title.jpg")
     card_data = {
-        "title": "Good Morning, Jay-ven!",
+        "title": "Good Morning, Al-ex!",
         "subtitle": "Saturday, October 17, 2026",
         "bullet_points": ["Sunny 72°F"],
     }
-    with pytest.raises(
-        (PhoneticLeakError, ValueError, AssertionError), match="Jay-ven"
-    ):
-        render_slide(card_data, output_path, phonetic_name="Jay-ven")
+    with pytest.raises((PhoneticLeakError, ValueError, AssertionError), match="Al-ex"):
+        render_slide(card_data, output_path, phonetic_name="Al-ex")
 
     assert not os.path.exists(output_path)
 
@@ -62,14 +60,12 @@ def test_render_slide_phonetic_leak_in_subtitle_raises(tmp_path: Path) -> None:
     """Assert that phonetic spelling in visual card subtitle raises PhoneticLeakError."""
     output_path = str(tmp_path / "slide_leak_subtitle.jpg")
     card_data = {
-        "title": "Good Morning, Javan!",
-        "subtitle": "Briefing for Jay-ven",
+        "title": "Good Morning, Alex!",
+        "subtitle": "Briefing for Al-ex",
         "bullet_points": ["Sunny 72°F"],
-        "phonetic_name": "Jay-ven",
+        "phonetic_name": "Al-ex",
     }
-    with pytest.raises(
-        (PhoneticLeakError, ValueError, AssertionError), match="Jay-ven"
-    ):
+    with pytest.raises((PhoneticLeakError, ValueError, AssertionError), match="Al-ex"):
         render_slide(card_data, output_path)
 
     assert not os.path.exists(output_path)
@@ -79,14 +75,12 @@ def test_render_slide_phonetic_leak_in_bullet_points_raises(tmp_path: Path) -> N
     """Assert that phonetic spelling in bullet points raises PhoneticLeakError."""
     output_path = str(tmp_path / "slide_leak_bullet.jpg")
     card_data = {
-        "title": "Good Morning, Javan!",
+        "title": "Good Morning, Alex!",
         "subtitle": "Saturday, October 17, 2026",
-        "bullet_points": ["Reminder for Jay-ven: take meds", "Sunny 72°F"],
-        "phonetic_name": "Jay-ven",
+        "bullet_points": ["Reminder for Al-ex: take meds", "Sunny 72°F"],
+        "phonetic_name": "Al-ex",
     }
-    with pytest.raises(
-        (PhoneticLeakError, ValueError, AssertionError), match="Jay-ven"
-    ):
+    with pytest.raises((PhoneticLeakError, ValueError, AssertionError), match="Al-ex"):
         render_slide(card_data, output_path)
 
     assert not os.path.exists(output_path)
@@ -96,12 +90,10 @@ def test_render_slide_phonetic_leak_via_recipient_dict(tmp_path: Path) -> None:
     """Assert that phonetic leak is detected when recipient dict is in card_data."""
     output_path = str(tmp_path / "slide_leak_recipient.jpg")
     card_data = {
-        "title": "Good Morning, Jay-ven!",
-        "recipient": {"name": "Javan", "phonetic_name": "Jay-ven"},
+        "title": "Good Morning, Al-ex!",
+        "recipient": {"name": "Alex", "phonetic_name": "Al-ex"},
     }
-    with pytest.raises(
-        (PhoneticLeakError, ValueError, AssertionError), match="Jay-ven"
-    ):
+    with pytest.raises((PhoneticLeakError, ValueError, AssertionError), match="Al-ex"):
         render_slide(card_data, output_path)
 
 
@@ -146,7 +138,7 @@ def test_render_slide_text_wrapping_for_long_content(tmp_path: Path) -> None:
     """Test rendering very long text lines that require wrapping."""
     output_path = str(tmp_path / "slide_wrapping.jpg")
     card_data = {
-        "title": "Good Morning, Javan! Here is a very long title that spans across multiple lines gracefully",
+        "title": "Good Morning, Alex! Here is a very long title that spans across multiple lines gracefully",
         "subtitle": "Saturday, October 17, 2026 — An exceptionally detailed morning briefing with high density text",
         "bullet_points": [
             "Weather update: Severe thunderstorm warning in effect until 11:00 AM with gusty winds and heavy rainfall expected.",
@@ -168,17 +160,19 @@ def test_render_slide_invalid_data_type(tmp_path: Path) -> None:
 
 
 def test_render_slide_with_png_alpha_asset(tmp_path: Path) -> None:
-    """Test rendering slide with a static PNG with alpha channel (e.g. dripping_ice)."""
-    asset_path = Path("custom_components/cast_studio/assets/dripping_ice.png").resolve()
-    assert asset_path.exists(), "dripping_ice.png asset must exist for test"
+    """Test rendering slide with a static PNG that has an alpha channel."""
+    asset_path = tmp_path / "icon.png"
+    icon = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    icon.paste((90, 170, 250, 255), (50, 50, 150, 150))
+    icon.save(asset_path)
 
     output_with_img = str(tmp_path / "slide_with_png.jpg")
     output_no_img = str(tmp_path / "slide_no_img.jpg")
 
     card_data_no_img = {
-        "title": "Freezer Door Open!",
-        "subtitle": "Kitchen Alert",
-        "bullet_points": ["Duration: 60s"],
+        "title": "Good Morning",
+        "subtitle": "Alex",
+        "bullet_points": ["Sunny, high of 72"],
     }
     card_data_with_img = {
         **card_data_no_img,
@@ -214,12 +208,12 @@ def test_render_slide_with_static_jpeg_avatar(tmp_path: Path) -> None:
     output_plain = str(tmp_path / "slide_plain.jpg")
 
     card_data = {
-        "title": "Welcome Home, Javan!",
+        "title": "Welcome Home, Alex!",
         "subtitle": "Arrived at 6:30 PM",
         "image_path": str(jpeg_file),
     }
     render_slide(
-        {"title": "Welcome Home, Javan!", "subtitle": "Arrived at 6:30 PM"},
+        {"title": "Welcome Home, Alex!", "subtitle": "Arrived at 6:30 PM"},
         output_plain,
     )
     result = render_slide(card_data, output_path)
@@ -322,11 +316,11 @@ def test_render_slide_identity_contract_with_image_present(tmp_path: Path) -> No
     ).resolve()
     output_path = str(tmp_path / "slide_leak_with_image.jpg")
     card_data = {
-        "title": "Welcome Home, Jay-ven!",
+        "title": "Welcome Home, Al-ex!",
         "image_path": str(asset_path),
     }
-    with pytest.raises(PhoneticLeakError, match="Jay-ven"):
-        render_slide(card_data, output_path, phonetic_name="Jay-ven")
+    with pytest.raises(PhoneticLeakError, match="Al-ex"):
+        render_slide(card_data, output_path, phonetic_name="Al-ex")
 
     assert not os.path.exists(output_path)
 
@@ -337,7 +331,7 @@ def test_render_slide_bundled_asset_lookup_by_name(tmp_path: Path) -> None:
     output_plain = str(tmp_path / "slide_icon_plain.jpg")
     card_data = {
         "title": "Bundled Asset Lookup",
-        "icon": "door_alert",
+        "icon": "welcome_avatar",
     }
     render_slide({"title": "Bundled Asset Lookup"}, output_plain)
     result = render_slide(card_data, output_path)
@@ -501,7 +495,7 @@ def test_draw_header_suppresses_redundant_badge_matching_title(tmp_path: Path) -
     """Test _draw_header suppresses redundant category pill when badge and title overlap."""
     out_redundant = str(tmp_path / "redundant_badge.jpg")
     card_data = {
-        "title": "Good Morning, Javan",
+        "title": "Good Morning, Alex",
         "subtitle": "Welcome to your day",
         "step_name": "greeting",
         # Theme has badge "GOOD MORNING"
@@ -858,7 +852,7 @@ def _enc_card(**overrides: object) -> dict:
             "Prioritize with care: Focus your energy on the people and tasks that "
             "matter most today.",
         ],
-        "host_signoff": "Have a great day, Javan!",
+        "host_signoff": "Have a great day, Alex!",
     }
     card.update(overrides)
     return card
@@ -1056,3 +1050,59 @@ def test_commute_hud_tie_has_no_faster_badge() -> None:
     texts = [t for _, t in _spy_texts(card)]
     assert not any("FASTER" in t for t in texts)
     assert not any(t.startswith("Fastest route") for t in texts)
+
+
+def test_commute_round_trip_text() -> None:
+    from custom_components.cast_studio.slide_renderer import _commute_round_trip_text
+
+    assert (
+        _commute_round_trip_text({"return_time": 48, "round_trip_time": 83})
+        == "Home 48 min • Round trip 1h 23m"
+    )
+    assert (
+        _commute_round_trip_text({"return_time": 20, "round_trip_time": 50})
+        == "Home 20 min • Round trip 50 min"
+    )
+    assert _commute_round_trip_text({"return_time": None}) == ""
+
+
+def test_commute_slide_renders_with_round_trip() -> None:
+    from PIL import Image
+
+    canvas = Image.new("RGB", (1024, 600))
+    _draw_google_nest_commute_slide(
+        canvas,
+        {
+            "commute_data": {
+                "selected_mode": "driving",
+                "drive_time": 35,
+                "return_time": 48,
+                "round_trip_time": 83,
+                "eta": "35 min trip",
+                "eta_is_relative": True,
+            }
+        },
+    )
+    assert canvas.size == (1024, 600)
+
+
+def test_closing_slide_uses_its_own_layout(tmp_path: Path) -> None:
+    from custom_components.cast_studio import slide_renderer
+
+    out = tmp_path / "closing.jpg"
+    with patch.object(
+        slide_renderer,
+        "_draw_closing_slide",
+        wraps=slide_renderer._draw_closing_slide,
+    ) as draw:
+        render_slide(
+            {
+                "type": "closing",
+                "title": "Have a great day, Alex!",
+                "subtitle": "Happy Thursday!",
+                "image_path": "closing_good_day.jpg",
+            },
+            str(out),
+        )
+    assert draw.called
+    assert out.is_file()

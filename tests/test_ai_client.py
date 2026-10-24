@@ -70,15 +70,15 @@ async def test_fallback_to_conversation_agent_when_no_key() -> None:
 async def test_content_generation_separates_real_name_and_phonetic() -> None:
     """Test content generation enforces real name on visual card and phonetic in narration."""
     hass = MagicMock()
-    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
     step_config = {"name": "greeting", "type": "greeting"}
 
     mock_response = {
         "visual_card": {
-            "title": "Good Morning, Javan!",
+            "title": "Good Morning, Alex!",
             "subtitle": "Saturday, October 17",
         },
-        "narration_script": "Good morning, Jay-ven! Welcome to your briefing.",
+        "narration_script": "Good morning, Al-ex! Welcome to your briefing.",
     }
 
     with patch(
@@ -88,9 +88,9 @@ async def test_content_generation_separates_real_name_and_phonetic() -> None:
         content = await async_generate_step_content(
             hass, step_config, recipient, {"platform": "gemini", "api_key": "fake"}
         )
-        assert content["visual_card"]["title"] == "Good Morning, Javan!"
-        assert "Jay-ven" not in content["visual_card"]["title"]
-        assert "Jay-ven" in content["narration_script"]
+        assert content["visual_card"]["title"] == "Good Morning, Alex!"
+        assert "Al-ex" not in content["visual_card"]["title"]
+        assert "Al-ex" in content["narration_script"]
 
 
 @pytest.mark.asyncio
@@ -138,16 +138,16 @@ async def test_auto_detect_empty_or_whitespace_key_falls_back() -> None:
 async def test_content_generation_sanitizes_phonetic_leak_in_visual_card() -> None:
     """Test sanitizer strips phonetic name if AI leaks it into visual card fields."""
     hass = MagicMock()
-    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
     step_config = {"name": "weather", "type": "weather"}
 
     leaked_response = {
         "visual_card": {
-            "title": "Weather for Jay-ven",
-            "subtitle": "Forecast for Jay-ven's Day",
-            "bullet_points": ["Sunny for Jay-ven", "High 72°F"],
+            "title": "Weather for Al-ex",
+            "subtitle": "Forecast for Al-ex's Day",
+            "bullet_points": ["Sunny for Al-ex", "High 72°F"],
         },
-        "narration_script": "Good morning, Jay-ven! Here is your weather.",
+        "narration_script": "Good morning, Al-ex! Here is your weather.",
     }
 
     with patch(
@@ -157,27 +157,27 @@ async def test_content_generation_sanitizes_phonetic_leak_in_visual_card() -> No
         content = await async_generate_step_content(
             hass, step_config, recipient, {"platform": "gemini", "api_key": "key"}
         )
-        assert content["visual_card"]["title"] == "Weather for Javan"
-        assert content["visual_card"]["subtitle"] == "Forecast for Javan's Day"
-        assert content["visual_card"]["bullet_points"][0] == "Sunny for Javan"
-        assert "Jay-ven" not in json.dumps(content["visual_card"])
-        assert "Jay-ven" in content["narration_script"]
+        assert content["visual_card"]["title"] == "Weather for Alex"
+        assert content["visual_card"]["subtitle"] == "Forecast for Alex's Day"
+        assert content["visual_card"]["bullet_points"][0] == "Sunny for Alex"
+        assert "Al-ex" not in json.dumps(content["visual_card"])
+        assert "Al-ex" in content["narration_script"]
 
 
 @pytest.mark.asyncio
 async def test_content_generation_enforces_phonetic_in_narration() -> None:
     """Test sanitizer injects phonetic name into narration if AI used real name."""
     hass = MagicMock()
-    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
     step_config = {"name": "calendar", "type": "calendar"}
 
     missed_phonetic_response = {
         "visual_card": {
-            "title": "Agenda for Javan",
+            "title": "Agenda for Alex",
             "subtitle": "Today's Schedule",
             "bullet_points": ["10:00 AM Meeting"],
         },
-        "narration_script": "Hello Javan! You have 1 event today.",
+        "narration_script": "Hello Alex! You have 1 event today.",
     }
 
     with patch(
@@ -187,25 +187,25 @@ async def test_content_generation_enforces_phonetic_in_narration() -> None:
         content = await async_generate_step_content(
             hass, step_config, recipient, {"platform": "gemini", "api_key": "key"}
         )
-        assert "Jay-ven" in content["narration_script"]
-        assert "Javan" not in content["narration_script"]
-        assert "Javan" in content["visual_card"]["title"]
+        assert "Al-ex" in content["narration_script"]
+        assert "Alex" not in content["narration_script"]
+        assert "Alex" in content["visual_card"]["title"]
 
 
 @pytest.mark.asyncio
 async def test_content_generation_routes_to_conversation_agent() -> None:
     """Test content generation routes to conversation agent when configured."""
     hass = MagicMock()
-    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
     step_config = {"name": "daily_text", "type": "daily_text"}
 
     mock_response = {
         "visual_card": {
-            "title": "Daily Text for Javan",
+            "title": "Daily Text for Alex",
             "subtitle": "Saturday, October 17",
             "bullet_points": ["Proverbs 3:5"],
         },
-        "narration_script": "Jay-ven, trust in Jehovah with all your heart.",
+        "narration_script": "Al-ex, trust in Jehovah with all your heart.",
     }
 
     with patch(
@@ -218,9 +218,9 @@ async def test_content_generation_routes_to_conversation_agent() -> None:
             recipient,
             {"platform": "conversation_agent", "api_key": None, "agent_id": "agent_1"},
         )
-        assert content["visual_card"]["title"] == "Daily Text for Javan"
-        assert "Jay-ven" not in content["visual_card"]["title"]
-        assert "Jay-ven" in content["narration_script"]
+        assert content["visual_card"]["title"] == "Daily Text for Alex"
+        assert "Al-ex" not in content["visual_card"]["title"]
+        assert "Al-ex" in content["narration_script"]
         mock_agent.assert_awaited_once()
 
 
@@ -372,11 +372,11 @@ async def test_generate_step_content_fallback_to_conversation_on_gemini_error() 
         "agent_id": "conversation.mock",
     }
     step_config = {"name": "greeting"}
-    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
 
     fallback_response = {
         "visual_card": {"title": "Good Morning", "subtitle": "", "bullet_points": []},
-        "narration_script": "Good morning Jay-ven",
+        "narration_script": "Good morning Al-ex",
     }
 
     with (
@@ -395,7 +395,7 @@ async def test_generate_step_content_fallback_to_conversation_on_gemini_error() 
         assert mock_gemini.called
         assert mock_conv.called
         assert result["visual_card"]["title"] == "Good Morning"
-        assert result["narration_script"] == "Good morning Jay-ven"
+        assert result["narration_script"] == "Good morning Al-ex"
 
 
 @pytest.mark.asyncio
@@ -406,7 +406,7 @@ async def test_generate_step_content_fallback_to_conversation_on_network_error()
     hass = MagicMock()
     ai_creds = {"platform": "gemini", "api_key": "test_key"}
     step_config = {"name": "weather"}
-    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
 
     fallback_response = {
         "visual_card": {
@@ -435,39 +435,39 @@ async def test_generate_step_content_fallback_to_conversation_on_network_error()
 
 def test_enforce_recipient_separation_case_insensitive() -> None:
     """Test case-insensitive replacement of recipient real name in narration script."""
-    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
     raw_content = {
         "visual_card": {
-            "title": "Welcome Jay-ven",
+            "title": "Welcome Al-ex",
             "subtitle": "",
-            "bullet_points": ["Hello JAY-VEN"],
+            "bullet_points": ["Hello AL-EX"],
         },
-        "narration_script": "Good morning javan, it is great to see you JAVAN!",
+        "narration_script": "Good morning alex, it is great to see you ALEX!",
     }
 
     enforced = _enforce_recipient_separation(raw_content, recipient)
 
     # In visual card: phonetic name should be replaced by real name
-    assert enforced["visual_card"]["title"] == "Welcome Javan"
-    assert "Javan" in enforced["visual_card"]["bullet_points"][0]
+    assert enforced["visual_card"]["title"] == "Welcome Alex"
+    assert "Alex" in enforced["visual_card"]["bullet_points"][0]
 
     # In narration script: real name in any case should be replaced by phonetic name
     assert (
         enforced["narration_script"]
-        == "Good morning Jay-ven, it is great to see you Jay-ven!"
+        == "Good morning Al-ex, it is great to see you Al-ex!"
     )
 
 
 def test_build_prompt_scripture_includes_uplifting_thought() -> None:
     """Test scripture step prompt instructs AI to conclude with an uplifting thought."""
     step = {"name": "Scripture", "type": "scripture"}
-    prompt = _build_prompt(step, {"name": "Javan"})
+    prompt = _build_prompt(step, {"name": "Alex"})
     assert "uplifting" in prompt.lower() or "encouraging" in prompt.lower()
     assert "4. SCRIPTURE NARRATION" in prompt
 
     # Non-scripture step should NOT contain scripture narration instruction
     weather_prompt = _build_prompt(
-        {"name": "weather", "type": "weather"}, {"name": "Javan"}
+        {"name": "weather", "type": "weather"}, {"name": "Alex"}
     )
     assert "4. SCRIPTURE NARRATION" not in weather_prompt
 
@@ -517,24 +517,24 @@ async def test_query_conversation_agent_ignores_intent_error_response() -> None:
 def test_build_prompt_includes_current_local_date_and_step_guidelines() -> None:
     """Verify _build_prompt injects Current Local Date and step-specific narrative guidelines."""
     commute_prompt = _build_prompt(
-        {"name": "commute", "type": "commute"}, {"name": "Javan"}
+        {"name": "commute", "type": "commute"}, {"name": "Alex"}
     )
     assert "Current Local Date:" in commute_prompt
     assert "faster" in commute_prompt.lower()
 
     weather_prompt = _build_prompt(
-        {"name": "weather", "type": "weather"}, {"name": "Javan"}
+        {"name": "weather", "type": "weather"}, {"name": "Alex"}
     )
     assert "Current Local Date:" in weather_prompt
     assert "high" in weather_prompt.lower() or "forecast" in weather_prompt.lower()
 
     fun_fact_prompt = _build_prompt(
-        {"name": "fun_fact", "type": "fun_fact"}, {"name": "Javan"}
+        {"name": "fun_fact", "type": "fun_fact"}, {"name": "Alex"}
     )
     assert "fun fact" in fun_fact_prompt.lower()
 
     national_day_prompt = _build_prompt(
-        {"name": "national_day", "type": "national_day"}, {"name": "Javan"}
+        {"name": "national_day", "type": "national_day"}, {"name": "Alex"}
     )
     assert "National Day" in national_day_prompt
 
@@ -543,14 +543,14 @@ def test_build_prompt_greeting_vs_intermediate_directives() -> None:
     """Verify greeting prompt welcomes user while intermediate steps forbid repeating good morning."""
     greeting_prompt = _build_prompt(
         {"name": "greeting", "type": "greeting", "is_first_step": True},
-        {"name": "Javan", "phonetic_name": "Jay-ven"},
+        {"name": "Alex", "phonetic_name": "Al-ex"},
     )
     assert "GREETING DIRECTIVE" in greeting_prompt
     assert "Welcome the recipient warmly" in greeting_prompt
 
     weather_prompt = _build_prompt(
         {"name": "weather", "type": "weather", "is_first_step": False},
-        {"name": "Javan", "phonetic_name": "Jay-ven"},
+        {"name": "Alex", "phonetic_name": "Al-ex"},
     )
     assert "RE-GREETING DIRECTIVE" in weather_prompt
     assert "DO NOT say 'Good morning'" in weather_prompt
@@ -643,7 +643,7 @@ def test_build_prompt_intermediate_steps_forbid_repeating_recipient_name() -> No
     """Verify intermediate step prompt strictly forbids naming recipient on card or in speech."""
     weather_prompt = _build_prompt(
         {"name": "weather", "type": "weather", "is_first_step": False},
-        {"name": "Javan", "phonetic_name": "Jay-ven"},
+        {"name": "Alex", "phonetic_name": "Al-ex"},
     )
     assert "DO NOT include the recipient's name" in weather_prompt
     assert "DO NOT speak the recipient's name" in weather_prompt
@@ -655,22 +655,22 @@ def test_enforce_recipient_separation_simplifies_intermediate_titles_and_narrati
     """Verify intermediate step sanitizer simplifies titles and strips repeated re-greetings."""
     from custom_components.cast_studio.ai_client import _enforce_recipient_separation
 
-    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
     raw_content = {
         "visual_card": {
-            "title": "Weather for Javan",
-            "subtitle": "Forecast for Javan's Day",
+            "title": "Weather for Alex",
+            "subtitle": "Forecast for Alex's Day",
             "bullet_points": ["Sunny skies ahead"],
         },
-        "narration_script": "Good morning, Jay-ven! Sunny skies ahead with highs near 75.",
+        "narration_script": "Good morning, Al-ex! Sunny skies ahead with highs near 75.",
     }
 
     result = _enforce_recipient_separation(raw_content, recipient, is_first=False)
     assert result["visual_card"]["title"] == "Weather"
-    assert "Javan" not in result["visual_card"]["title"]
-    assert "Javan" not in result["visual_card"]["subtitle"]
+    assert "Alex" not in result["visual_card"]["title"]
+    assert "Alex" not in result["visual_card"]["subtitle"]
     assert not result["narration_script"].lower().startswith("good morning")
-    assert "Jay-ven" not in result["narration_script"]
+    assert "Al-ex" not in result["narration_script"]
     assert result["narration_script"].startswith("Sunny skies ahead")
 
 
@@ -680,7 +680,7 @@ def test_build_prompt_agenda_guidelines() -> None:
 
     prompt = _build_prompt(
         {"name": "agenda", "type": "agenda"},
-        {"name": "Javan", "phonetic_name": "Jay-ven"},
+        {"name": "Alex", "phonetic_name": "Al-ex"},
     )
     assert "AGENDA NARRATION & CARD" in prompt
     assert "agenda_split" in prompt
@@ -692,7 +692,7 @@ def test_enforce_recipient_separation_preserves_custom_card_fields() -> None:
     """Verify _enforce_recipient_separation preserves layout, calendar_items, and todo_items."""
     from custom_components.cast_studio.ai_client import _enforce_recipient_separation
 
-    recipient = {"name": "Javan", "phonetic_name": "Jay-ven"}
+    recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
     raw_content = {
         "visual_card": {
             "title": "Today's Agenda",
@@ -717,14 +717,14 @@ def test_build_prompt_national_day_and_fun_fact_guidelines() -> None:
 
     nd_prompt = _build_prompt(
         {"name": "national_day", "type": "national_day"},
-        {"name": "Javan", "phonetic_name": "Jay-ven"},
+        {"name": "Alex", "phonetic_name": "Al-ex"},
     )
     assert "NATIONAL DAY NARRATION" in nd_prompt
     assert "Holiday Name" in nd_prompt
 
     ff_prompt = _build_prompt(
         {"name": "fun_fact", "type": "fun_fact"},
-        {"name": "Javan", "phonetic_name": "Jay-ven"},
+        {"name": "Alex", "phonetic_name": "Al-ex"},
     )
     assert "FUN FACT NARRATION" in ff_prompt
     assert "Trivia Topic" in ff_prompt

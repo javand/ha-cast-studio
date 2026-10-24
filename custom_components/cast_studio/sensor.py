@@ -6,138 +6,120 @@ import contextlib
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.core import callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
+from .ai_health import SIGNAL_AI_ACCOUNT_ISSUE, get_ai_account_issue
 from .const import DOMAIN, LOGGER
+from .people import get_people, get_routines, slugify_name
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+    from .people import Person, Routine
 
-class CastStudioRoutineSensor(SensorEntity):
-    """Sensor tracking routine compilation and playback lifecycle."""
+BRIEFING_SENSORS = "briefing_sensors"
+
+
+class CastStudioBriefingSensor(SensorEntity):
+    """Readiness of one person's routine (spec §5.7)."""
 
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = ["idle", "generating", "ready", "playing", "error"]  # noqa: RUF012
-    _unrecorded_attributes = frozenset({"video_path", "audio_path"})
+    _attr_icon = "mdi:play-circle-outline"
+    _unrecorded_attributes = frozenset({"ready_segments"})
 
     def __init__(
         self,
-        routine_name: str,
-        hass: HomeAssistant | None = None,
+        hass: HomeAssistant,
+        person: Person,
+        routine: Routine,
     ) -> None:
-        """Initialize the routine status sensor."""
-        self.routine_name = routine_name
-        self._attr_unique_id = f"cast_studio_{routine_name}"
-        self._attr_name = routine_name.replace("_", " ").title()
-        self.entity_id = f"sensor.cast_studio_{routine_name}"
-        self._attr_icon = "mdi:play-circle-outline"
-        self._state: str = "idle"
-        self._attr_duration: float | None = None
-        self._attr_last_pregenerated: str | None = None
-        self._attr_video_path: str | None = None
-        self._attr_audio_path: str | None = None
-        self._attr_slide_count: int | None = None
-        self._attr_active_task: str | None = None
-        if hass is not None:
-            self.hass = hass
+        """Initialize the sensor as ``sensor.cast_studio_<person>_<routine>``."""
+        self.hass = hass
+        self.routine_name = f"{slugify_name(person.name)}_{slugify_name(routine.name)}"
+        self.entity_id = f"sensor.cast_studio_{self.routine_name}"
+        self._attr_unique_id = f"cast_studio_routine_{routine.routine_id}"
+        self._attr_name = f"{person.name} {routine.name}"
+        self.person_name = person.name
+        self.routine_display_name = routine.name
+        self._state = "idle"
+        self._briefing_day: str | None = None
+        self._ready_segments: list[str] = []
 
     @property
     def native_value(self) -> str:
-        """Return the native value of the sensor."""
+        """Return the routine's readiness."""
         return self._state
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return sensor state attributes."""
+        """Return the person, routine, briefing day and ready segment keys."""
         return {
-            "duration": self._attr_duration,
-            "last_pregenerated": self._attr_last_pregenerated,
-            "video_path": self._attr_video_path,
-            "audio_path": self._attr_audio_path,
-            "slide_count": self._attr_slide_count,
-            "active_task": self._attr_active_task,
+            "person": self.person_name,
+            "routine": self.routine_display_name,
+            "briefing_day": self._briefing_day,
+            "ready_segments": list(self._ready_segments),
+            "ai_account_issue": get_ai_account_issue(self.hass),
         }
 
-    def update_state(  # noqa: PLR0912, PLR0913
+    async def async_added_to_hass(self) -> None:
+        """Rewrite the state when an AI account problem opens or clears."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_AI_ACCOUNT_ISSUE, self._async_ai_issue_changed
+            )
+        )
+
+    @callback
+    def _async_ai_issue_changed(self) -> None:
+        self.async_write_ha_state()
+
+    def set_briefing_state(
         self,
         state: str,
         *,
-        duration: float | None = None,
-        last_pregenerated: str | None = None,
-        video_path: str | None = None,
-        audio_path: str | None = None,
-        slide_count: int | None = None,
-        active_task: str | None = None,
-        attributes: dict[str, Any] | None = None,
+        briefing_day: str | None = None,
+        ready_segments: list[str] | None = None,
     ) -> None:
-        """Update sensor state and attributes."""
+        """Update the state, and the readiness attributes when given."""
         self._state = state
-        if duration is not None:
-            self._attr_duration = duration
-        if last_pregenerated is not None:
-            self._attr_last_pregenerated = last_pregenerated
-        if video_path is not None:
-            self._attr_video_path = video_path
-        if audio_path is not None:
-            self._attr_audio_path = audio_path
-        if slide_count is not None:
-            self._attr_slide_count = slide_count
-
-        if active_task is not None:
-            self._attr_active_task = active_task
-        elif attributes is not None and "active_task" in attributes:
-            self._attr_active_task = attributes["active_task"]
-        elif state in ("idle", "ready", "error") and active_task is None:
-            self._attr_active_task = None
-
-        if attributes:
-            if "duration" in attributes:
-                self._attr_duration = attributes["duration"]
-            if "last_pregenerated" in attributes:
-                self._attr_last_pregenerated = attributes["last_pregenerated"]
-            if "video_path" in attributes:
-                self._attr_video_path = attributes["video_path"]
-            if "audio_path" in attributes:
-                self._attr_audio_path = attributes["audio_path"]
-            if "slide_count" in attributes:
-                self._attr_slide_count = attributes["slide_count"]
-
+        if briefing_day is not None:
+            self._briefing_day = briefing_day
+        if ready_segments is not None:
+            self._ready_segments = list(ready_segments)
         self.async_write_ha_state()
 
     def async_write_ha_state(self) -> None:
-        """Write state to HA state machine, handling mock or real environments."""
-        if (
-            getattr(self, "entity_platform", None) is None
-            and self.hass is not None
-            and hasattr(self.hass, "states")
-            and hasattr(self.hass.states, "async_set")
-        ):
+        """Write the state, also before the entity platform has added it."""
+        if getattr(self, "entity_platform", None) is None:
             with contextlib.suppress(Exception):
                 self.hass.states.async_set(
-                    self.entity_id,
-                    self.native_value,
-                    self.extra_state_attributes,
+                    self.entity_id, self.native_value, self.extra_state_attributes
                 )
-        with contextlib.suppress(Exception):
-            super().async_write_ha_state()
+            return
+        super().async_write_ha_state()
 
 
-# Backward-compatible alias
-AutomationGeneratorRoutineSensor = CastStudioRoutineSensor
-
-
-def async_get_or_create_sensor(
+def async_get_or_create_briefing_sensor(
     hass: HomeAssistant,
-    routine_name: str,
-) -> CastStudioRoutineSensor:
-    """Get existing or create and register a new routine sensor."""
+    person: Person,
+    routine: Routine,
+) -> CastStudioBriefingSensor:
+    """
+    Get or create the sensor for one routine subentry.
+
+    A routine added after setup gets its sensor here on first use, through the
+    platform's dynamic-add callback.
+    """
     domain_data = hass.data.setdefault(DOMAIN, {})
-    sensors = domain_data.setdefault("sensors", {})
-    if routine_name not in sensors:
-        sensor = CastStudioRoutineSensor(routine_name, hass=hass)
-        sensors[routine_name] = sensor
+    sensors = domain_data.setdefault(BRIEFING_SENSORS, {})
+    if routine.routine_id not in sensors:
+        sensor = CastStudioBriefingSensor(hass, person, routine)
+        sensors[routine.routine_id] = sensor
         cb = domain_data.get("async_add_entities")
         if cb is not None and callable(cb):
             try:
@@ -146,54 +128,32 @@ def async_get_or_create_sensor(
                 LOGGER.debug("Error adding entity dynamically: %s", err)
         elif hasattr(hass, "states") and hasattr(hass.states, "async_set"):
             sensor.async_write_ha_state()
-    return sensors[routine_name]
+    return sensors[routine.routine_id]
 
 
-def async_update_routine_sensor(
-    hass: HomeAssistant,
-    routine_name: str,
-    state: str,
-    attributes: dict[str, Any] | None = None,
-    **kwargs: Any,
-) -> CastStudioRoutineSensor:
-    """Update state and attributes of a routine sensor."""
-    sensor = async_get_or_create_sensor(hass, routine_name)
-    sensor.update_state(state, attributes=attributes, **kwargs)
-    return sensor
-
-
-def _async_register_routine_sensors(
-    hass: HomeAssistant,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Register routine sensors with Home Assistant entity platform."""
+def _briefing_sensors_for_entry(
+    hass: HomeAssistant, entry: Any
+) -> list[CastStudioBriefingSensor]:
+    """Create a sensor for each of the entry's routine subentries."""
     domain_data = hass.data.setdefault(DOMAIN, {})
-    domain_data["async_add_entities"] = async_add_entities
-    sensors = domain_data.setdefault("sensors", {})
-
-    routines = domain_data.get("routines", {})
-    for routine_name in routines:
-        if routine_name not in sensors:
-            sensors[routine_name] = CastStudioRoutineSensor(routine_name, hass=hass)
-
-    if sensors:
-        async_add_entities(list(sensors.values()))
+    sensors = domain_data.setdefault(BRIEFING_SENSORS, {})
+    people = {person.person_id: person for person in get_people(entry)}
+    created: list[CastStudioBriefingSensor] = []
+    for routine in get_routines(entry):
+        if routine.routine_id in sensors:
+            continue
+        sensor = CastStudioBriefingSensor(hass, people[routine.person_id], routine)
+        sensors[routine.routine_id] = sensor
+        created.append(sensor)
+    return created
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: Any,  # noqa: ARG001 Unused function argument
+    entry: Any,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up CastStudio sensors from a config entry."""
-    _async_register_routine_sensors(hass, async_add_entities)
-
-
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config: dict[str, Any],  # noqa: ARG001 Unused function argument
-    async_add_entities: AddEntitiesCallback,
-    discovery_info: dict[str, Any] | None = None,  # noqa: ARG001
-) -> None:
-    """Set up CastStudio sensors from platform configuration."""
-    _async_register_routine_sensors(hass, async_add_entities)
+    """Set up a sensor for each of the entry's routines."""
+    hass.data.setdefault(DOMAIN, {})["async_add_entities"] = async_add_entities
+    if briefing_sensors := _briefing_sensors_for_entry(hass, entry):
+        async_add_entities(briefing_sensors)

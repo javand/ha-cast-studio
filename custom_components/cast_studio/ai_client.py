@@ -16,7 +16,9 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .ai_health import async_report_ai_failure, async_report_ai_success
 from .const import DOMAIN, LOGGER
+from .helpers import async_run_in_executor
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -62,6 +64,9 @@ STEP_PROMPT_GUIDELINES: dict[str, str] = {
         "   - In 'narration_script', summarize today's calendar events chronologically "
         "with start times (or confirm schedule is clear), then transition smoothly "
         "into the key priority tasks to tackle.\n"
+        "   - When the context lists more than one calendar, say which calendar "
+        "an event is on (e.g. 'On the Family calendar, ...'). The day is clear "
+        "only when every calendar has no events.\n"
         "   - In 'visual_card', return a unified 2-column agenda layout:\n"
         "     'title': 'Today\\'s Agenda',\n"
         "     'subtitle': '<X Events • Y Tasks Pending>',\n"
@@ -103,6 +108,27 @@ STEP_PROMPT_GUIDELINES: dict[str, str] = {
 }
 
 
+# Appended to every new-engine segment prompt (spec §5.2): segments are stored
+# one by one and may play alone or in any order.
+STANDALONE_SEGMENT_GUIDELINE = (
+    "This segment may play on its own or in any order with others; "
+    "do not refer to earlier or later segments."
+)
+_ENCOURAGEMENT_SENDOFF = "and end with a friendly send-off"
+_ENCOURAGEMENT_NO_SENDOFF = "and must not end with a send-off or name the recipient"
+SINGLE_MODE_COMMUTE_MODES = ("driving", "transit")
+# Old-pipeline wording that refers to neighbouring slides, and its standalone
+# replacement.
+_SCRIPTURE_NEXT_SLIDE = (
+    "; a separate encouragement slide follows, so do not add a closing pep talk"
+)
+_SCRIPTURE_STANDALONE = "; do not add a closing pep talk"
+
+
+# Gemini 2.5 Flash can take well over 15 s on a long prompt.
+GEMINI_TEXT_TIMEOUT_SECONDS = 30
+
+
 class AIClientError(Exception):
     """Base exception for AI client operations."""
 
@@ -120,6 +146,35 @@ def _clean_json_text(raw_text: str) -> str:
         return json_object_match.group(1).strip()
 
     return raw_text.strip()
+
+
+def _step_guideline(
+    step_config: dict[str, Any],
+    keys: tuple[str, str],
+    *,
+    is_standalone: bool,
+    drop_signoff: bool,
+) -> str | None:
+    """Return the step's numbered guideline, adjusted for new-engine segments."""
+    step_key, name_key = keys
+    guideline = STEP_PROMPT_GUIDELINES.get(step_key) or STEP_PROMPT_GUIDELINES.get(
+        name_key
+    )
+    commute_mode = str(step_config.get("transportation_mode") or "").strip().lower()
+    if (
+        is_standalone
+        and "commute" in keys
+        and commute_mode in SINGLE_MODE_COMMUTE_MODES
+    ):
+        guideline = (
+            f"4. COMMUTE NARRATION: Report the current {commute_mode} travel time "
+            "only. Do not compare it with other ways to travel.\n"
+        )
+    if guideline and is_standalone:
+        guideline = guideline.replace(_SCRIPTURE_NEXT_SLIDE, _SCRIPTURE_STANDALONE)
+    if guideline and drop_signoff:
+        guideline = guideline.replace(_ENCOURAGEMENT_SENDOFF, _ENCOURAGEMENT_NO_SENDOFF)
+    return guideline
 
 
 def _build_prompt(
@@ -193,13 +248,20 @@ def _build_prompt(
             "and DO NOT greet them again. Jump directly into narrating the content.\n"
         )
 
-    guideline = STEP_PROMPT_GUIDELINES.get(step_key) or STEP_PROMPT_GUIDELINES.get(
-        name_key
+    is_standalone = bool(step_config.get("standalone_segment"))
+    is_encouragement = "daily_encouragement" in (step_key, name_key)
+    include_signoff = step_config.get("include_signoff", True) is not False
+
+    guideline = _step_guideline(
+        step_config,
+        (step_key, name_key),
+        is_standalone=is_standalone,
+        drop_signoff=is_encouragement and not include_signoff,
     )
     if guideline:
         prompt += guideline
 
-    if step_key == "daily_encouragement" or name_key == "daily_encouragement":
+    if is_encouragement and include_signoff:
         prompt += (
             "   - EXCEPTION to the name rule above: the final sentence of "
             "'narration_script' MUST be exactly "
@@ -207,7 +269,16 @@ def _build_prompt(
             "recipient is named on this slide).\n"
         )
 
-    if is_first:
+    if is_standalone:
+        prompt += (
+            "5. GREETING DIRECTIVE: Welcome the recipient warmly with an "
+            "energizing morning greeting.\n"
+            if is_first
+            else "5. NO-GREETING DIRECTIVE: CRITICAL: DO NOT say 'Good morning', "
+            "do NOT greet the recipient, and do NOT use opening pleasantries or "
+            "filler. Jump directly into narrating the content immediately.\n"
+        )
+    elif is_first:
         prompt += (
             "5. GREETING DIRECTIVE: This is the opening slide of the briefing. "
             "Welcome the recipient warmly with an energizing morning greeting.\n"
@@ -219,6 +290,9 @@ def _build_prompt(
             "recipient by name again, and do NOT use opening pleasantries or filler. "
             "Jump directly into narrating the content immediately.\n"
         )
+
+    if is_standalone:
+        prompt += f"6. {STANDALONE_SEGMENT_GUIDELINE}\n"
 
     return prompt
 
@@ -335,13 +409,17 @@ async def _query_gemini_structured(
     }
 
     try:
-        async with asyncio.timeout(15):
+        async with asyncio.timeout(GEMINI_TEXT_TIMEOUT_SECONDS):
             async with session.post(url, json=payload) as resp:
                 if resp.status != HTTPStatus.OK:
                     err_body = await resp.text()
+                    async_report_ai_failure(
+                        hass, "Gemini", "text", resp.status, err_body
+                    )
                     msg = f"Gemini API returned status {resp.status}: {err_body}"
                     raise AIClientError(msg)
                 data = await resp.json()
+                async_report_ai_success(hass, "text")
 
         candidate = data["candidates"][0]
         part = candidate["content"]["parts"][0]
@@ -399,12 +477,16 @@ async def _query_gemini_image_api(
                         continue
                     if resp.status != HTTPStatus.OK:
                         err_text = await resp.text()
+                        async_report_ai_failure(
+                            hass, "Gemini", "image", resp.status, err_text
+                        )
                         truncated = err_text[:120]
                         msg = (
                             f"Gemini Image API returned status {resp.status}: "
                             f"{truncated}"
                         )
                         raise AIClientError(msg)
+                    async_report_ai_success(hass, "image")
                     return await resp.json()  # type: ignore[no-any-return]
         except TimeoutError:
             if attempt < max_retries - 1:
@@ -443,12 +525,16 @@ async def async_generate_ai_image(
             if inline and "data" in inline:
                 img_bytes = base64.b64decode(inline["data"])
                 out_path = Path(target_image_path)
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_bytes(img_bytes)
+                await async_run_in_executor(hass, _write_image, out_path, img_bytes)
                 return str(out_path)
     except Exception as err:  # noqa: BLE001
         LOGGER.warning("AI image generation failed for '%s': %s", prompt[:60], err)
     return None
+
+
+def _write_image(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
 
 
 def _extract_conversation_speech(response: Any) -> tuple[str, bool]:

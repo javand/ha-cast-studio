@@ -17,6 +17,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from . import ffmpeg_runner
+from .ai_health import async_report_ai_failure, async_report_ai_success
 from .const import DEFAULT_HOST_VOICE, LOGGER
 
 if TYPE_CHECKING:
@@ -24,6 +25,22 @@ if TYPE_CHECKING:
 
 DEFAULT_PERSONALITY = "news_anchor"
 DEFAULT_GEMINI_SAMPLE_RATE = 24000
+
+# Speech synthesis takes longer the longer the script: a 60-second scripture
+# reading can need more than 30 s. Allow a base time plus time per word.
+TTS_BASE_TIMEOUT_SECONDS = 30.0
+TTS_SECONDS_PER_WORD = 0.3
+TTS_MAX_TIMEOUT_SECONDS = 120.0
+
+
+def tts_timeout(script: str) -> float:
+    """Return how long to wait for a provider to voice ``script``."""
+    words = len(script.split())
+    return min(
+        TTS_BASE_TIMEOUT_SECONDS + TTS_SECONDS_PER_WORD * words,
+        TTS_MAX_TIMEOUT_SECONDS,
+    )
+
 
 OPENAI_VOICE_MAP: dict[str, str] = {
     "Pulcherrima": "nova",
@@ -175,6 +192,12 @@ def _build_gemini_tts_prompt(script: str, personality: str) -> str:
 class TTSClientError(Exception):
     """Base exception for TTS client operations."""
 
+    def __init__(self, msg: str, *, status: int | None = None, body: str = "") -> None:
+        """Keep the provider's HTTP status and error body for account checks."""
+        super().__init__(msg)
+        self.status = status
+        self.body = body
+
 
 def map_voice_for_openai(voice: str) -> str:
     """Map routine voice name to OpenAI-compatible voice identifier."""
@@ -315,7 +338,7 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
 
     async def _execute(sess: aiohttp.ClientSession) -> str:
         try:
-            async with asyncio.timeout(30):
+            async with asyncio.timeout(tts_timeout(script)):
                 async with sess.post(url, json=payload) as resp:
                     status = resp.status
                     if status != HTTPStatus.OK:
@@ -336,7 +359,7 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
 
         if status != HTTPStatus.OK:
             msg = f"Gemini TTS API returned status {status}: {err_body}"
-            raise TTSClientError(msg)
+            raise TTSClientError(msg, status=status, body=err_body)
 
         audio_bytes, mime_type = _extract_gemini_audio(data)
 
@@ -385,7 +408,7 @@ async def _synthesize_openai_tts(  # noqa: PLR0913
 
     async def _execute(sess: aiohttp.ClientSession) -> str:
         try:
-            async with asyncio.timeout(30):
+            async with asyncio.timeout(tts_timeout(script)):
                 async with sess.post(url, headers=headers, json=payload) as resp:
                     status = resp.status
                     if status != HTTPStatus.OK:
@@ -406,7 +429,7 @@ async def _synthesize_openai_tts(  # noqa: PLR0913
 
         if status != HTTPStatus.OK:
             msg = f"OpenAI TTS API returned status {status}: {err_body}"
-            raise TTSClientError(msg)
+            raise TTSClientError(msg, status=status, body=err_body)
 
         if not audio_bytes:
             msg = "No audio content returned from OpenAI TTS API"
@@ -522,7 +545,7 @@ async def async_synthesize_speech(  # noqa: PLR0913
 
     if platform == "gemini" and api_key:
         try:
-            return await _synthesize_gemini_tts(
+            wav_path = await _synthesize_gemini_tts(
                 script,
                 effective_voice,
                 effective_personality,
@@ -530,16 +553,25 @@ async def async_synthesize_speech(  # noqa: PLR0913
                 api_key,
                 session=session,
             )
-        except (TTSClientError, TimeoutError, aiohttp.ClientError, OSError) as err:
+        except TTSClientError as err:
+            async_report_ai_failure(hass, "Gemini", "voice", err.status, err.body)
             LOGGER.warning(
                 "Gemini TTS synthesis failed (%s), falling back to Home Assistant TTS",
                 err,
             )
+        except (TimeoutError, aiohttp.ClientError, OSError) as err:
+            LOGGER.warning(
+                "Gemini TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                err,
+            )
+        else:
+            async_report_ai_success(hass, "voice")
+            return wav_path
 
     elif platform == "openai" and api_key:
         try:
             openai_voice = map_voice_for_openai(effective_voice)
-            return await _synthesize_openai_tts(
+            wav_path = await _synthesize_openai_tts(
                 script,
                 openai_voice,
                 effective_personality,
@@ -547,11 +579,20 @@ async def async_synthesize_speech(  # noqa: PLR0913
                 api_key,
                 session=session,
             )
-        except (TTSClientError, TimeoutError, aiohttp.ClientError, OSError) as err:
+        except TTSClientError as err:
+            async_report_ai_failure(hass, "OpenAI", "voice", err.status, err.body)
             LOGGER.warning(
                 "OpenAI TTS synthesis failed (%s), falling back to Home Assistant TTS",
                 err,
             )
+        except (TimeoutError, aiohttp.ClientError, OSError) as err:
+            LOGGER.warning(
+                "OpenAI TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                err,
+            )
+        else:
+            async_report_ai_success(hass, "voice")
+            return wav_path
 
     return await _synthesize_ha_tts(
         hass,

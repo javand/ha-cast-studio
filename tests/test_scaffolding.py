@@ -7,7 +7,6 @@ from custom_components.cast_studio.const import (
     DEFAULT_HOST_VOICE,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_SCRIPTURE_VOICE,
-    DEFAULT_STATIC_DIR,
     DOMAIN,
 )
 
@@ -32,7 +31,6 @@ def test_manifest_metadata():
 def test_constants():
     assert DOMAIN == "cast_studio"
     assert DEFAULT_OUTPUT_DIR == "/config/www/cast_studio"
-    assert DEFAULT_STATIC_DIR == "/config/www/cast_studio/static"
     assert DEFAULT_HOST_VOICE == "Pulcherrima"
     assert DEFAULT_SCRIPTURE_VOICE == "Enceladus"
 

@@ -31,6 +31,10 @@ _ROUTINE_SYNC_TASKS: dict[str, asyncio.Task[Any]] = {}
 
 DEFAULT_PLAYING_TIMEOUT = 25.0
 
+# Set in a play's metadata when a newer play replaces it: its lifecycle then
+# skips the post-routine actions, which would otherwise run over the newer play.
+SUPERSEDED_FLAG = "_superseded"
+
 
 class OrchestratorError(Exception):
     """Base exception for orchestrator operations."""
@@ -607,6 +611,8 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
             hass, [target_player], _handle_state_changed
         )
         cleanups["unsub_timeout"] = async_call_later(hass, timeout_val, _handle_timeout)
+        # A cancelled lifecycle cancels the future: stop waiting for 'playing'.
+        playing_future.add_done_callback(lambda _future: _cleanup())
 
     async def _coordinate_playback_lifecycle() -> None:
         try:
@@ -633,7 +639,7 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
                 or metadata.get("post_actions")
                 or metadata.get("post_briefing_actions")
             )
-            if post_actions:
+            if post_actions and not metadata.get(SUPERSEDED_FLAG):
                 if isinstance(post_actions, dict):
                     post_actions = [post_actions]
                 try:

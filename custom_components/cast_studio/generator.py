@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import json
 import re
 import wave
 from collections.abc import Mapping
@@ -26,7 +25,6 @@ from homeassistant.util import dt as dt_util
 
 from .ai_client import (
     _enforce_recipient_separation,
-    async_discover_ai_credentials,
     async_generate_ai_image,
     async_generate_step_content,
 )
@@ -42,17 +40,12 @@ from .const import (
 )
 from .ffmpeg_runner import (
     async_run_ffmpeg,
-    build_concat_command,
     build_slide_clip_command,
-    write_concat_file,
 )
 from .helpers import async_run_in_executor
+from .people import find_person, get_first_person, get_loaded_entry, get_people
+from .pronunciation import apply_pronunciations, build_lexicon
 from .slide_renderer import render_slide
-from .storage_manager import (
-    cleanup_scratch_dir,
-    get_routine_scratch_dir,
-    prune_stale_files,
-)
 from .tts_client import async_synthesize_speech
 
 if TYPE_CHECKING:
@@ -66,10 +59,6 @@ _async_run_in_executor = async_run_in_executor
 
 class GeneratorError(Exception):
     """Base exception for generator operations."""
-
-
-class RoutineConfigError(GeneratorError, ValueError):
-    """Raised when routine configuration is invalid or has no steps."""
 
 
 def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
@@ -102,7 +91,55 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
     return eids
 
 
-DYNAMIC_IMAGE_STEP_KEYS = frozenset({"greeting", "fun_fact", "national_day"})
+DYNAMIC_IMAGE_STEP_KEYS = frozenset({"greeting", "fun_fact", "national_day", "closing"})
+
+# The closing slide's AI image follows the day of the week and the season.
+_CLOSING_WEEKDAY_MOODS = (
+    "a fresh, energized start to the week",
+    "steady momentum and good progress",
+    "bright midweek sunshine and good cheer",
+    "the week's finish line coming into view",
+    "the happy feeling of the weekend almost here",
+    "a relaxed, joyful weekend morning",
+    "a calm, restful Sunday",
+)
+_CLOSING_SEASON_SCENES = {
+    "winter": "a crisp winter morning with sparkling frost and a warm glowing sunrise",
+    "spring": "a spring morning with blooming flowers and fresh green meadows",
+    "summer": "a bright summer morning with blue skies and fields of sunflowers",
+    "autumn": "a golden autumn morning along a sunlit path of colorful leaves",
+}
+
+
+def _season(month: int) -> str:
+    if month in (12, 1, 2):
+        return "winter"
+    if month in (3, 4, 5):
+        return "spring"
+    if month in (6, 7, 8):
+        return "summer"
+    return "autumn"
+
+
+def closing_subtitle(now: datetime) -> str:
+    """Return the closing slide's upbeat day line, e.g. 'Happy Thursday!'."""
+    return f"Happy {now:%A}!"
+
+
+def _closing_image_prompt(now: datetime) -> str:
+    """Prompt for a closing image that captures having a great day today."""
+    scene = _CLOSING_SEASON_SCENES[_season(now.month)]
+    mood = _CLOSING_WEEKDAY_MOODS[now.weekday()]
+    return (
+        "A joyful, uplifting cinematic photograph that captures the feeling of "
+        f"having a great day: {scene}, evoking {mood}. Warm golden light, bright "
+        "optimistic colors, inviting and cheerful, 16:9 widescreen aspect ratio, "
+        "no text, no words, no typography"
+    )
+
+
+# Seconds to wait for commute sensors to refresh before using their last value.
+SENSOR_REFRESH_TIMEOUT = 15
 
 
 def is_step_image_dynamic(step: dict[str, Any], step_name: str = "") -> bool:
@@ -169,8 +206,16 @@ def _format_weather_service_response(
     return ", ".join(line_parts)
 
 
-def _format_calendar_service_response(eid: str, events: list[Any]) -> str:
-    """Format calendar.get_events response list into context string."""
+def _format_calendar_service_response(
+    eid: str, events: list[Any], name: str | None = None
+) -> str:
+    """
+    Format calendar.get_events response list into context string.
+
+    The calendar's name leads the line so a briefing drawing on several
+    calendars can say which one each event is on.
+    """
+    label = f"Calendar '{name}' ({eid})" if name else f"Calendar ({eid})"
     event_strs: list[str] = []
     for ev in events:
         if not isinstance(ev, dict):
@@ -191,11 +236,28 @@ def _format_calendar_service_response(eid: str, events: list[Any]) -> str:
         event_strs.append(", ".join(parts))
 
     if not event_strs:
-        return (
-            f"Calendar ({eid}): No scheduled meetings today. "
-            "The user's schedule is completely clear."
-        )
-    return f"Calendar ({eid}): {'; '.join(event_strs)}"
+        return f"{label}: No events on this calendar today."
+    return f"{label}: {'; '.join(event_strs)}"
+
+
+def _calendar_name(hass: HomeAssistant, eid: str) -> str | None:
+    """Return a calendar's friendly name, if Home Assistant knows it."""
+    states = getattr(hass, "states", None)
+    state = states.get(eid) if states is not None else None
+    name = state.attributes.get("friendly_name") if state is not None else None
+    return name if isinstance(name, str) and name else None
+
+
+def _event_start_key(start: Any) -> str:
+    """
+    Sort key for merging events from several calendars into one timeline.
+
+    ISO dates and date-times sort as strings, and an all-day date sorts
+    before that day's timed events. Missing starts go last.
+    """
+    if isinstance(start, dict):
+        start = start.get("dateTime") or start.get("date")
+    return str(start) if start else "~"
 
 
 def _format_todo_service_response(eid: str, items: list[Any]) -> str:
@@ -547,6 +609,13 @@ def _get_entry_setting(hass: HomeAssistant, key: str) -> Any:
     return value if value not in (None, "") else data.get(key)
 
 
+def _configured_commute_destination(hass: HomeAssistant) -> str | None:
+    """Return the first person's destination zone, else the entry setting."""
+    if (person := get_first_person(hass)) is not None:
+        return person.commute_destination_zone
+    return _get_entry_setting(hass, CONF_COMMUTE_DESTINATION)
+
+
 def _resolve_commute_origin(hass: HomeAssistant) -> tuple[float, float] | None:
     """Resolve the commute origin: zone.home, then the HA configured location."""
     if coords := _resolve_location(hass, "zone.home"):
@@ -568,15 +637,21 @@ def _resolve_commute_destination(
     Resolve the commute destination from configuration only.
 
     Order: step ``destination_zone``/``destination``, the configured
-    ``commute_destination_zone`` option, the drive sensor's ``destination``
+    destination (the first person's zone when people exist, else the
+    ``commute_destination_zone`` entry setting), the drive sensor's ``destination``
     attribute (zone id or "lat,lon"), then the generic ``zone.work`` and
     ``zone.office``. Returns None when nothing resolves so the map fetch is
     skipped and the procedural map is used.
+
+    New-engine segments (``standalone_segment``) use the person's own
+    ``destination_zone`` only, never a household-wide fallback.
     """
+    if step.get("standalone_segment"):
+        return _resolve_location(hass, step.get("destination_zone"))
     for candidate in (
         step.get("destination_zone"),
         step.get("destination"),
-        _get_entry_setting(hass, CONF_COMMUTE_DESTINATION),
+        _configured_commute_destination(hass),
         sensor_destination,
         "zone.work",
         "zone.office",
@@ -584,6 +659,40 @@ def _resolve_commute_destination(
         if coords := _resolve_location(hass, candidate):
             return coords
     return None
+
+
+async def _async_refresh_sensors(
+    hass: HomeAssistant, entity_ids: list[str | None]
+) -> None:
+    """
+    Ask the commute sensors for a fresh reading before they are read.
+
+    Travel-time sensors often have polling off to save API calls; a failure
+    only means the last reading is used.
+    """
+    ids = [eid for eid in dict.fromkeys(entity_ids) if eid]
+    if not ids:
+        return
+    try:
+        async with asyncio.timeout(SENSOR_REFRESH_TIMEOUT):
+            await hass.services.async_call(
+                "homeassistant", "update_entity", {"entity_id": ids}, blocking=True
+            )
+    except Exception as err:  # noqa: BLE001 - the last reading still works
+        LOGGER.debug("Could not refresh commute sensors %s: %s", ids, err)
+
+
+def _sensor_minutes(hass: HomeAssistant, entity_id: str | None) -> int | None:
+    """Return a travel-time sensor's state in whole minutes, if it has one."""
+    if not entity_id or not hasattr(hass, "states"):
+        return None
+    state = hass.states.get(entity_id)
+    if state is None:
+        return None
+    try:
+        return round(float(state.state))
+    except (TypeError, ValueError):
+        return None
 
 
 async def async_extract_commute_data(  # noqa: C901, PLR0912, PLR0915
@@ -611,7 +720,13 @@ async def async_extract_commute_data(  # noqa: C901, PLR0912, PLR0915
     else:
         candidates = []
 
-    if not candidates and hasattr(hass, "states") and hasattr(hass.states, "async_all"):
+    # New-engine segments only use the person's own sensors (no household scan).
+    standalone = bool(step.get("standalone_segment"))
+    if standalone:
+        candidates = []
+    elif (
+        not candidates and hasattr(hass, "states") and hasattr(hass.states, "async_all")
+    ):
         try:
             candidates = [
                 s.entity_id
@@ -657,6 +772,28 @@ async def async_extract_commute_data(  # noqa: C901, PLR0912, PLR0915
             drive_sensor = eid
         elif not transit_sensor:
             transit_sensor = eid
+
+    if standalone:
+        drive_sensor = step.get("commute_drive_sensor") or None
+        transit_sensor = step.get("commute_transit_sensor") or None
+        # A driving or transit person hears (and sees) that one mode only.
+        single_mode = str(step.get("transportation_mode") or "").lower()
+        if single_mode == "driving":
+            transit_sensor = None
+        elif single_mode == "transit":
+            drive_sensor = None
+        drive_return_sensor = (
+            step.get("commute_drive_return_sensor") if drive_sensor else None
+        )
+        transit_return_sensor = (
+            step.get("commute_transit_return_sensor") if transit_sensor else None
+        )
+        await _async_refresh_sensors(
+            hass,
+            [drive_sensor, drive_return_sensor, transit_sensor, transit_return_sensor],
+        )
+    else:
+        drive_return_sensor = transit_return_sensor = None
 
     drive_time: int | None = None
     drive_summary = "Driving"
@@ -741,7 +878,10 @@ async def async_extract_commute_data(  # noqa: C901, PLR0912, PLR0915
 
     map_image_path: str | None = None
     map_info = None
-    if origin_coords and dest_coords:
+    audio_only_segment = step.get("standalone_segment") and not step.get("visual")
+    if audio_only_segment:
+        LOGGER.debug("Audio-only segment; skipping the commute map")
+    elif origin_coords and dest_coords:
         map_info = await async_fetch_commute_map(
             hass, origin_coords, dest_coords, selected_mode, api_key, output_dir
         )
@@ -757,6 +897,15 @@ async def async_extract_commute_data(  # noqa: C901, PLR0912, PLR0915
     selected_time = drive_time if selected_mode == "driving" else transit_time
     if selected_time is None:
         selected_time = drive_time if drive_time is not None else transit_time
+    return_sensor = (
+        drive_return_sensor if selected_mode == "driving" else transit_return_sensor
+    )
+    return_time = _sensor_minutes(hass, return_sensor)
+    round_trip_time = (
+        selected_time + return_time
+        if selected_time is not None and return_time is not None
+        else None
+    )
     eta_is_relative = bool(step.get("relative_eta"))
     if selected_time is None:
         eta_str = ""
@@ -789,6 +938,8 @@ async def async_extract_commute_data(  # noqa: C901, PLR0912, PLR0915
         "eta": eta_str,
         "eta_is_relative": eta_is_relative,
         "selected_time": selected_time,
+        "return_time": return_time,
+        "round_trip_time": round_trip_time,
         "traffic_condition": traffic_condition,
         "map_image_path": map_image_path,
     }
@@ -1332,6 +1483,7 @@ async def async_extract_entity_context(  # noqa: C901, PLR0912, PLR0915
         or step_type in ("agenda", "calendar")
     )
     agenda_events: list[dict[str, str]] = []
+    event_starts: list[str] = []
     agenda_tasks: list[str] = []
 
     if callable(async_call):
@@ -1355,7 +1507,7 @@ async def async_extract_entity_context(  # noqa: C901, PLR0912, PLR0915
                     events = res[eid].get("events")
                     if isinstance(events, list):
                         service_overrides[eid] = _format_calendar_service_response(
-                            eid, events
+                            eid, events, _calendar_name(hass, eid)
                         )
                         for ev in events:
                             if not isinstance(ev, dict):
@@ -1380,6 +1532,7 @@ async def async_extract_entity_context(  # noqa: C901, PLR0912, PLR0915
                                     "location": ev_loc,
                                 }
                             )
+                            event_starts.append(_event_start_key(ev.get("start")))
 
             elif eid.startswith("todo."):
                 res = await _async_call_service_for_entity(
@@ -1415,7 +1568,13 @@ async def async_extract_entity_context(  # noqa: C901, PLR0912, PLR0915
 
         step.setdefault("card", {})["agenda_data"] = {
             "date_str": date_str,
-            "calendar_events": agenda_events,
+            "calendar_events": [
+                event
+                for _, event in sorted(
+                    zip(event_starts, agenda_events, strict=True),
+                    key=lambda pair: pair[0],
+                )
+            ],
             "todo_items": agenda_tasks,
         }
 
@@ -1459,15 +1618,40 @@ def _format_commute_narration_hint(commute_data: dict[str, Any]) -> str:
     mode = "transit" if commute_data.get("selected_mode") == "transit" else "driving"
     route = str(commute_data.get("summary") or "").strip()
     route_part = f" {route}" if route.startswith("via ") else ""
+    home = _format_trip_home_hint(commute_data)
     if commute_data.get("eta_is_relative"):
         return (
             f"Commute (tell the listener): {mode}{route_part}, "
-            f"about {minutes} minutes. Do not mention a clock arrival time."
+            f"about {minutes} minutes.{home} Do not mention a clock arrival time."
         )
     eta = str(commute_data.get("eta") or "").strip()
     eta_part = f", arriving around {eta}" if eta else ""
     return (
-        f"Commute (tell the listener): {mode}{route_part}, {minutes} minutes{eta_part}."
+        f"Commute (tell the listener): {mode}{route_part}, "
+        f"{minutes} minutes{eta_part}.{home}"
+    )
+
+
+def _spoken_duration(minutes: int) -> str:
+    """Say a trip length the way a person would: '1 hour 23 minutes'."""
+    hours, mins = divmod(int(minutes), 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if mins or not hours:
+        parts.append(f"{mins} minute{'s' if mins != 1 else ''}")
+    return " ".join(parts)
+
+
+def _format_trip_home_hint(commute_data: dict[str, Any]) -> str:
+    """Describe the evening trip home and round trip, when a sensor gives one."""
+    home = commute_data.get("return_time")
+    total = commute_data.get("round_trip_time")
+    if home is None or total is None:
+        return ""
+    return (
+        f" Heading home this evening, about {_spoken_duration(home)}, "
+        f"so plan on about {_spoken_duration(total)} round trip."
     )
 
 
@@ -1512,36 +1696,6 @@ def _is_unconfigured_optional_step(hass: HomeAssistant, step: dict[str, Any]) ->
     return False
 
 
-def get_executable_steps(
-    hass: HomeAssistant,
-    routine_config: dict[str, Any],
-    *,
-    log_skipped: bool = False,
-) -> list[dict[str, Any]]:
-    """Filter routine steps and skip unconfigured optional steps."""
-    all_steps = routine_config.get("steps")
-    if not all_steps or not isinstance(all_steps, list):
-        return []
-
-    is_visual = routine_config.get("visuals", True)
-    if is_visual:
-        candidates = [s for s in all_steps if s.get("visual", False) is True]
-    else:
-        candidates = [s for s in all_steps if not s.get("background_only", False)]
-
-    executable: list[dict[str, Any]] = []
-    for raw_idx, step in enumerate(candidates):
-        if _is_unconfigured_optional_step(hass, step):
-            if log_skipped:
-                LOGGER.info(
-                    "Skipping unconfigured optional step '%s'",
-                    step.get("name", f"step_{raw_idx:02d}"),
-                )
-            continue
-        executable.append(step)
-    return executable
-
-
 def get_audio_duration(
     audio_path: str,
     fallback_text: str | None = None,
@@ -1573,59 +1727,6 @@ def get_audio_duration(
         return round(max(3.0, words / 2.5), 2)
 
     return 5.0
-
-
-def build_audio_concat_command(
-    concat_list_file: str,
-    output_audio_path: str,
-    ffmpeg_bin: str = "ffmpeg",
-) -> list[str]:
-    """Build FFmpeg command to concatenate audio clips into output file."""
-    if output_audio_path.endswith(".mp3"):
-        return [
-            ffmpeg_bin,
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_list_file),
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            "192k",
-            str(output_audio_path),
-        ]
-    return [
-        ffmpeg_bin,
-        "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        str(concat_list_file),
-        "-c",
-        "copy",
-        str(output_audio_path),
-    ]
-
-
-def _ensure_directory(directory: Path) -> None:
-    """Ensure directory and parents exist synchronously."""
-    directory.mkdir(parents=True, exist_ok=True)
-
-
-def _write_json_file(file_path: Path, data: dict[str, Any]) -> None:
-    """Write dictionary to JSON file synchronously."""
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def _unlink_file_if_exists(file_path: str) -> None:
-    with contextlib.suppress(OSError):
-        Path(file_path).unlink(missing_ok=True)
 
 
 def _detect_step_weather_condition(
@@ -1814,6 +1915,9 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
             "and city skyline bathed in soft golden morning sunlight, "
             "clear commute route"
         )
+    elif step_key in ("closing", "all_heard"):
+        fallback_asset = "closing_good_day.jpg"
+        dynamic_prompt = _closing_image_prompt(dt_util.now())
     elif step_key in ("scripture", "bible", "daily_text") or name_key in (
         "scripture",
         "bible",
@@ -1872,7 +1976,7 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
 
 
 # A sentence that is *entirely* a generic send-off, e.g. "Have a wonderful
-# day!", "I hope you have a great day, Javan!" or "Have a blessed day ahead."
+# day!", "I hope you have a great day, Alex!" or "Have a blessed day ahead."
 _GENERIC_SENDOFF_SENTENCE_RE = re.compile(
     r"^(?:(?:i\s+)?hope\s+you\s+|may\s+you\s+|and\s+)?"
     r"have\s+an?\s+(?:\w+\s+){0,2}day(?:\s+(?:today|ahead))?"
@@ -1880,6 +1984,12 @@ _GENERIC_SENDOFF_SENTENCE_RE = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _signoff_line(name: str) -> str:
+    """Return the fixed sign-off, 'Have a great day, <name>!'."""
+    name = name.strip()
+    return f"Have a great day, {name}!" if name else "Have a great day!"
 
 
 def _ensure_encouragement_signoff(narration: str, recipient: dict[str, Any]) -> str:
@@ -1891,10 +2001,7 @@ def _ensure_encouragement_signoff(narration: str, recipient: dict[str, Any]) -> 
     sentence, so a sentence is never cut mid-way.
     """
     name = str(recipient.get("name") or "").strip()
-    spoken_name = str(recipient.get("phonetic_name") or name).strip()
-    signoff = (
-        f"Have a great day, {spoken_name}!" if spoken_name else "Have a great day!"
-    )
+    signoff = _signoff_line(str(recipient.get("phonetic_name") or name))
     text = narration.strip()
     if text.lower().endswith(signoff.lower()):
         return text
@@ -1905,6 +2012,23 @@ def _ensure_encouragement_signoff(narration: str, recipient: dict[str, Any]) -> 
     if text and text[-1] not in ".!?":
         text += "."
     return f"{text} {signoff}".strip()
+
+
+def _respell_for_speech(
+    hass: HomeAssistant, narration: str, recipient: dict[str, Any]
+) -> str:
+    """
+    Apply the pronunciation lexicon to narration, for the speech engine only.
+
+    The listener is the person whose name matches the recipient's name. With
+    no match only household phonetic names apply. Card text never goes through here.
+    """
+    if (entry := get_loaded_entry(hass)) is None:
+        return narration
+    people = get_people(entry)
+    name = str(recipient.get("name") or "").strip()
+    listener = find_person(entry, name) if name else None
+    return apply_pronunciations(narration, build_lexicon(people, listener))
 
 
 async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
@@ -1929,6 +2053,11 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "bible",
     )
     is_first = step_to_process.get("is_first_step")
+    is_closing = step_to_process.get("type") == "closing"
+    is_encouragement = step_key in ("daily_encouragement", "encouragement")
+    wants_signoff = is_encouragement and (
+        step_to_process.get("include_signoff", True) is not False
+    )
 
     explicit_narration = (
         step_to_process.get("narration")
@@ -1936,7 +2065,20 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
         or step_to_process.get("text")
         or step_to_process.get("alert_message")
     )
-    if explicit_narration and str(explicit_narration).strip():
+    if is_closing:
+        # New-engine closing segment: fixed copy, no LLM (spec §5.2).
+        real_name = str(recipient.get("name") or "")
+        spoken_name = str(recipient.get("phonetic_name") or real_name)
+        content = {
+            "visual_card": {
+                "title": _signoff_line(real_name),
+                "subtitle": step_to_process.get("subtitle")
+                or closing_subtitle(dt_util.now()),
+                "bullet_points": [],
+            },
+            "narration_script": _signoff_line(spoken_name),
+        }
+    elif explicit_narration and str(explicit_narration).strip():
         raw_content = {
             "visual_card": {
                 "title": step_to_process.get(
@@ -2016,11 +2158,8 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
         card_data["subtitle"] = step_to_process["subtitle"]
 
     card_data.setdefault("step_name", step_name)
-    if step_key in ("daily_encouragement", "encouragement"):
-        real_name = str(recipient.get("name") or "").strip()
-        card_data["host_signoff"] = (
-            f"Have a great day, {real_name}!" if real_name else "Have a great day!"
-        )
+    if wants_signoff:
+        card_data["host_signoff"] = _signoff_line(str(recipient.get("name") or ""))
     if weather_cond := _detect_step_weather_condition(hass, step_to_process):
         card_data.setdefault("weather_condition", weather_cond)
 
@@ -2037,7 +2176,7 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
         )
 
     narration_script = content.get("narration_script", "")
-    if step_key in ("daily_encouragement", "encouragement"):
+    if wants_signoff:
         narration_script = _ensure_encouragement_signoff(
             str(narration_script), recipient
         )
@@ -2058,7 +2197,7 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
     synth_audio_path = await async_synthesize_speech(
         hass,
-        narration_script,
+        _respell_for_speech(hass, str(narration_script), recipient),
         voice,
         personality,
         audio_target_path,
@@ -2085,7 +2224,9 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
         else:
             duration = raw_duration
 
-    if is_visual and slide_target_path and clip_target_path:
+    # Without a clip target only the slide is rendered; the caller encodes the
+    # clip itself (new-engine segments use one uniform encode).
+    if is_visual and slide_target_path:
         phonetic = step_to_process.get("phonetic_name") or recipient.get(
             "phonetic_name"
         )
@@ -2096,17 +2237,18 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
             slide_target_path,
             phonetic,
         )
-        clip_cmd = build_slide_clip_command(
-            slide_img_path or slide_target_path,
-            effective_audio_path,
-            clip_target_path,
-            duration=duration,
-            pad_seconds=pad_seconds,
-        )
-        clip_ok = await async_run_ffmpeg(hass, clip_cmd)
-        if not clip_ok:
-            msg = f"FFmpeg clip compilation failed for step '{step_name}'"
-            raise GeneratorError(msg)
+        if clip_target_path:
+            clip_cmd = build_slide_clip_command(
+                slide_img_path or slide_target_path,
+                effective_audio_path,
+                clip_target_path,
+                duration=duration,
+                pad_seconds=pad_seconds,
+            )
+            clip_ok = await async_run_ffmpeg(hass, clip_cmd)
+            if not clip_ok:
+                msg = f"FFmpeg clip compilation failed for step '{step_name}'"
+                raise GeneratorError(msg)
 
     image_info = {
         "image_type": card_data.get("image_type", "static"),
@@ -2115,359 +2257,3 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
     }
 
     return effective_audio_path, duration, pad_seconds, image_info
-
-
-async def _async_finalize_routine_media(  # noqa: PLR0913
-    hass: HomeAssistant,
-    routine_name: str,
-    routine_config: dict[str, Any],
-    scratch_dir: str,
-    output_dir: str,
-    *,
-    is_visual: bool,
-    clip_paths: list[str],
-    audio_paths: list[str],
-    slide_timestamps: list[dict[str, Any]],
-    total_duration: float,
-) -> dict[str, Any]:
-    """Concatenate compiled clips or audio files and write companion metadata JSON."""
-    out_path = Path(output_dir)
-    await _async_run_in_executor(hass, _ensure_directory, out_path)
-
-    if is_visual:
-        final_video_path = str(out_path / f"{routine_name}.mp4")
-        concat_manifest = str(Path(scratch_dir) / "concat_list.txt")
-        await _async_run_in_executor(
-            hass, write_concat_file, clip_paths, concat_manifest
-        )
-        concat_cmd = build_concat_command(concat_manifest, final_video_path)
-        if not await async_run_ffmpeg(hass, concat_cmd):
-            msg = f"FFmpeg concatenation failed for routine '{routine_name}'"
-            raise GeneratorError(msg)
-
-        metadata: dict[str, Any] = {
-            "video_path": final_video_path,
-            "audio_path": None,
-            "duration": total_duration,
-            "slide_timestamps": slide_timestamps,
-        }
-    else:
-        audio_format = routine_config.get("audio_format", "mp3")
-        final_audio_path = str(out_path / f"{routine_name}.{audio_format}")
-        concat_manifest = str(Path(scratch_dir) / "concat_audio.txt")
-        await _async_run_in_executor(
-            hass, write_concat_file, audio_paths, concat_manifest
-        )
-        concat_cmd = build_audio_concat_command(concat_manifest, final_audio_path)
-        if not await async_run_ffmpeg(hass, concat_cmd):
-            msg = f"FFmpeg audio concatenation failed for routine '{routine_name}'"
-            raise GeneratorError(msg)
-
-        metadata = {
-            "video_path": None,
-            "audio_path": final_audio_path,
-            "duration": total_duration,
-            "slide_timestamps": slide_timestamps,
-        }
-
-    post_routine_actions = (
-        routine_config.get("post_routine_actions")
-        or routine_config.get("post_briefing_actions")
-        or routine_config.get("post_actions")
-    )
-    if post_routine_actions:
-        metadata["post_routine_actions"] = post_routine_actions
-
-    metadata_file = out_path / f"{routine_name}.metadata.json"
-    await _async_run_in_executor(hass, _write_json_file, metadata_file, metadata)
-    return metadata
-
-
-def _apply_routine_overrides(
-    step: dict[str, Any], routine_config: dict[str, Any]
-) -> None:
-    """
-    Propagate routine-level overrides (e.g. transportation_mode) onto a step.
-
-    A routine/service-call ``transportation_mode`` wins over the step's static
-    value so a per-day or per-call override takes effect.
-    """
-    if routine_config.get("transportation_mode"):
-        step["transportation_mode"] = routine_config["transportation_mode"]
-
-
-async def async_compile_routine_media(  # noqa: PLR0912, PLR0913, PLR0915
-    hass: HomeAssistant,
-    routine_name: str,
-    routine_config: dict[str, Any],
-    recipient: dict[str, Any],
-    output_dir: str = DEFAULT_OUTPUT_DIR,
-    *,
-    relative_eta: bool = False,
-) -> dict[str, Any]:
-    """
-    Compile multimedia routine into MP4 or audio file with companion metadata.
-
-    Args:
-        hass: HomeAssistant instance.
-        routine_name: Name identifier of the routine (e.g. 'morning').
-        routine_config: Routine definition containing steps, visuals flag, etc.
-        recipient: Profile containing real 'name' and 'phonetic_name'.
-        output_dir: Destination directory for compiled media and metadata.
-        relative_eta: Render commute ETAs as a trip length ("35 min trip")
-            instead of a clock time. Used for pregenerated media, which plays
-            hours after it is compiled.
-
-    Returns:
-        Metadata dictionary with media path, duration, and slide_timestamps.
-
-    Raises:
-        RoutineConfigError: If routine configuration is invalid or missing steps.
-        GeneratorError: If media generation or FFmpeg compilation fails.
-
-    """
-    all_steps = routine_config.get("steps", [])
-    if not all_steps:
-        msg = f"Routine '{routine_name}' configuration contains no steps"
-        raise RoutineConfigError(msg)
-
-    is_visual = routine_config.get("visuals", True)
-    if is_visual:
-        if not [s for s in all_steps if s.get("visual", False) is True]:
-            msg = f"No visual steps found in routine '{routine_name}' configuration"
-            raise RoutineConfigError(msg)
-    elif not [s for s in all_steps if not s.get("background_only", False)]:
-        msg = f"No audio steps found in routine '{routine_name}' configuration"
-        raise RoutineConfigError(msg)
-
-    try:
-        await _async_run_in_executor(hass, prune_stale_files, output_dir)
-    except Exception as err:  # noqa: BLE001
-        LOGGER.warning("Stale file pruning failed in %s: %s", output_dir, err)
-
-    scratch_base = routine_config.get("scratch_base")
-    scratch_dir = await _async_run_in_executor(
-        hass, get_routine_scratch_dir, routine_name, base_tmp=scratch_base
-    )
-
-    try:
-        ai_creds = await async_discover_ai_credentials(hass)
-        if routine_config.get("conversation_agent"):
-            ai_creds["agent_id"] = routine_config["conversation_agent"]
-
-        executable_steps = get_executable_steps(hass, routine_config, log_skipped=True)
-        if not executable_steps:
-            msg = f"No executable steps remained for routine '{routine_name}'"
-            raise RoutineConfigError(msg)
-
-        slide_timestamps: list[dict[str, Any]] = []
-        clip_paths: list[str] = []
-        audio_paths: list[str] = []
-        current_offset = 0.0
-
-        for idx, step in enumerate(executable_steps):
-            is_last_step = idx == len(executable_steps) - 1
-            step_to_process = dict(step)
-            step_to_process["is_first_step"] = idx == 0
-            _apply_routine_overrides(step_to_process, routine_config)
-            if relative_eta:
-                step_to_process["relative_eta"] = True
-            if extracted_context := await async_extract_entity_context(
-                hass, step_to_process
-            ):
-                step_to_process["context"] = extracted_context
-
-            step_name = step_to_process.get("name", f"step_{idx:02d}")
-            default_pad = (
-                FINAL_SLIDE_PAD_SECONDS if is_last_step else DEFAULT_SLIDE_PAD_SECONDS
-            )
-            step_clip_target = str(Path(scratch_dir) / f"clip_{idx:02d}.mp4")
-
-            (
-                effective_audio_path,
-                duration,
-                _,
-                image_info,
-            ) = await _async_compile_single_step(
-                hass,
-                step_to_process,
-                step_name,
-                recipient,
-                ai_creds,
-                is_visual=is_visual,
-                default_pad_seconds=default_pad,
-                audio_target_path=str(Path(scratch_dir) / f"audio_{idx:02d}.wav"),
-                slide_target_path=str(Path(scratch_dir) / f"slide_{idx:02d}.jpg"),
-                clip_target_path=step_clip_target,
-            )
-
-            slide_timestamps.append(
-                {
-                    "name": step_name,
-                    "step_name": step_name,
-                    "timestamp": round(current_offset, 2),
-                    "start_time": round(current_offset, 2),
-                    "duration": round(duration, 2),
-                    "end_time": round(current_offset + duration, 2),
-                    "actions_on_display": step_to_process.get(
-                        "actions_on_display", step_to_process.get("actions", [])
-                    ),
-                    "image_type": image_info.get("image_type", "static"),
-                    "dynamic_image": image_info.get("dynamic_image", False),
-                    "image_path": image_info.get("image_path"),
-                }
-            )
-            current_offset += duration
-
-            if is_visual:
-                clip_paths.append(step_clip_target)
-            else:
-                audio_paths.append(effective_audio_path)
-
-        return await _async_finalize_routine_media(
-            hass,
-            routine_name,
-            routine_config,
-            scratch_dir,
-            output_dir,
-            is_visual=is_visual,
-            clip_paths=clip_paths,
-            audio_paths=audio_paths,
-            slide_timestamps=slide_timestamps,
-            total_duration=round(current_offset, 2),
-        )
-
-    finally:
-        await _async_run_in_executor(
-            hass, cleanup_scratch_dir, routine_name, base_tmp=scratch_base
-        )
-
-
-def _validate_clip_name(clip_name: str) -> str:
-    """Validate clip name and protect against directory traversal."""
-    clean_clip_name = clip_name.strip() if clip_name else ""
-    if not clean_clip_name:
-        msg = "clip_name cannot be empty or whitespace"
-        raise RoutineConfigError(msg)
-
-    if (
-        ".." in clean_clip_name
-        or "/" in clean_clip_name
-        or "\\" in clean_clip_name
-        or Path(clean_clip_name).name != clean_clip_name
-    ):
-        msg = f"Invalid clip_name path traversal: '{clip_name}'"
-        raise RoutineConfigError(msg)
-
-    return clean_clip_name
-
-
-def _prepare_static_card_data(
-    clean_clip_name: str,
-    step_config: dict[str, Any],
-    ai_card_data: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Derive and overlay card data for static visual clip."""
-    card_data = dict(ai_card_data or {})
-    card_keys = (
-        "title",
-        "subtitle",
-        "bullet_points",
-        "image_path",
-        "icon_path",
-        "icon",
-        "layout",
-        "theme",
-        "badge",
-    )
-    for key in card_keys:
-        if key in step_config:
-            card_data[key] = step_config[key]
-
-    if "title" not in card_data and "alert_title" in step_config:
-        card_data["title"] = step_config["alert_title"]
-    if "image_path" not in card_data and "image_asset" in step_config:
-        card_data["image_path"] = step_config["image_asset"]
-
-    if not card_data.get("title"):
-        card_data.setdefault("title", clean_clip_name.replace("_", " ").title())
-
-    return card_data
-
-
-async def async_compile_static_clip(
-    hass: HomeAssistant,
-    clip_name: str,
-    step_config: dict[str, Any],
-    output_dir: str = DEFAULT_OUTPUT_DIR,
-    scratch_base: str | None = None,
-) -> dict[str, Any]:
-    """Compile a reusable static visual alert clip with companion metadata."""
-    clean_clip_name = _validate_clip_name(clip_name)
-
-    out_path = Path(output_dir)
-    static_dir = out_path / "static"
-    await _async_run_in_executor(hass, _ensure_directory, static_dir)
-
-    final_video_path = str(static_dir / f"{clean_clip_name}.mp4")
-    final_metadata_path = static_dir / f"{clean_clip_name}.metadata.json"
-
-    scratch_dir = await _async_run_in_executor(
-        hass,
-        get_routine_scratch_dir,
-        f"static_{clean_clip_name}",
-        base_tmp=scratch_base,
-    )
-
-    try:
-        ai_creds = await async_discover_ai_credentials(hass)
-        try:
-            _, duration, _, _ = await _async_compile_single_step(
-                hass,
-                step_config,
-                clean_clip_name,
-                {},
-                ai_creds,
-                is_visual=True,
-                default_pad_seconds=0.0,
-                audio_target_path=str(Path(scratch_dir) / "audio.wav"),
-                slide_target_path=str(Path(scratch_dir) / "slide.jpg"),
-                clip_target_path=final_video_path,
-            )
-        except GeneratorError as err:
-            await _async_run_in_executor(hass, _unlink_file_if_exists, final_video_path)
-            msg = f"FFmpeg clip compilation failed for static clip '{clean_clip_name}'"
-            raise GeneratorError(msg) from err
-
-        metadata: dict[str, Any] = {
-            "clip_name": clean_clip_name,
-            "routine_name": clean_clip_name,
-            "video_path": final_video_path,
-            "audio_path": None,
-            "duration": round(duration, 2),
-            "slide_timestamps": [
-                {
-                    "name": clean_clip_name,
-                    "timestamp": 0.0,
-                    "start_time": 0.0,
-                    "duration": round(duration, 2),
-                    "end_time": round(duration, 2),
-                    "actions_on_display": step_config.get(
-                        "actions_on_display", step_config.get("actions", [])
-                    ),
-                }
-            ],
-            "static": True,
-        }
-        await _async_run_in_executor(
-            hass, _write_json_file, final_metadata_path, metadata
-        )
-        return metadata
-
-    finally:
-        await _async_run_in_executor(
-            hass,
-            cleanup_scratch_dir,
-            f"static_{clean_clip_name}",
-            base_tmp=scratch_base,
-        )

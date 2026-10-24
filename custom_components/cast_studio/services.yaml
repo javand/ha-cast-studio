@@ -1,154 +1,52 @@
-pregenerate_routine:
-  name: Pregenerate Routine
-  description: Silently pre-compiles media assets for a multimedia routine ahead of time without waking the house or triggering smart home devices.
+prebuild:
+  name: Pre-build Briefing
+  description: Builds and stores a routine's segments, or the segments of all of a person's routines, without playing anything. For visual people the stitched routine video is stored too.
   fields:
-    routine_name:
-      name: Routine Name
-      description: Name identifier of the routine to pregenerate (e.g., 'morning', 'bedtime').
-      required: true
-      example: morning
+    person:
+      name: Person
+      description: Person to pre-build for. Alone, builds the union of all of that person's routines; with a routine, picks which person's routine is meant.
+      required: false
+      example: Sam
       selector:
         text:
-    target_player:
-      name: Target Media Player
-      description: Target media player entity ID for playback.
+    routine:
+      name: Routine
+      description: Routine to pre-build. Give a person or a routine, or both.
       required: false
-      example: media_player.living_room_display
-      selector:
-        entity:
-          domain: media_player
-    routine_config:
-      name: Routine Configuration
-      description: Optional configuration dictionary defining routine steps and visual settings.
-      required: false
-      selector:
-        object:
-    output_dir:
-      name: Output Directory
-      description: Destination directory path for generated media and companion metadata JSON.
-      required: false
-      example: /config/www/cast_studio
+      example: Quick
       selector:
         text:
-    recipient:
-      name: Recipient Profile
-      description: Recipient profile containing 'name' for visual slides and 'phonetic_name' for speech synthesis.
-      required: false
-      example:
-        name: Javan
-        phonetic_name: Jay-ven
-      selector:
-        object:
-    post_routine_actions:
-      name: Post-Routine Actions
-      description: Actions executed upon routine playback completion (e.g., cast.show_lovelace_view).
-      required: false
-      selector:
-        action:
-    transportation_mode:
-      name: Transportation Mode Override
-      description: Override transportation mode for commute calculation ('fastest', 'driving', 'transit').
-      required: false
-      example: fastest
-      selector:
-        select:
-          options:
-            - fastest
-            - driving
-            - transit
 
-run_routine:
-  name: Run Routine
-  description: Executes a multimedia routine with instant playback (or on-demand generation fallback), concurrently triggering background actions and syncing slide display actions.
+play:
+  name: Play Briefing
+  description: Plays a routine now from fresh stored segments, building anything missing or stale live first.
   fields:
-    routine_name:
-      name: Routine Name
-      description: Name identifier of the routine to run (e.g., 'morning', 'bedtime').
-      required: true
-      example: morning
+    person:
+      name: Person
+      description: Person whose routine to play. Needed only when more than one person has a routine with this name.
+      required: false
+      example: Sam
       selector:
         text:
-    target_player:
+    routine:
+      name: Routine
+      description: Routine to play.
+      required: true
+      example: Quick
+      selector:
+        text:
+    target:
       name: Target Media Player
-      description: Target media player entity ID for playback.
+      description: Plays on this media player instead of the person's output device.
       required: false
-      example: media_player.living_room_display
+      example: media_player.kitchen_speaker
       selector:
         entity:
           domain: media_player
-    routine_config:
-      name: Routine Configuration
-      description: Optional configuration dictionary defining routine steps and visual settings.
-      required: false
-      selector:
-        object:
-    recipient:
-      name: Recipient Profile
-      description: Recipient profile containing 'name' for visual slides and 'phonetic_name' for speech synthesis.
-      required: false
-      example:
-        name: Javan
-        phonetic_name: Jay-ven
-      selector:
-        object:
-    output_dir:
-      name: Output Directory
-      description: Destination directory path where compiled media and metadata reside.
-      required: false
-      example: /config/www/cast_studio
-      selector:
-        text:
-    force_regenerate:
-      name: Force Regenerate
-      description: If true, forces fresh on-demand compilation even if a cached media file exists.
+    skip_played:
+      name: Skip Played Segments
+      description: If true, plays only the segments not yet heard in the person's briefing day. When everything has been heard, a short "That's everything" line plays.
       required: false
       default: false
       selector:
         boolean:
-    post_routine_actions:
-      name: Post-Routine Actions
-      description: Actions executed upon routine playback completion (e.g., cast.show_lovelace_view).
-      required: false
-      selector:
-        action:
-    transportation_mode:
-      name: Transportation Mode Override
-      description: Override transportation mode for commute calculation ('fastest', 'driving', 'transit').
-      required: false
-      example: fastest
-      selector:
-        select:
-          options:
-            - fastest
-            - driving
-            - transit
-
-compile_clip:
-  name: Compile Static Clip
-  description: Pre-compiles a permanent, reusable static multimedia alert clip (e.g., freezer door alert, gate open) to zero-latency video without 24h expiration.
-  fields:
-    clip_name:
-      name: Clip Name
-      description: Unique identifier for the static clip (e.g., freezer_door, front_door_open).
-      required: true
-      example: freezer_door
-      selector:
-        text:
-    step_config:
-      name: Step Configuration
-      description: Configuration dictionary defining slide typography, static image/icon, voice, and alert narration.
-      required: true
-      selector:
-        object:
-    output_dir:
-      name: Output Directory
-      description: Destination directory for generated static clip. Defaults to /config/www/cast_studio.
-      required: false
-      example: /config/www/cast_studio
-      selector:
-        text:
-
-reload:
-  name: Reload
-  description: Reloads the CastStudio integration configuration and resets routine sensors.
-  fields: {}

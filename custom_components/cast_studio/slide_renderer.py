@@ -1260,6 +1260,9 @@ COMMUTE_CHIP_PADDING = 74
 COMMUTE_CHIP_TEXT_INSET = 37
 COMMUTE_HERO_X1 = 380
 COMMUTE_HERO_TEXT_X = 52
+CLOSING_SIDE_MARGIN = 60
+CLOSING_TITLE_MAX_SIZE = 64
+CLOSING_TITLE_MIN_SIZE = 36
 MIN_COMMUTE_CHIPS = 2
 
 
@@ -1305,6 +1308,67 @@ def _commute_eta_text(c_data: dict[str, Any]) -> str:
     return " • ".join(parts)
 
 
+def _commute_round_trip_text(c_data: dict[str, Any]) -> str:
+    """Build the hero card's trip-home line, or '' without an evening estimate."""
+    home = c_data.get("return_time")
+    total = c_data.get("round_trip_time")
+    if home is None or total is None:
+        return ""
+    hours, mins = divmod(int(total), 60)
+    total_text = f"{hours}h {mins:02d}m" if hours else f"{mins} min"
+    return f"Home {_commute_minutes(home)} min • Round trip {total_text}"
+
+
+def _draw_closing_slide(canvas: Image.Image, card: dict[str, Any]) -> None:
+    """Render the sign-off as a full-bleed photo with a bold, centered send-off."""
+    img, _ = _load_image(card)
+    if img is None:
+        img, _ = _load_image({"image_path": "closing_good_day.jpg"})
+    base = _render_photo_background(img) if img is not None else _render_dawn_gradient()
+    canvas.paste(base.convert("RGB"), (0, 0))
+
+    # Fade the lower half to deep navy so the sign-off reads on any photo.
+    fade = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    fd = ImageDraw.Draw(fade)
+    start = CANVAS_HEIGHT * 0.42
+    for y in range(int(start), CANVAS_HEIGHT):
+        t = (y - start) / (CANVAS_HEIGHT - start)
+        fd.line([(0, y), (CANVAS_WIDTH, y)], fill=(8, 15, 35, int(225 * t**1.3)))
+    canvas.paste(Image.alpha_composite(canvas.convert("RGBA"), fade).convert("RGB"))
+    draw = ImageDraw.Draw(canvas)
+
+    max_w = CANVAS_WIDTH - 2 * CLOSING_SIDE_MARGIN
+    title = str(card.get("title") or "").strip()
+    size = CLOSING_TITLE_MAX_SIZE
+    font = _get_font(size, bold=True)
+    while size > CLOSING_TITLE_MIN_SIZE and _text_width(draw, title, font) > max_w:
+        size -= 2
+        font = _get_font(size, bold=True)
+    title = _truncate_to_width(draw, title, font, max_w)
+    title_w = _text_width(draw, title, font)
+    title_y = CANVAS_HEIGHT - 150
+    draw.text(
+        ((CANVAS_WIDTH - title_w) // 2 + 2, title_y + 3),
+        title,
+        font=font,
+        fill=(0, 0, 0),
+    )
+    draw.text(
+        ((CANVAS_WIDTH - title_w) // 2, title_y), title, font=font, fill=(255, 255, 255)
+    )
+
+    if subtitle := str(card.get("subtitle") or "").strip():
+        pill_font = _get_font(22, bold=True)
+        subtitle = _truncate_to_width(draw, subtitle.upper(), pill_font, max_w - 48)
+        pill_w = _text_width(draw, subtitle, pill_font) + 48
+        x0 = (CANVAS_WIDTH - pill_w) // 2
+        y0 = title_y - 62
+        draw.rounded_rectangle(
+            (x0, y0, x0 + pill_w, y0 + 40), radius=20, fill=(251, 191, 36)
+        )
+        draw.text((x0 + 24, y0 + 8), subtitle, font=pill_font, fill=(30, 27, 75))
+
+
 def _draw_google_nest_commute_slide(  # noqa: PLR0915
     canvas: Image.Image,
     card: dict[str, Any],
@@ -1337,8 +1401,10 @@ def _draw_google_nest_commute_slide(  # noqa: PLR0915
     od = ImageDraw.Draw(overlay)
 
     # Hero ETA card and mode chips (frosted slate).
+    round_trip_text = _commute_round_trip_text(c_data)
+    hero_y1 = 235 if round_trip_text else 205
     od.rounded_rectangle(
-        (COMMUTE_MARGIN, 68, COMMUTE_HERO_X1, 205),
+        (COMMUTE_MARGIN, 68, COMMUTE_HERO_X1, hero_y1),
         radius=16,
         fill=(15, 23, 42, 224),
         outline=(255, 255, 255, 36),
@@ -1419,6 +1485,19 @@ def _draw_google_nest_commute_slide(  # noqa: PLR0915
             ),
             font=eta_font,
             fill=(148, 163, 184),
+        )
+    if round_trip_text:
+        trip_font = _get_font(18, bold=True)
+        draw.text(
+            (COMMUTE_HERO_TEXT_X, 194),
+            _truncate_to_width(
+                draw,
+                round_trip_text,
+                trip_font,
+                COMMUTE_HERO_X1 - COMMUTE_HERO_TEXT_X - COMMUTE_CHIP_GAP,
+            ),
+            font=trip_font,
+            fill=(125, 211, 252),
         )
 
     # Mode chip text.
@@ -2143,6 +2222,18 @@ def render_slide(  # noqa: PLR0912, PLR0915
         theme = resolve_slide_theme(effective_card)
         canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
         _draw_google_nest_commute_slide(canvas, effective_card, theme=theme)
+        output_path = Path(output_jpeg_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.suffix.lower() == ".png":
+            canvas.save(str(output_path), "PNG")
+        else:
+            canvas.save(str(output_path), "JPEG", quality=95)
+        return str(output_path)
+
+    # 3d. Closing sign-off (and the all-heard line) layout
+    if step_name in ("closing", "all_heard"):
+        canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
+        _draw_closing_slide(canvas, effective_card)
         output_path = Path(output_jpeg_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if output_path.suffix.lower() == ".png":

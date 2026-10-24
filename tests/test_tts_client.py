@@ -36,7 +36,7 @@ async def test_synthesize_speech_gemini_voices(tmp_path: Path) -> None:
     ) as mock_tts:
         result = await async_synthesize_speech(
             hass=hass,
-            script="Good morning, Jay-ven!",
+            script="Good morning, Al-ex!",
             voice="Pulcherrima",
             personality="news_anchor",
             output_wav_path=output_wav,
@@ -44,7 +44,7 @@ async def test_synthesize_speech_gemini_voices(tmp_path: Path) -> None:
         )
         assert result == output_wav
         mock_tts.assert_awaited_once_with(
-            "Good morning, Jay-ven!",
+            "Good morning, Al-ex!",
             "Pulcherrima",
             "news_anchor",
             output_wav,
@@ -716,7 +716,7 @@ async def test_synthesize_gemini_tts_structured_director_prompt(tmp_path: Path) 
     mock_session.post.return_value = mock_ctx
 
     await _synthesize_gemini_tts(
-        script="Good morning, Jay-ven! It is 68 degrees and sunny.",
+        script="Good morning, Al-ex! It is 68 degrees and sunny.",
         voice="Pulcherrima",
         personality="news_anchor",
         output_wav_path=output_wav,
@@ -729,7 +729,7 @@ async def test_synthesize_gemini_tts_structured_director_prompt(tmp_path: Path) 
     assert "# AUDIO PROFILE:" in prompt_sent
     assert "news_anchor" in prompt_sent
     assert (
-        "#### TRANSCRIPT\nGood morning, Jay-ven! It is 68 degrees and sunny."
+        "#### TRANSCRIPT\nGood morning, Al-ex! It is 68 degrees and sunny."
         in prompt_sent
     )
     assert "Please speak the following narration text" not in prompt_sent
@@ -820,3 +820,12 @@ def test_personality_prompts_include_morning_host_and_bedtime_personas() -> None
     custom_prompt = _build_gemini_tts_prompt("Ahoy!", "custom_pirate")
     assert "Enthusiastic sea captain." in custom_prompt
     assert "custom_pirate" in custom_prompt
+
+
+def test_tts_timeout_grows_with_script_length_up_to_a_cap() -> None:
+    """Short lines keep about 30 s; a long scripture reading gets more, capped."""
+    from custom_components.cast_studio.tts_client import tts_timeout
+
+    assert tts_timeout("Good morning, Alex!") == pytest.approx(30.9)
+    assert tts_timeout(" ".join(["word"] * 150)) == pytest.approx(75.0)
+    assert tts_timeout(" ".join(["word"] * 1000)) == 120.0

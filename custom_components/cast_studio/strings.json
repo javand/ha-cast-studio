@@ -3,52 +3,318 @@
     "step": {
       "user": {
         "title": "CastStudio",
-        "description": "Configure default recipient profile, output directory, and optional Gemini API key for multimedia routine generation.",
+        "description": "Shared settings for this install, plus the first person who receives briefings. Add more people later with Add person.",
         "data": {
           "api_key": "API Key (Optional)",
           "maps_api_key": "Google Maps API Key (Optional)",
           "default_transportation_mode": "Default Transportation Mode",
-          "commute_destination_zone": "Commute Destination Zone (Optional)",
-          "recipient_name": "Recipient Name",
-          "phonetic_name": "Phonetic Pronunciation Name",
+          "commute_destination_zone": "First person's commute destination zone (optional)",
+          "recipient_name": "First person's name",
+          "phonetic_name": "First person's phonetic pronunciation (optional)",
           "output_dir": "Output Directory"
         },
         "data_description": {
+          "phonetic_name": "How the name should be spoken, for example Al-ex. Leave blank to say it as written.",
           "commute_destination_zone": "Zone used as the commute map destination. Leave empty to use zone.work or zone.office if they exist; otherwise the map is skipped."
         }
       }
     },
+    "error": {
+      "invalid_name": "Enter a name with at least one letter or number."
+    },
     "abort": {
-      "already_configured": "CastStudio is already configured."
+      "already_configured": "CastStudio is already configured.",
+      "single_instance_use_add_person": "CastStudio is already set up. To add someone else, open the existing CastStudio entry and use Add person."
+    }
+  },
+  "config_subentries": {
+    "person": {
+      "entry_type": "Person",
+      "initiate_flow": {
+        "user": "Add person",
+        "reconfigure": "Edit person"
+      },
+      "step": {
+        "user": {
+          "title": "Add person",
+          "description": "Add someone who receives briefings.",
+          "data": {
+            "name": "Name",
+            "phonetic_name": "Phonetic pronunciation",
+            "media_player": "Output device (optional)",
+            "output_format": "Output format",
+            "commute_destination_zone": "Work or commute destination zone",
+            "transportation_mode": "Travel mode",
+            "reset_time": "Daily reset time",
+            "max_age_minutes": "Maximum content age (minutes)"
+          },
+          "data_description": {
+            "phonetic_name": "How the name should be spoken, for example Al-ex.",
+            "media_player": "Where this person's briefings play.",
+            "output_format": "Audio plays sound only. Visual also renders slides and video.",
+            "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
+            "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
+            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
+          },
+          "sections": {
+            "advanced": {
+              "name": "Advanced",
+              "description": "Entities, voices and greeting details used to build this person's segments.",
+              "data": {
+                "weather_entity": "Weather entity",
+                "calendar_entities": "Calendars",
+                "todo_entity": "To-do list entity",
+                "scripture_entity": "Daily text entity",
+                "commute_drive_sensor": "Commute drive-time sensor",
+                "commute_transit_sensor": "Commute transit-time sensor",
+                "commute_drive_return_sensor": "Evening drive-home sensor",
+                "commute_transit_return_sensor": "Evening transit-home sensor",
+                "host_voice": "Host voice",
+                "scripture_voice": "Scripture voice",
+                "host_personality": "Host personality",
+                "scripture_personality": "Scripture personality",
+                "conversation_agent": "Conversation agent",
+                "greeting_title": "Greeting title",
+                "greeting_subtitle": "Greeting subtitle",
+                "greeting_image": "Greeting image",
+                "pronunciations": "Pronunciations"
+              },
+              "data_description": {
+                "pronunciations": "How to say words and names in this person's own briefings, as written and spoken. Every person's phonetic name already applies in all briefings.",
+                "commute_drive_sensor": "Travel-time sensor (minutes) for driving to this person's work zone.",
+                "commute_transit_sensor": "Travel-time sensor (minutes) for public transit to this person's work zone.",
+                "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
+                "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
+                "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text."
+              }
+            }
+          }
+        },
+        "reconfigure": {
+          "title": "Edit person",
+          "description": "Update this person's briefing settings.",
+          "data": {
+            "name": "Name",
+            "phonetic_name": "Phonetic pronunciation",
+            "media_player": "Output device (optional)",
+            "output_format": "Output format",
+            "commute_destination_zone": "Work or commute destination zone",
+            "transportation_mode": "Travel mode",
+            "reset_time": "Daily reset time",
+            "max_age_minutes": "Maximum content age (minutes)"
+          },
+          "data_description": {
+            "phonetic_name": "How the name should be spoken, for example Al-ex.",
+            "media_player": "Where this person's briefings play.",
+            "output_format": "Audio plays sound only. Visual also renders slides and video.",
+            "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
+            "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
+            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
+          },
+          "sections": {
+            "advanced": {
+              "name": "Advanced",
+              "description": "Entities, voices and greeting details used to build this person's segments.",
+              "data": {
+                "weather_entity": "Weather entity",
+                "calendar_entities": "Calendars",
+                "todo_entity": "To-do list entity",
+                "scripture_entity": "Daily text entity",
+                "commute_drive_sensor": "Commute drive-time sensor",
+                "commute_transit_sensor": "Commute transit-time sensor",
+                "commute_drive_return_sensor": "Evening drive-home sensor",
+                "commute_transit_return_sensor": "Evening transit-home sensor",
+                "host_voice": "Host voice",
+                "scripture_voice": "Scripture voice",
+                "host_personality": "Host personality",
+                "scripture_personality": "Scripture personality",
+                "conversation_agent": "Conversation agent",
+                "greeting_title": "Greeting title",
+                "greeting_subtitle": "Greeting subtitle",
+                "greeting_image": "Greeting image",
+                "pronunciations": "Pronunciations"
+              },
+              "data_description": {
+                "pronunciations": "How to say words and names in this person's own briefings, as written and spoken. Every person's phonetic name already applies in all briefings.",
+                "commute_drive_sensor": "Travel-time sensor (minutes) for driving to this person's work zone.",
+                "commute_transit_sensor": "Travel-time sensor (minutes) for public transit to this person's work zone.",
+                "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
+                "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
+                "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text."
+              }
+            }
+          }
+        }
+      },
+      "error": {
+        "invalid_name": "Enter a name with at least one letter or number.",
+        "duplicate_person": "A person with this name already exists.",
+        "drive_sensor_missing": "Transportation mode is Driving, but only a transit-time sensor is set, so the commute would be skipped. In Advanced, put the travel-time sensor in the drive-time field, or change the mode.",
+        "transit_sensor_missing": "Transportation mode is Transit, but only a drive-time sensor is set, so the commute would be skipped. In Advanced, put the travel-time sensor in the transit-time field, or change the mode."
+      },
+      "abort": {
+        "reconfigure_successful": "Person updated."
+      }
+    },
+    "routine": {
+      "entry_type": "Routine",
+      "initiate_flow": {
+        "user": "Add routine",
+        "reconfigure": "Edit routine"
+      },
+      "step": {
+        "user": {
+          "title": "Add routine",
+          "data": {
+            "person_id": "Person",
+            "name": "Routine name",
+            "segments": "Segments",
+            "dashboard": "Dashboard to show afterwards (optional)",
+            "dashboard_display": "Dashboard display (optional)"
+          },
+          "data_description": {
+            "name": "Must be unique for this person.",
+            "segments": "Segments play in the order you pick them.",
+            "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
+            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit routine",
+          "data": {
+            "person_id": "Person",
+            "name": "Routine name",
+            "segments": "Segments",
+            "dashboard": "Dashboard to show afterwards (optional)",
+            "dashboard_display": "Dashboard display (optional)"
+          },
+          "data_description": {
+            "name": "Must be unique for this person.",
+            "segments": "Segments play in the order you pick them.",
+            "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
+            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
+          }
+        }
+      },
+      "error": {
+        "duplicate_routine": "This person already has a routine with that name.",
+        "no_segments": "Pick at least one segment.",
+        "invalid_name": "Enter a routine name with at least one letter or number."
+      },
+      "abort": {
+        "no_people": "Add a person before adding a routine.",
+        "reconfigure_successful": "Routine updated."
+      }
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "CastStudio Options",
-        "description": "Update recipient profile, output directory, and API key preferences.",
+        "description": "Shared settings for every person. Edit each person's name, voice and commute on the person itself.",
         "data": {
           "api_key": "API Key (Optional)",
           "maps_api_key": "Google Maps API Key (Optional)",
           "default_transportation_mode": "Default Transportation Mode",
-          "commute_destination_zone": "Commute Destination Zone (Optional)",
-          "recipient_name": "Recipient Name",
-          "phonetic_name": "Phonetic Pronunciation Name",
           "output_dir": "Output Directory"
-        },
-        "data_description": {
-          "commute_destination_zone": "Zone used as the commute map destination. Leave empty to use zone.work or zone.office if they exist; otherwise the map is skipped."
         }
       }
     }
   },
   "selector": {
+    "pronunciations": {
+      "fields": {
+        "written": {
+          "name": "Written as",
+          "description": "The word or name as it appears in text."
+        },
+        "spoken": {
+          "name": "Spoken as",
+          "description": "How it should be spelled out for the voice."
+        }
+      }
+    },
     "default_transportation_mode": {
       "options": {
         "fastest": "Fastest",
         "driving": "Driving",
         "transit": "Transit"
       }
+    },
+    "output_format": {
+      "options": {
+        "audio": "Audio",
+        "visual": "Visual"
+      }
+    },
+    "segment_type": {
+      "options": {
+        "greeting": "Greeting",
+        "weather": "Weather",
+        "national_day": "National Day",
+        "fun_fact": "Fun fact",
+        "agenda": "Agenda",
+        "commute": "Commute",
+        "scripture": "Scripture / daily text",
+        "daily_encouragement": "Daily encouragement",
+        "closing": "Closing"
+      }
+    }
+  },
+  "services": {
+    "prebuild": {
+      "name": "Pre-build briefing",
+      "description": "Builds and stores a routine's segments, or the segments of all of a person's routines, without playing anything. For visual people the stitched routine video is stored too.",
+      "fields": {
+        "person": {
+          "name": "Person",
+          "description": "Person to pre-build for. Alone, builds the union of all of that person's routines; with a routine, picks which person's routine is meant."
+        },
+        "routine": {
+          "name": "Routine",
+          "description": "Routine to pre-build. Give a person or a routine, or both."
+        }
+      }
+    },
+    "play": {
+      "name": "Play briefing",
+      "description": "Plays a routine now from fresh stored segments, building anything missing or stale live first.",
+      "fields": {
+        "person": {
+          "name": "Person",
+          "description": "Person whose routine to play. Needed only when more than one person has a routine with this name."
+        },
+        "routine": {
+          "name": "Routine",
+          "description": "Routine to play."
+        },
+        "target": {
+          "name": "Target media player",
+          "description": "Plays on this media player instead of the person's output device."
+        },
+        "skip_played": {
+          "name": "Skip played segments",
+          "description": "If on, plays only the segments not yet heard in the person's briefing day. When everything has been heard, a short \"That's everything\" line plays."
+        }
+      }
+    }
+  },
+  "issues": {
+    "invalid_api_key": {
+      "title": "{provider} API key rejected",
+      "description": "{provider} rejected CastStudio's API key on a {service} request, so briefings are using the fallback voice and text.\n\n{provider} said: {message}\n\nCheck the key in the {provider} integration or CastStudio settings."
+    },
+    "billing": {
+      "title": "{provider} account needs billing attention",
+      "description": "{provider} refused a {service} request because of the account's billing, so briefings are using the fallback voice and text.\n\n{provider} said: {message}\n\nAdd credits or update billing in your {provider} account. This notice clears on the next successful request."
+    },
+    "permission_denied": {
+      "title": "{provider} denied access",
+      "description": "{provider} denied a {service} request from CastStudio, so briefings are using the fallback voice and text.\n\n{provider} said: {message}\n\nCheck that the API key's project has access to the model."
+    },
+    "quota_exceeded": {
+      "title": "{provider} quota exceeded",
+      "description": "{provider} rejected a {service} request because the account's quota or rate limit is used up, so briefings are using the fallback voice and text.\n\n{provider} said: {message}\n\nWait for the quota to reset or raise it in your {provider} account. This notice clears on the next successful request."
     }
   }
 }
