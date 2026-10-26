@@ -170,17 +170,25 @@ def register_personality_prompt(name: str, style_or_profile: str) -> None:
         )
 
 
-def _build_gemini_tts_prompt(script: str, personality: str) -> str:
-    """Build structured Gemini 2.5 TTS director prompt with transcript delimiter."""
-    lookup_key = personality.strip().lower().replace(" ", "_")
-    profile = PERSONALITY_PROMPTS.get(personality) or PERSONALITY_PROMPTS.get(
-        lookup_key,
-        (
-            f"# AUDIO PROFILE: Narrator ({personality})\n"
-            "### DIRECTOR'S NOTES\n"
-            f"Style: {personality}, natural, clear, and expressive."
-        ),
-    )
+def _build_gemini_tts_prompt(
+    script: str, personality: str, profile: str | None = None
+) -> str:
+    """
+    Build structured Gemini 2.5 TTS director prompt with transcript delimiter.
+
+    A persona's ``profile`` is used verbatim; otherwise ``personality`` picks a
+    built-in profile or is wrapped as a style line.
+    """
+    if not profile:
+        lookup_key = personality.strip().lower().replace(" ", "_")
+        profile = PERSONALITY_PROMPTS.get(personality) or PERSONALITY_PROMPTS.get(
+            lookup_key,
+            (
+                f"# AUDIO PROFILE: Narrator ({personality})\n"
+                "### DIRECTOR'S NOTES\n"
+                f"Style: {personality}, natural, clear, and expressive."
+            ),
+        )
     return (
         f"{profile}\n\n"
         "Speak only the transcript below. "
@@ -306,6 +314,7 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
     api_key: str,
     session: aiohttp.ClientSession | None = None,
     model: str = "gemini-2.5-flash-preview-tts",
+    profile: str | None = None,
 ) -> str:
     """Synthesize speech using Gemini audio generation API with conditioning."""
     target_path = Path(output_wav_path)
@@ -315,7 +324,7 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         f"?key={api_key}"
     )
-    prompt_text = _build_gemini_tts_prompt(script, personality)
+    prompt_text = _build_gemini_tts_prompt(script, personality, profile)
     payload = {
         "contents": [
             {
@@ -533,8 +542,16 @@ async def async_synthesize_speech(  # noqa: PLR0913
     personality: str,
     output_wav_path: str,
     creds: dict[str, Any] | None = None,
+    *,
+    voice_profile: str | None = None,
+    openai_voice: str | None = None,
 ) -> str:
-    """Synthesize speech with per-action voice and personality conditioning."""
+    """
+    Synthesize speech with per-action voice and personality conditioning.
+
+    A persona supplies ``voice_profile`` (its full Gemini director profile) and
+    ``openai_voice`` (used on OpenAI instead of mapping the Gemini voice).
+    """
     safe_creds = creds or {}
     effective_voice = voice.strip() if voice else DEFAULT_HOST_VOICE
     effective_personality = personality.strip() if personality else DEFAULT_PERSONALITY
@@ -552,6 +569,7 @@ async def async_synthesize_speech(  # noqa: PLR0913
                 output_wav_path,
                 api_key,
                 session=session,
+                profile=voice_profile,
             )
         except TTSClientError as err:
             async_report_ai_failure(hass, "Gemini", "voice", err.status, err.body)
@@ -570,7 +588,8 @@ async def async_synthesize_speech(  # noqa: PLR0913
 
     elif platform == "openai" and api_key:
         try:
-            openai_voice = map_voice_for_openai(effective_voice)
+            if openai_voice not in OPENAI_KNOWN_VOICES:
+                openai_voice = map_voice_for_openai(effective_voice)
             wav_path = await _synthesize_openai_tts(
                 script,
                 openai_voice,

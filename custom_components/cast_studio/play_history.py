@@ -1,4 +1,4 @@
-"""Persistent record of which segment types each person heard today."""
+"""Persistent record of which segment types each routine played today."""
 
 from __future__ import annotations
 
@@ -14,15 +14,18 @@ if TYPE_CHECKING:
 
     from homeassistant.core import HomeAssistant
 
-    from .people import Person
+    from .people import Person, Routine
 
 STORAGE_VERSION = 1
 STORAGE_KEY = "cast_studio.play_history"
 SAVE_DELAY = 1
+# Records sit under this key, one per routine. Older files kept one record
+# per person at the top level; those are dropped on load.
+ROUTINES = "routines"
 
 
 class PlayHistory:
-    """Tracks segment types played per person for the current briefing day."""
+    """Tracks segment types played per routine for the person's briefing day."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize empty history."""
@@ -31,22 +34,46 @@ class PlayHistory:
 
     async def async_load(self) -> None:
         """Load history from storage."""
-        self._data = await self._store.async_load() or {}
+        stored = await self._store.async_load() or {}
+        routines = stored.get(ROUTINES)
+        self._data = routines if isinstance(routines, dict) else {}
 
-    def played(self, person: Person, now: datetime) -> set[str]:
-        """Return segment types already played in the person's current briefing day."""
-        entry = self._data.get(person.person_id)
+    def played(self, person: Person, routine: Routine, now: datetime) -> set[str]:
+        """Return segment types the routine already played this briefing day."""
+        entry = self._data.get(routine.routine_id)
         if not entry or entry.get("day") != briefing_day(person, now).isoformat():
             return set()
         return set(entry.get("played", []))
 
     async def async_mark_played(
-        self, person: Person, segment_types: Iterable[str], now: datetime
+        self,
+        person: Person,
+        routine: Routine,
+        segment_types: Iterable[str],
+        now: datetime,
     ) -> None:
         """Record segment types as played and schedule a save."""
-        played = self.played(person, now) | set(segment_types)
-        self._data[person.person_id] = {
+        self._set(
+            person, routine, self.played(person, routine, now) | set(segment_types), now
+        )
+
+    async def async_unmark_played(
+        self,
+        person: Person,
+        routine: Routine,
+        segment_types: Iterable[str],
+        now: datetime,
+    ) -> None:
+        """Forget segment types the routine played this briefing day."""
+        played = self.played(person, routine, now)
+        if played:
+            self._set(person, routine, played - set(segment_types), now)
+
+    def _set(
+        self, person: Person, routine: Routine, played: set[str], now: datetime
+    ) -> None:
+        self._data[routine.routine_id] = {
             "day": briefing_day(person, now).isoformat(),
             "played": sorted(played),
         }
-        self._store.async_delay_save(lambda: self._data, SAVE_DELAY)
+        self._store.async_delay_save(lambda: {ROUTINES: self._data}, SAVE_DELAY)

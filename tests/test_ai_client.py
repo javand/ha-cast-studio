@@ -728,3 +728,25 @@ def test_build_prompt_national_day_and_fun_fact_guidelines() -> None:
     )
     assert "FUN FACT NARRATION" in ff_prompt
     assert "Trivia Topic" in ff_prompt
+
+
+def test_build_prompt_adds_no_name_rule_only_for_personas() -> None:
+    """A persona's writer is told never to name the speaker; others are unchanged."""
+    step = {"name": "greeting", "type": "greeting", "voice_personality": "Warm."}
+    rule = "never state, invent or introduce a name"
+    assert rule not in _build_prompt(step, {"name": "Alex"})
+    assert rule in _build_prompt({**step, "voice_profile": "P"}, {"name": "Alex"})
+
+
+def test_build_prompt_gives_personas_spoken_output_rules() -> None:
+    """A persona's writer must not add stage directions, markdown or emojis."""
+    step = {
+        "name": "greeting",
+        "type": "greeting",
+        "voice_personality": "Playful and silly.",
+        "voice_profile": "P",
+    }
+    prompt = _build_prompt(step, {"name": "Alex"})
+    assert "no stage directions" in prompt
+    assert "no markdown or emojis" in prompt
+    assert "numbers, times and dates the way a person says them" in prompt

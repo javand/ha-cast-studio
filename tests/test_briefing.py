@@ -18,7 +18,10 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.cast_studio import briefing
 from custom_components.cast_studio.const import CONF_OUTPUT_DIR, DOMAIN
@@ -72,6 +75,7 @@ class FakeBuilder:
     gate: asyncio.Event | None = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
     calls: list[list[str]] = field(default_factory=list)
+    visual_calls: list[set[str]] = field(default_factory=list)
 
     async def __call__(  # noqa: PLR0913
         self,
@@ -82,9 +86,13 @@ class FakeBuilder:
         ai_creds: dict[str, Any],
         *,
         now: datetime,
+        visual_keys: Iterable[str] = (),
+        all_heard_visual: bool = False,
     ) -> dict[str, StoredSegment | Exception]:
         wanted = list(dict.fromkeys(keys))
+        visual = set(visual_keys)
         self.calls.append(wanted)
+        self.visual_calls.append(visual)
         self.started.set()
         if self.gate is not None:
             await self.gate.wait()
@@ -106,7 +114,7 @@ class FakeBuilder:
             audio.write_bytes(key.encode())
             staged[str(audio)] = str(target_dir / audio.name)
             clip_target = None
-            if person.output_format == "visual":
+            if key in visual or (key == ALL_HEARD_KEY and all_heard_visual):
                 clip = scratch / f"{key}.mp4"
                 clip.write_bytes(key.encode())
                 clip_target = str(target_dir / clip.name)
@@ -259,9 +267,7 @@ async def _harness(
 
 
 def _sam(**data: Any) -> dict[str, Any]:
-    return person_subentry(
-        SAM_ID, "Sam", output_format="audio", media_player=SPEAKER, **data
-    )
+    return person_subentry(SAM_ID, "Sam", media_player=SPEAKER, **data)
 
 
 @pytest.fixture
@@ -277,7 +283,12 @@ async def sam_quick(
         tmp_path,
         freezer,
         request,
-        [_sam(), routine_subentry("r_sam_quick", SAM_ID, "Quick", QUICK)],
+        [
+            _sam(),
+            routine_subentry(
+                "r_sam_quick", SAM_ID, "Quick", QUICK, output_format="audio"
+            ),
+        ],
     )
 
 
@@ -294,7 +305,10 @@ async def sam_full(
         tmp_path,
         freezer,
         request,
-        [_sam(), routine_subentry("r_sam_full", SAM_ID, "Full", FULL)],
+        [
+            _sam(),
+            routine_subentry("r_sam_full", SAM_ID, "Full", FULL, output_format="audio"),
+        ],
     )
 
 
@@ -313,8 +327,10 @@ async def sam_quick_and_full(
         request,
         [
             _sam(),
-            routine_subentry("r_sam_quick", SAM_ID, "Quick", QUICK),
-            routine_subentry("r_sam_full", SAM_ID, "Full", FULL),
+            routine_subentry(
+                "r_sam_quick", SAM_ID, "Quick", QUICK, output_format="audio"
+            ),
+            routine_subentry("r_sam_full", SAM_ID, "Full", FULL, output_format="audio"),
         ],
     )
 
@@ -341,9 +357,7 @@ async def sam_visual_with_dashboard(
         freezer,
         request,
         [
-            person_subentry(
-                SAM_ID, "Sam", output_format="visual", media_player=DISPLAY
-            ),
+            person_subentry(SAM_ID, "Sam", media_player=DISPLAY),
             dashboard_routine("r_sam_quick", SAM_ID, "Quick", QUICK),
         ],
     )
@@ -383,7 +397,6 @@ async def prebuilt_alex_office_day(
             person_subentry(
                 ALEX_ID,
                 "Alex",
-                output_format="visual",
                 media_player=DISPLAY,
                 commute_destination_zone="zone.office",
             ),
@@ -423,14 +436,15 @@ async def test_play_uses_fresh_prebuilt_segments_without_building(
     assert state.attributes["briefing_day"] == "2026-10-20"
 
 
-async def test_play_skip_played_plays_only_new_segments(
+async def test_skip_played_counts_only_the_same_routine(
     sam_quick_and_full: Harness,
 ) -> None:
     h = sam_quick_and_full
     await h.play("Quick")
     await h.play("Full", skip_played=True)
 
-    assert h.ffmpeg.concats == [QUICK, ["commute", "scripture", "closing"]]
+    # Full has its own heard list: Quick's greeting and weather play again.
+    assert h.ffmpeg.concats == [QUICK, FULL]
     assert len(h.played) == 2
     # Only the keys missing from the store were built live for Full.
     assert h.builder.calls == [QUICK, ["commute", "scripture", "closing"]]
@@ -473,19 +487,32 @@ async def test_skip_played_tracks_types_not_signoff_variants(
         [
             _sam(),
             routine_subentry(
-                "r_end", SAM_ID, "Ending", ["daily_encouragement", "closing"]
+                "r_end",
+                SAM_ID,
+                "Ending",
+                ["daily_encouragement", "closing"],
+                output_format="audio",
             ),
             routine_subentry(
-                "r_lift", SAM_ID, "Lift", ["daily_encouragement", "weather"]
+                "r_lift",
+                SAM_ID,
+                "Lift",
+                ["daily_encouragement", "weather"],
+                output_format="audio",
             ),
         ],
     )
     await h.play("Ending")
-    await h.play("Lift", skip_played=True)
 
     # The encouragement type was heard (as the no-sign-off variant).
     assert h.ffmpeg.concats == [["daily_encouragement_nosignoff", "closing"]]
-    assert _media_id(h.played[1]).endswith("weather.mp3")
+    history = await briefing.async_get_play_history(h.hass)
+    sam = h.person(SAM_ID)
+    assert history.played(sam, h.routine("Ending"), at(8)) == {
+        "daily_encouragement",
+        "closing",
+    }
+    assert history.played(sam, h.routine("Lift"), at(8)) == set()
 
 
 async def test_play_after_reset_does_not_use_yesterdays_content(
@@ -568,8 +595,10 @@ async def test_play_missing_person_or_device_raises_and_sets_error(
         freezer,
         request,
         [
-            person_subentry(SAM_ID, "Sam", output_format="audio", media_player=None),
-            routine_subentry("r_sam_quick", SAM_ID, "Quick", QUICK),
+            person_subentry(SAM_ID, "Sam", media_player=None),
+            routine_subentry(
+                "r_sam_quick", SAM_ID, "Quick", QUICK, output_format="audio"
+            ),
         ],
     )
     orphan_routine = Routine(
@@ -653,10 +682,10 @@ async def test_cast_display_is_released_after_playback_without_dashboard(
         freezer,
         request,
         [
-            person_subentry(
-                SAM_ID, "Sam", output_format="visual", media_player=DISPLAY
+            person_subentry(SAM_ID, "Sam", media_player=DISPLAY),
+            routine_subentry(
+                "r_sam_quick", SAM_ID, "Quick", QUICK, output_format="audio"
             ),
-            routine_subentry("r_sam_quick", SAM_ID, "Quick", QUICK),
         ],
     )
     with patch(f"{BRIEFING}._async_release_player") as release:
@@ -738,19 +767,117 @@ async def test_visual_prebuild_stores_stitched_routine_video(
         freezer,
         request,
         [
-            person_subentry(
-                ALEX_ID, "Alex", output_format="visual", media_player=DISPLAY
-            ),
+            person_subentry(ALEX_ID, "Alex", media_player=DISPLAY),
             routine_subentry("r_alex_quick", ALEX_ID, "Quick", QUICK),
         ],
     )
     await h.prebuild("Quick")
 
-    assert h.ffmpeg.concats == [QUICK]
+    assert h.ffmpeg.concats == [QUICK, QUICK]
     day = tmp_path / "people" / ALEX_ID / "2026-10-20"
     videos = list(day.glob("routine_quick.*.mp4"))
     assert len(videos) == 1
     assert videos[0].is_file()
+    audio_meta = json.loads((day / "routine_quick-audio.json").read_text())
+    assert audio_meta["audio"].endswith(".mp3")
+    assert (day / audio_meta["audio"]).is_file()
+    assert (day / "routine_quick.json").is_file()
+
+
+async def test_prebuild_audio_routine_builds_no_clips_and_stitches_nothing(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            person_subentry(ALEX_ID, "Alex", media_player=DISPLAY),
+            routine_subentry(
+                "r_alex_quick", ALEX_ID, "Quick", QUICK, output_format="audio"
+            ),
+        ],
+    )
+    await h.prebuild("Quick")
+
+    assert h.builder.visual_calls == [set()]
+    assert h.ffmpeg.concats == []
+    assert h.hass.states.get("sensor.cast_studio_alex_quick").state == "ready"
+
+
+async def test_prebuild_audio_routine_keeps_clips_a_visual_routine_shares(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            _sam(),
+            routine_subentry(
+                "r_sam_night",
+                SAM_ID,
+                "Night",
+                ["greeting", "closing"],
+                output_format="audio",
+            ),
+            routine_subentry("r_sam_quick", SAM_ID, "Quick", QUICK),
+        ],
+    )
+    await h.prebuild("Night")
+
+    # Quick (visual) also uses the greeting, so it keeps its clip.
+    assert h.builder.visual_calls == [{"greeting"}]
+    store: SegmentStore = h.hass.data[DOMAIN][briefing.DATA_STORE]
+    sam = h.person(SAM_ID)
+    assert store.get_fresh(sam, "greeting", at(8)).clip_path is not None
+    assert store.get_fresh(sam, "closing", at(8)).clip_path is None
+
+
+async def test_prebuild_person_shared_segment_built_visual_once(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            _sam(),
+            routine_subentry(
+                "r_sam_night",
+                SAM_ID,
+                "Night",
+                ["greeting", "closing"],
+                output_format="audio",
+            ),
+            routine_subentry("r_sam_quick", SAM_ID, "Quick", QUICK),
+        ],
+    )
+    await briefing.async_prebuild(h.hass, h.entry, person=h.person(SAM_ID))
+
+    assert h.builder.calls == [["greeting", "closing", "weather"]]
+    assert h.builder.visual_calls == [{"greeting", "weather"}]
+    for sensor in ("sensor.cast_studio_sam_night", "sensor.cast_studio_sam_quick"):
+        assert h.hass.states.get(sensor).state == "ready"
+    day = tmp_path / "people" / SAM_ID / "2026-10-20"
+    assert (day / "routine_quick.json").is_file()
+    assert not (day / "routine_night.json").exists()
+    assert not (day / "routine_night-audio.json").exists()
 
 
 async def test_visual_skip_played_stitches_clips_at_play_time(
@@ -758,7 +885,9 @@ async def test_visual_skip_played_stitches_clips_at_play_time(
 ) -> None:
     h = prebuilt_alex_office_day
     hist = await briefing.async_get_play_history(h.hass)
-    await hist.async_mark_played(h.person(ALEX_ID), ["greeting"], at(8))
+    await hist.async_mark_played(
+        h.person(ALEX_ID), h.routine("Quick"), ["greeting"], at(8)
+    )
     await h.play("Quick", skip_played=True)
 
     assert _media_id(h.played[0]).endswith("weather.mp4")
@@ -777,6 +906,89 @@ async def test_prestitched_video_ignored_after_segment_rebuilt(
 
     assert h.ffmpeg.concats == [QUICK]
     assert not _media_id(h.played[0]).endswith("routine_quick.mp4")
+
+
+async def test_visual_routine_on_speaker_plays_prebuilt_audio(
+    prebuilt_alex_office_day: Harness,
+) -> None:
+    h = prebuilt_alex_office_day
+    await h.play("Quick", target=SPEAKER)
+
+    assert _media_id(h.played[0]).endswith("routine_quick-audio.mp3")
+    assert h.builder.calls == []
+    assert h.ffmpeg.concats == []
+
+
+async def test_visual_routine_on_speaker_without_routine_audio_stitches_mp3s(
+    prebuilt_alex_office_day: Harness, tmp_path: Path
+) -> None:
+    h = prebuilt_alex_office_day
+    day = tmp_path / "people" / ALEX_ID / "2026-10-20"
+    (day / "routine_quick-audio.json").unlink()
+    await h.play("Quick", target=SPEAKER)
+
+    assert h.builder.calls == []
+    assert h.ffmpeg.concats == [QUICK]
+    assert _media_id(h.played[0]).endswith("play_quick.mp3")
+
+
+async def test_audio_routine_on_display_plays_audio(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            person_subentry(ALEX_ID, "Alex", media_player=DISPLAY),
+            routine_subentry(
+                "r_alex_quick", ALEX_ID, "Quick", QUICK, output_format="audio"
+            ),
+        ],
+    )
+    await h.play("Quick")
+
+    assert h.builder.visual_calls == [set()]
+    assert _media_id(h.played[0]).endswith("play_quick.mp3")
+
+
+async def test_visual_routine_on_speaker_builds_missing_audio_only(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            person_subentry(ALEX_ID, "Alex", media_player=DISPLAY),
+            routine_subentry("r_alex_quick", ALEX_ID, "Quick", QUICK),
+        ],
+    )
+    await h.play("Quick", target=SPEAKER)
+
+    assert h.builder.visual_calls == [set()]
+    assert _media_id(h.played[0]).endswith("play_quick.mp3")
+
+
+async def test_all_heard_on_speaker_plays_mp3(
+    prebuilt_alex_office_day: Harness,
+) -> None:
+    h = prebuilt_alex_office_day
+    hist = await briefing.async_get_play_history(h.hass)
+    await hist.async_mark_played(h.person(ALEX_ID), h.routine("Quick"), QUICK, at(8))
+    await h.play("Quick", skip_played=True, target=SPEAKER)
+
+    assert _media_id(h.played[0]).endswith(f"{ALL_HEARD_DIR}/{ALL_HEARD_KEY}.mp3")
 
 
 async def test_prebuild_person_builds_union_of_routines(
@@ -822,17 +1034,17 @@ async def test_switch_audio_to_visual_rebuilds_segments_with_clips(
         freezer,
         request,
         [
-            person_subentry(
-                ALEX_ID, "Alex", output_format="audio", media_player=DISPLAY
+            person_subentry(ALEX_ID, "Alex", media_player=DISPLAY),
+            routine_subentry(
+                "r_alex_quick", ALEX_ID, "Quick", QUICK, output_format="audio"
             ),
-            routine_subentry("r_alex_quick", ALEX_ID, "Quick", QUICK),
         ],
     )
     await h.prebuild("Quick")
     h.builder.calls.clear()
     h.ffmpeg.concats.clear()
 
-    subentry = next(s for s in h.entry.subentries.values() if s.subentry_id == ALEX_ID)
+    subentry = h.entry.subentries["r_alex_quick"]
     hass.config_entries.async_update_subentry(
         h.entry, subentry, data={**subentry.data, "output_format": "visual"}
     )
@@ -900,6 +1112,51 @@ async def test_failure_after_play_dispatch_does_not_set_error(
     assert "Could not record played segments" in caplog.text
 
 
+@pytest.mark.parametrize("player_state", ["unavailable", "off"])
+async def test_play_that_never_starts_shows_error(
+    sam_visual_with_dashboard: Harness,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+    player_state: str,
+) -> None:
+    h = sam_visual_with_dashboard
+    h.hass.states.async_set(DISPLAY, "off")
+    await briefing.async_play(h.hass, h.entry, h.routine("Quick"))
+    # The cast fails: the display stays off or drops off instead of playing.
+    h.hass.states.async_set(DISPLAY, player_state)
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert h.hass.states.get("sensor.cast_studio_sam_quick").state == "playing"
+
+    freezer.tick(30)
+    async_fire_time_changed(h.hass)
+    await h.hass.async_block_till_done()
+
+    assert h.hass.states.get("sensor.cast_studio_sam_quick").state == "error"
+    assert "never started playing" in caplog.text
+
+
+async def test_play_that_never_starts_keeps_its_segments_unheard(
+    sam_visual_with_dashboard: Harness, freezer: FrozenDateTimeFactory
+) -> None:
+    h = sam_visual_with_dashboard
+    sam = h.person(SAM_ID)
+    history = await briefing.async_get_play_history(h.hass)
+    await history.async_mark_played(sam, h.routine("Quick"), ["greeting"], at(8))
+    h.hass.states.async_set(DISPLAY, "off")
+    await briefing.async_play(h.hass, h.entry, h.routine("Quick"))
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert history.played(sam, h.routine("Quick"), at(8)) == {"greeting", "weather"}
+
+    freezer.tick(30)
+    async_fire_time_changed(h.hass)
+    await h.hass.async_block_till_done()
+
+    # Only what this play marked is undone; the earlier greeting stays heard.
+    assert history.played(sam, h.routine("Quick"), at(8, 1)) == {"greeting"}
+
+
 # --- final review fixes -------------------------------------------------------
 
 
@@ -924,7 +1181,7 @@ async def test_prebuild_during_playback_never_overwrites_streamed_files(
 
     # A single-segment play streams the segment's own clip.
     hist = await briefing.async_get_play_history(h.hass)
-    await hist.async_mark_played(alex, ["greeting"], at(8))
+    await hist.async_mark_played(alex, h.routine("Quick"), ["greeting"], at(8))
     await h.play("Quick", skip_played=True)
     streamed_clip = _url_name(h.played[0])
     weather = store.get_fresh(alex, "weather", at(8))
@@ -1002,11 +1259,9 @@ async def test_newer_play_of_other_routine_supersedes_dashboard(
         freezer,
         request,
         [
-            person_subentry(
-                SAM_ID, "Sam", output_format="visual", media_player=DISPLAY
-            ),
+            person_subentry(SAM_ID, "Sam", media_player=DISPLAY),
             dashboard_routine("r_sam_quick", SAM_ID, "Quick", QUICK),
-            routine_subentry("r_sam_full", SAM_ID, "Full", FULL),
+            routine_subentry("r_sam_full", SAM_ID, "Full", FULL, output_format="audio"),
         ],
     )
     hass.states.async_set(DISPLAY, "idle", {"app_name": "Default Media Receiver"})

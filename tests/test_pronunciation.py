@@ -36,7 +36,6 @@ def _person(name: str, phonetic: str | None = None, rows: tuple = ()) -> Person:
         name=name,
         phonetic_name=phonetic or name,
         media_player=None,
-        output_format="audio",
         commute_destination_zone=None,
         transportation_mode="fastest",
         reset_time=time(3, 0),

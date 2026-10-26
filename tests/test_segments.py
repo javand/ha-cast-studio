@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import threading
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,11 +24,13 @@ from custom_components.cast_studio.people import (
     get_first_person,
     get_people,
 )
+from custom_components.cast_studio.personas import get_persona
 from custom_components.cast_studio.segments import (
     ALL_HEARD_KEY,
     ALL_HEARD_TEXT,
     SegmentStore,
     StoredSegment,
+    _all_heard_step,
     async_build_segments,
     build_segment_step,
     routine_segment_keys,
@@ -56,14 +58,13 @@ SAM_SETTINGS = {
 }
 
 
-def make_person(output_format: str = "audio", **overrides: Any) -> Person:
+def make_person(**overrides: Any) -> Person:
     """Build a fake person, Sam."""
     values: dict[str, Any] = {
         "person_id": "person_sam",
         "name": "Sam",
         "phonetic_name": "Sam",
         "media_player": "media_player.kitchen_speaker",
-        "output_format": output_format,
         "commute_destination_zone": "zone.office",
         "transportation_mode": "driving",
         "reset_time": time(3, 0),
@@ -131,7 +132,7 @@ def test_routine_segment_keys_drops_signoff_when_closing_present() -> None:
 def test_build_segment_step_uses_person_settings_and_name_rule() -> None:
     person = make_person()
     steps = {
-        key: build_segment_step(person, key)
+        key: build_segment_step(person, key, visual=False)
         for key in (
             "greeting",
             "weather",
@@ -188,13 +189,19 @@ def test_build_segment_step_uses_person_settings_and_name_rule() -> None:
 
 
 def test_build_segment_step_defaults_and_visual_flag() -> None:
-    person = make_person(output_format="visual", settings={})
+    person = make_person(settings={})
     greeting = build_segment_step(person, "greeting")
     assert greeting["visual"] is True
     assert greeting["title"] == "Sam"
     assert greeting["subtitle"] == "Good Morning"
     assert "image_path" not in greeting
     assert build_segment_step(person, "weather")["entity_id"] == ""
+
+
+def test_build_segment_step_visual_flag() -> None:
+    person = make_person(settings={})
+    assert build_segment_step(person, "weather")["visual"] is True
+    assert build_segment_step(person, "weather", visual=False)["visual"] is False
 
 
 def test_build_segment_step_rejects_unknown_key() -> None:
@@ -298,7 +305,7 @@ async def test_audio_only_person_builds_no_visuals(
     hass: HomeAssistant, tmp_path: Path
 ) -> None:
     _set_fake_states(hass)
-    person = make_person(output_format="audio")
+    person = make_person()
     store = SegmentStore(hass, str(tmp_path))
     now = at(8)
     keys = ["greeting", "weather", "fun_fact", "national_day", "commute", "closing"]
@@ -323,11 +330,35 @@ async def test_audio_only_person_builds_no_visuals(
         assert segment.built_at == now
 
 
+async def test_build_segments_visual_only_for_visual_keys(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    _set_fake_states(hass)
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+
+    with _Patched(_build_patches()):
+        result = await async_build_segments(
+            hass,
+            store,
+            person,
+            ["greeting", "weather"],
+            {"platform": "gemini", "api_key": "k"},
+            now=at(8),
+            visual_keys={"weather"},
+            all_heard_visual=False,
+        )
+
+    assert result["weather"].clip_path is not None
+    assert result["greeting"].clip_path is None
+    assert store.all_heard_clip(person).clip_path is None
+
+
 async def test_visual_person_builds_uniform_clips(
     hass: HomeAssistant, tmp_path: Path
 ) -> None:
     _set_fake_states(hass)
-    person = make_person(output_format="visual")
+    person = make_person()
     store = SegmentStore(hass, str(tmp_path))
 
     with _Patched(_build_patches()) as mocks:
@@ -338,6 +369,7 @@ async def test_visual_person_builds_uniform_clips(
             ["weather", "closing"],
             {"platform": "conversation_agent"},
             now=at(8),
+            visual_keys={"weather", "closing"},
         )
 
     for key in ("weather", "closing"):
@@ -500,12 +532,16 @@ async def test_rebuild_writes_new_files_and_leaves_superseded_ones(
     hass: HomeAssistant, tmp_path: Path
 ) -> None:
     _set_fake_states(hass)
-    person = make_person(output_format="visual")
+    person = make_person()
     store = SegmentStore(hass, str(tmp_path))
     with _Patched(_build_patches()):
-        await async_build_segments(hass, store, person, ["weather"], {}, now=at(8))
+        await async_build_segments(
+            hass, store, person, ["weather"], {}, now=at(8), visual_keys={"weather"}
+        )
         first = store.get_fresh(person, "weather", at(8))
-        await async_build_segments(hass, store, person, ["weather"], {}, now=at(9))
+        await async_build_segments(
+            hass, store, person, ["weather"], {}, now=at(9), visual_keys={"weather"}
+        )
     second = store.get_fresh(person, "weather", at(9))
 
     # A play may still be streaming the first build: it is never overwritten.
@@ -601,7 +637,6 @@ async def test_commute_skipped_without_person_zone_never_uses_other_persons(
             person_subentry(
                 SAM_ID,
                 "Sam",
-                output_format="visual",
                 commute_drive_sensor="sensor.sam_commute_drive",
             ),
         ]
@@ -646,11 +681,11 @@ async def test_commute_builds_from_person_zone_and_sensor(
     hass: HomeAssistant, tmp_path: Path
 ) -> None:
     _set_fake_states(hass)
-    person = make_person(output_format="visual")
+    person = make_person()
     store = SegmentStore(hass, str(tmp_path))
     with _Patched(_build_patches()) as mocks:
         result = await async_build_segments(
-            hass, store, person, ["commute"], {}, now=at(8)
+            hass, store, person, ["commute"], {}, now=at(8), visual_keys={"commute"}
         )
     assert isinstance(result["commute"], StoredSegment)
     mocks["map"].assert_called_once()
@@ -779,3 +814,88 @@ def test_agenda_step_uses_every_person_calendar() -> None:
     step = build_segment_step(person, "agenda")
     assert step["calendar_entities"] == ["calendar.sam", "calendar.family"]
     assert step["entity_ids"] == ["calendar.sam", "calendar.family", "todo.sam"]
+
+
+# --- personas -----------------------------------------------------------------
+
+PERSONA_DAY = date(2026, 10, 20)
+
+
+def _with_settings(**settings: Any) -> Person:
+    return make_person(settings=dict(settings))
+
+
+def test_no_personas_keeps_todays_step() -> None:
+    """With no persona picked, the default voices and styles are unchanged."""
+    person = _with_settings()
+    greeting = build_segment_step(person, "greeting", PERSONA_DAY)
+    scripture = build_segment_step(person, "scripture", PERSONA_DAY)
+    assert (greeting["voice"], greeting["voice_personality"]) == (
+        "Pulcherrima",
+        "news_anchor",
+    )
+    assert (scripture["voice"], scripture["voice_personality"]) == (
+        "Enceladus",
+        "life_coach",
+    )
+    assert "voice_profile" not in greeting
+    assert "openai_voice" not in scripture
+
+
+def test_host_persona_applies_to_host_segments() -> None:
+    """A host persona speaks the host segments and leaves the reading alone."""
+    person = _with_settings(host_personas=["arthur"])
+    arthur = get_persona("arthur")
+    for key in ("greeting", "weather", "closing"):
+        step = build_segment_step(person, key, PERSONA_DAY)
+        assert step["voice"] == "Iapetus"
+        assert step["voice_personality"] == arthur.character
+        assert step["voice_profile"] == arthur.delivery
+        assert step["openai_voice"] == "fable"
+    scripture = build_segment_step(person, "scripture", PERSONA_DAY)
+    assert scripture["voice"] == "Enceladus"
+    assert "voice_profile" not in scripture
+
+
+def test_reader_persona_applies_to_reading_segments() -> None:
+    """A reader persona reads the daily text and the encouragement."""
+    person = _with_settings(reader_personas=["malenfant"])
+    for key in ("scripture", "daily_encouragement"):
+        assert build_segment_step(person, key, PERSONA_DAY)["voice"] == "Charon"
+    assert build_segment_step(person, "greeting", PERSONA_DAY)["voice"] == (
+        "Pulcherrima"
+    )
+
+
+def test_persona_overrides_advanced_fields() -> None:
+    """A picked persona wins over a typed host voice and personality."""
+    person = _with_settings(
+        host_voice="Zephyr", host_personality="cheerful", host_personas=["theo"]
+    )
+    step = build_segment_step(person, "greeting", PERSONA_DAY)
+    assert step["voice"] == "Puck"
+    assert step["voice_personality"] == get_persona("theo").character
+
+
+def test_unknown_persona_falls_back_to_today() -> None:
+    """A persona no longer in the catalog leaves the typed settings in charge."""
+    person = _with_settings(host_personas=["gone_persona"], host_voice="Zephyr")
+    step = build_segment_step(person, "greeting", PERSONA_DAY)
+    assert step["voice"] == "Zephyr"
+    assert "voice_profile" not in step
+
+
+def test_random_pick_is_stable_for_the_day() -> None:
+    """Every host segment on a day gets the same randomly picked persona."""
+    person = _with_settings(host_personas=["arthur", "theo", "ray"])
+    voices = {
+        build_segment_step(person, key, PERSONA_DAY)["voice"]
+        for key in ("greeting", "weather", "agenda", "closing")
+    }
+    assert len(voices) == 1
+
+
+def test_all_heard_uses_host_persona() -> None:
+    """The that's-everything clip is spoken by the host persona."""
+    person = _with_settings(host_personas=["arthur"])
+    assert _all_heard_step(person, PERSONA_DAY)["voice"] == "Iapetus"

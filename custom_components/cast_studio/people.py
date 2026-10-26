@@ -47,7 +47,6 @@ DEFAULT_MAX_AGE_MINUTES = 0
 PERSON_NAME = "name"
 PERSON_PHONETIC_NAME = "phonetic_name"
 PERSON_MEDIA_PLAYER = "media_player"
-PERSON_OUTPUT_FORMAT = "output_format"
 PERSON_COMMUTE_DESTINATION = "commute_destination_zone"
 PERSON_TRANSPORTATION_MODE = "transportation_mode"
 PERSON_RESET_TIME = "reset_time"
@@ -58,7 +57,6 @@ PERSON_CORE_KEYS: tuple[str, ...] = (
     PERSON_NAME,
     PERSON_PHONETIC_NAME,
     PERSON_MEDIA_PLAYER,
-    PERSON_OUTPUT_FORMAT,
     PERSON_COMMUTE_DESTINATION,
     PERSON_TRANSPORTATION_MODE,
     PERSON_RESET_TIME,
@@ -76,6 +74,10 @@ PERSON_COMMUTE_TRANSIT_RETURN_SENSOR = "commute_transit_return_sensor"
 PERSON_CALENDARS = "calendar_entities"
 PERSON_LEGACY_CALENDAR = "calendar_entity"
 
+# Built-in personas picked for each role; several means one at random per day.
+PERSON_HOST_PERSONAS = "host_personas"
+PERSON_READER_PERSONAS = "reader_personas"
+
 # Per-person segment settings (§5.2), shown in the person form's advanced section.
 PERSON_SETTINGS_KEYS: tuple[str, ...] = (
     "weather_entity",
@@ -86,6 +88,8 @@ PERSON_SETTINGS_KEYS: tuple[str, ...] = (
     PERSON_COMMUTE_TRANSIT_SENSOR,
     PERSON_COMMUTE_DRIVE_RETURN_SENSOR,
     PERSON_COMMUTE_TRANSIT_RETURN_SENSOR,
+    PERSON_HOST_PERSONAS,
+    PERSON_READER_PERSONAS,
     "host_voice",
     "scripture_voice",
     "host_personality",
@@ -106,6 +110,7 @@ ROUTINE_DASHBOARD_PATH = "dashboard_path"
 ROUTINE_DASHBOARD = "dashboard"
 ROUTINE_DASHBOARD_VIEW = "dashboard_view"
 ROUTINE_DASHBOARD_DISPLAY = "dashboard_display"
+ROUTINE_OUTPUT_FORMAT = "output_format"
 
 
 @dataclass(frozen=True)
@@ -116,7 +121,6 @@ class Person:
     name: str
     phonetic_name: str
     media_player: str | None
-    output_format: Literal["audio", "visual"]
     commute_destination_zone: str | None
     transportation_mode: str
     reset_time: time
@@ -136,6 +140,7 @@ class Routine:
     dashboard_path: str | None
     dashboard_view: str | None
     dashboard_display: str | None
+    output_format: Literal["audio", "visual"] = DEFAULT_OUTPUT_FORMAT
 
 
 def slugify_name(value: str) -> str:
@@ -159,7 +164,6 @@ def build_person_data(
         PERSON_NAME: name,
         PERSON_PHONETIC_NAME: phonetic_name or name,
         PERSON_MEDIA_PLAYER: None,
-        PERSON_OUTPUT_FORMAT: DEFAULT_OUTPUT_FORMAT,
         PERSON_COMMUTE_DESTINATION: commute_destination_zone or None,
         PERSON_TRANSPORTATION_MODE: transportation_mode or DEFAULT_TRANSPORTATION_MODE,
         PERSON_RESET_TIME: DEFAULT_RESET_TIME,
@@ -188,7 +192,6 @@ def _person_from_subentry(subentry: ConfigSubentry) -> Person:
         name=name,
         phonetic_name=data.get(PERSON_PHONETIC_NAME) or name,
         media_player=data.get(PERSON_MEDIA_PLAYER) or None,
-        output_format=data.get(PERSON_OUTPUT_FORMAT) or DEFAULT_OUTPUT_FORMAT,
         commute_destination_zone=data.get(PERSON_COMMUTE_DESTINATION) or None,
         transportation_mode=(
             data.get(PERSON_TRANSPORTATION_MODE) or DEFAULT_TRANSPORTATION_MODE
@@ -220,6 +223,7 @@ def _routine_from_subentry(subentry: ConfigSubentry) -> Routine:
         dashboard_path=data.get(ROUTINE_DASHBOARD_PATH) or None,
         dashboard_view=data.get(ROUTINE_DASHBOARD_VIEW) or None,
         dashboard_display=data.get(ROUTINE_DASHBOARD_DISPLAY) or None,
+        output_format=data.get(ROUTINE_OUTPUT_FORMAT) or DEFAULT_OUTPUT_FORMAT,
     )
 
 

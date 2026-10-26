@@ -2202,6 +2202,8 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
         personality,
         audio_target_path,
         creds=ai_creds,
+        voice_profile=step_to_process.get("voice_profile"),
+        openai_voice=step_to_process.get("openai_voice"),
     )
     effective_audio_path = synth_audio_path or audio_target_path
 

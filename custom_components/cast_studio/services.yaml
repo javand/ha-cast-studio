@@ -1,6 +1,6 @@
 prebuild:
   name: Pre-build Briefing
-  description: Builds and stores a routine's segments, or the segments of all of a person's routines, without playing anything. For visual people the stitched routine video is stored too.
+  description: Builds and stores a routine's segments, or the segments of all of a person's routines, without playing anything. For visual routines the stitched routine video and an audio copy are stored too.
   fields:
     person:
       name: Person
@@ -45,7 +45,7 @@ play:
           domain: media_player
     skip_played:
       name: Skip Played Segments
-      description: If true, plays only the segments not yet heard in the person's briefing day. When everything has been heard, a short "That's everything" line plays.
+      description: If true, plays only the segments this routine has not yet played in the person's briefing day. When everything has been heard, a short "That's everything" line plays.
       required: false
       default: false
       selector:

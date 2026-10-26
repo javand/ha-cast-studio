@@ -38,7 +38,6 @@ def person_subentry(subentry_id: str, name: str, **data: Any) -> dict[str, Any]:
             "name": name,
             "phonetic_name": name,
             "media_player": None,
-            "output_format": "visual",
             "commute_destination_zone": None,
             "transportation_mode": "fastest",
             "reset_time": "03:00:00",
@@ -49,7 +48,7 @@ def person_subentry(subentry_id: str, name: str, **data: Any) -> dict[str, Any]:
 
 
 def routine_subentry(
-    subentry_id: str, person_id: str, name: str, segments: list[str]
+    subentry_id: str, person_id: str, name: str, segments: list[str], **data: Any
 ) -> dict[str, Any]:
     """Build a stored routine subentry."""
     return {
@@ -64,6 +63,8 @@ def routine_subentry(
             "dashboard_path": None,
             "dashboard_view": None,
             "dashboard_display": None,
+            "output_format": "visual",
+            **data,
         },
     }
 
@@ -112,7 +113,7 @@ def entry_with_two_quick_routines() -> MockConfigEntry:
     return make_entry(
         [
             person_subentry(ALEX_ID, "Alex"),
-            person_subentry(SAM_ID, "Sam", output_format="audio"),
+            person_subentry(SAM_ID, "Sam"),
             routine_subentry("r_alex_quick", ALEX_ID, "Quick", ["greeting"]),
             routine_subentry("r_sam_quick", SAM_ID, "Quick", ["greeting", "weather"]),
             routine_subentry(

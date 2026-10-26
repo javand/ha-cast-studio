@@ -40,7 +40,7 @@ Instead of a plain text-to-speech readout, each person in the house gets their o
 
 1. **Set up people and routines** in the integration: who gets a briefing, where it plays, and which segments it contains (greeting, weather, National Day, fun fact, agenda, commute, scripture, encouragement, closing).
 2. **Pre-build** overnight with `cast_studio.prebuild`, so nothing waits on AI or video encoding in the morning.
-3. **Play** with `cast_studio.play` from any trigger: an alarm, a button, motion, a time. Playback starts at once, and `skip_played` lets a second press play only what that person has not heard yet today.
+3. **Play** with `cast_studio.play` from any trigger: an alarm, a button, motion, a time. Playback starts at once, and `skip_played` lets a second press play only what that routine has not played yet today.
 
 ---
 
@@ -75,7 +75,6 @@ Use **Add person** on the CastStudio entry. Fields:
 | :--- | :--- |
 | Name / Phonetic pronunciation | Name shown on screen, and how it is spoken (for example `Al-ex`). |
 | Output device (optional) | The media player this person's briefings play on. |
-| Output format | `Audio` (sound only) or `Visual` (slides and video). The default is Visual. |
 | Work or commute destination zone | This person's own commute destination. |
 | Travel mode | `Fastest`, `Driving` or `Transit`. |
 | Daily reset time | When the person's briefing day starts (default 03:00). Anything built or played before it counts as the previous day. |
@@ -87,7 +86,24 @@ The **Advanced** section holds the entities and voices used to build segments: w
 
 **Calendars** takes any number of calendars, for example a personal calendar and a shared Family calendar. The agenda merges their events into one timeline, and the narration says which calendar an event is on. A person saved with a single calendar keeps it.
 
-**Audio-only people** get sound only: no slides are rendered and no video is stitched.
+**Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. In **Advanced**, pick **Host personas** for the greeting, weather, agenda, commute, fun fact and closing, and **Reader personas** for the daily text and daily encouragement. Each picker lists only the personas suited to that role. Pick one to always hear it, or several to get one at random each briefing day; every part of that day's briefing keeps the same speaker. Leave a picker empty to keep the host or scripture voice and personality fields, exactly as before.
+
+| Persona | Roles | Character |
+| :--- | :--- | :--- |
+| Default Host | Host | The original clear, friendly news-anchor host |
+| Default Reader | Reader | The original calm, warm life-coach reader |
+| Elena | Host, Reader | Warm, grounded young Saint Lucian woman |
+| Malenfant | Reader | Mature, pastoral mentor |
+| Della | Host, Reader | Joyful, soothing Southern auntie |
+| Cole | Host | Cultured, composed Brooklyn gentleman |
+| Arthur | Host | Crisp British butler with a dry wit |
+| Theo | Host | Upbeat morning-radio host |
+| Nana Rose | Host, Reader | Gentle, unhurried grandmother |
+| Sage | Reader | Calm meditation guide |
+| Ray | Host | No-nonsense news and traffic anchor |
+| Pip | Host | Playful, kid-friendly guide |
+
+A persona change takes effect on the next pre-build or briefing day.
 
 **Commute.** Each person has their own work zone and their own commute sensors (minutes). Travel mode `Fastest` compares driving and transit; `Driving` or `Transit` gives a single-mode commute with no comparison. If a person has no work zone, or no sensor for their travel mode, the commute segment is skipped with a logged warning and the rest of the briefing still plays.
 
@@ -96,12 +112,14 @@ The **Advanced** section holds the entities and voices used to build segments: w
 ### Add routine
 Use **Add routine**: pick the person, a routine name (unique for that person) and the segments. Segment types are `greeting`, `weather`, `national_day`, `fun_fact`, `agenda`, `commute`, `scripture`, `daily_encouragement` and `closing`. A `closing` segment says the person's name once, and the encouragement then leaves out its own sign-off. On a display it shows the sign-off over a full-screen photo with a "Happy Thursday!" style day tag: a fresh AI image themed to the weekday and season when Gemini is configured, otherwise a bundled sunrise illustration. The form stores segments in the order submitted, so check the order after saving.
 
+Pick an **Output format** for the routine. **Visual** (the default) builds slides and video. It plays the video on a device with a screen (a Nest Hub, Chromecast or Google TV) and the audio on a speaker, so one routine can serve both, for example a bathroom routine that your automation sends to whichever room you walk into. **Audio** builds sound only, with no slides or video, for routines that only ever play on speakers, such as a night-time routine. A Cast group always gets audio. A player whose model isn't reported counts as a screen when its name contains "display".
+
 Optionally pick a **Dashboard to show afterwards** and a **Dashboard display**: the dropdown lists every dashboard and its views (for example "Nest Display › Morning"), and the chosen view is shown on a Cast display (`cast.show_lovelace_view`) when the briefing finishes. You can also type a path such as `dashboard-home/morning`. The display defaults to the person's output device and must be a Cast player, otherwise the dashboard is skipped with a warning. Without a dashboard, a Cast player is turned off once it finishes the briefing, so a display leaves the cast screen and returns to its home screen; it is left alone if it is still playing something a minute later.
 
 Each routine gets a status sensor named `sensor.cast_studio_<person>_<routine>` (states `idle`, `generating`, `ready`, `playing`, `error`). Routines added later work at once; their sensor may appear only after the first play or prebuild, or after the next integration reload.
 
 ### `cast_studio.prebuild`
-Builds and stores segments without playing anything. For Visual people the stitched routine video is stored too.
+Builds and stores segments without playing anything. For Visual routines the stitched routine video, and a stitched audio copy for speakers, are stored too.
 
 | Field | Required | Meaning |
 | :--- | :--- | :--- |
@@ -116,12 +134,12 @@ Plays a routine now from fresh stored segments. Missing or stale segments are bu
 | `routine` | yes | | Routine to play. |
 | `person` | no | | Needed only when more than one person has a routine with this name. |
 | `target` | no | person's output device | Media player to play on instead. |
-| `skip_played` | no | `false` | Plays only the segment types the person has not yet heard in their briefing day. When everything has been heard, a short "That's everything" line plays. |
+| `skip_played` | no | `false` | Plays only the segment types this routine has not yet played in the person's briefing day. Each routine keeps its own record, so hearing the weather in one routine does not skip it in another. When everything has been heard, a short "That's everything" line plays. |
 
 ### Briefing day, freshness and skip played
 - A person's **briefing day** rolls over at their daily reset time. Stored segments from earlier days are not used, and are removed on the next prebuild.
 - With a **maximum content age**, stored segments older than that are rebuilt before playing.
-- Played segment types are recorded when playback starts. `skip_played: true` relies on that record, which resets with the briefing day.
+- Played segment types are recorded per routine when playback starts. `skip_played: true` relies on that routine's record, which resets with the briefing day.
 
 ### AI account problems
 When Gemini or OpenAI rejects a request because of the account (key rejected, billing or credits, access denied, or quota used up), briefings still play with the fallback voice and text, and CastStudio tells you:
@@ -143,7 +161,7 @@ The examples assume the Quick, Full and Home day routines already exist. Paste e
 
 ```yaml
 alias: Bathroom button briefing
-description: Single press plays Quick, double press plays Full, skipping what Alex already heard today.
+description: Single press plays Quick, double press plays Full; each skips what that routine already played today.
 mode: queued
 triggers:
   - trigger: event.received

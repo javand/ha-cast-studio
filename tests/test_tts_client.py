@@ -15,6 +15,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.cast_studio.tts_client import (
     TTSClientError,
+    _build_gemini_tts_prompt,
     _synthesize_gemini_tts,
     _synthesize_ha_tts,
     _synthesize_openai_tts,
@@ -50,6 +51,7 @@ async def test_synthesize_speech_gemini_voices(tmp_path: Path) -> None:
             output_wav,
             "test_key",
             session=ANY,
+            profile=None,
         )
 
 
@@ -80,6 +82,7 @@ async def test_synthesize_speech_gemini_enceladus_voice(tmp_path: Path) -> None:
             output_wav,
             "test_gemini_key",
             session=ANY,
+            profile=None,
         )
 
 
@@ -649,6 +652,7 @@ async def test_synthesize_speech_defaults(tmp_path: Path) -> None:
             output_wav,
             "k",
             session=ANY,
+            profile=None,
         )
 
 
@@ -687,6 +691,7 @@ async def test_synthesize_speech_reuses_clientsession(tmp_path: Path) -> None:
             output_wav,
             "k",
             session=mock_session,
+            profile=None,
         )
 
 
@@ -829,3 +834,101 @@ def test_tts_timeout_grows_with_script_length_up_to_a_cap() -> None:
     assert tts_timeout("Good morning, Alex!") == pytest.approx(30.9)
     assert tts_timeout(" ".join(["word"] * 150)) == pytest.approx(75.0)
     assert tts_timeout(" ".join(["word"] * 1000)) == 120.0
+
+
+def test_gemini_prompt_uses_profile_verbatim() -> None:
+    """A persona's delivery prompt is the whole profile: no lookup, no wrapper."""
+    profile = "# AUDIO PROFILE: X\nStyle: calm"
+    prompt = _build_gemini_tts_prompt("Hi", "news_anchor", profile=profile)
+    assert prompt.startswith(profile + "\n\n")
+    assert "Style: news_anchor" not in prompt
+    assert "News Anchor" not in prompt
+    assert prompt.endswith("#### TRANSCRIPT\nHi")
+    assert _build_gemini_tts_prompt("Hi", "news_anchor", profile=None) == (
+        _build_gemini_tts_prompt("Hi", "news_anchor")
+    )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_passes_profile_to_gemini(tmp_path: Path) -> None:
+    """The persona's delivery prompt reaches the Gemini call."""
+    output_wav = str(tmp_path / "persona.wav")
+    with patch(
+        "custom_components.cast_studio.tts_client._synthesize_gemini_tts",
+        new=AsyncMock(return_value=output_wav),
+    ) as mock_tts:
+        await async_synthesize_speech(
+            hass=MagicMock(),
+            script="Hello",
+            voice="Kore",
+            personality="A warm friend.",
+            output_wav_path=output_wav,
+            creds={"platform": "gemini", "api_key": "k"},
+            voice_profile="P",
+        )
+    mock_tts.assert_awaited_once_with(
+        "Hello", "Kore", "A warm friend.", output_wav, "k", session=ANY, profile="P"
+    )
+
+
+@pytest.mark.asyncio
+async def test_openai_uses_persona_voice(tmp_path: Path) -> None:
+    """A persona's OpenAI voice is used as is; an unknown one falls back."""
+    output_wav = str(tmp_path / "persona_openai.wav")
+    creds = {"platform": "openai", "api_key": "k"}
+    with patch(
+        "custom_components.cast_studio.tts_client._synthesize_openai_tts",
+        new=AsyncMock(return_value=output_wav),
+    ) as mock_openai:
+        await async_synthesize_speech(
+            hass=MagicMock(),
+            script="Hello",
+            voice="Kore",
+            personality="calm",
+            output_wav_path=output_wav,
+            creds=creds,
+            openai_voice="fable",
+        )
+        assert mock_openai.await_args.args[1] == "fable"
+        await async_synthesize_speech(
+            hass=MagicMock(),
+            script="Hello",
+            voice="Kore",
+            personality="calm",
+            output_wav_path=output_wav,
+            creds=creds,
+            openai_voice="bogus",
+        )
+        assert mock_openai.await_args.args[1] == map_voice_for_openai("Kore")
+
+
+@pytest.mark.asyncio
+async def test_gemini_failure_with_persona_falls_back_to_ha_tts(
+    tmp_path: Path,
+) -> None:
+    """A persona's briefing still speaks through HA TTS when Gemini fails."""
+    hass = MagicMock()
+    output_wav = str(tmp_path / "persona_fallback.wav")
+    with (
+        patch(
+            "custom_components.cast_studio.tts_client._synthesize_gemini_tts",
+            side_effect=TTSClientError("500", status=500),
+        ),
+        patch(
+            "custom_components.cast_studio.tts_client._synthesize_ha_tts",
+            new=AsyncMock(return_value=output_wav),
+        ) as mock_ha,
+    ):
+        result = await async_synthesize_speech(
+            hass=hass,
+            script="Hello",
+            voice="Kore",
+            personality="calm",
+            output_wav_path=output_wav,
+            creds={"platform": "gemini", "api_key": "k"},
+            voice_profile="P",
+        )
+    assert result == output_wav
+    mock_ha.assert_awaited_once_with(
+        hass, "Hello", "Kore", "calm", output_wav, target_engine=None
+    )

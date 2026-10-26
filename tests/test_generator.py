@@ -2175,6 +2175,20 @@ async def _run_compile_step(
     ai_creds: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Run the real _async_compile_single_step with a mocked LLM; return card, TTS text."""
+    card, tts = await _run_compile_step_with_tts(
+        tmp_path, step, llm_content, recipient, ai_creds
+    )
+    return card, tts.call_args[0][1]
+
+
+async def _run_compile_step_with_tts(
+    tmp_path: Path,
+    step: dict[str, Any],
+    llm_content: dict[str, Any],
+    recipient: dict[str, Any],
+    ai_creds: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], AsyncMock]:
+    """Run the real _async_compile_single_step; return the card and the TTS mock."""
     from custom_components.cast_studio.generator import _async_compile_single_step
 
     mock_hass = MagicMock()
@@ -2224,7 +2238,7 @@ async def _run_compile_step(
             slide_target_path=slide_target,
             clip_target_path=str(tmp_path / "clip.mp4"),
         )
-    return mock_render.call_args[0][0], tts.call_args[0][1]
+    return mock_render.call_args[0][0], tts
 
 
 @pytest.mark.asyncio
@@ -3426,3 +3440,20 @@ def test_closing_subtitle_names_the_day() -> None:
 
     thursday = datetime(2026, 10, 22, 6, 0, tzinfo=dt_util.UTC)
     assert closing_subtitle(thursday) == "Happy Thursday!"
+
+
+@pytest.mark.asyncio
+async def test_compile_step_passes_persona_to_tts(tmp_path: Path) -> None:
+    """A persona's delivery prompt and OpenAI voice reach the TTS call."""
+    step = {
+        "name": "greeting",
+        "type": "greeting",
+        "voice": "Kore",
+        "voice_personality": "A warm friend.",
+        "voice_profile": "P",
+        "openai_voice": "fable",
+    }
+    llm = {"visual_card": {"title": "Hi"}, "narration_script": "Good morning."}
+    _card, tts = await _run_compile_step_with_tts(tmp_path, step, llm, {"name": "Alex"})
+    assert tts.call_args.kwargs["voice_profile"] == "P"
+    assert tts.call_args.kwargs["openai_voice"] == "fable"

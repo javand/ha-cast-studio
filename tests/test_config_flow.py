@@ -93,7 +93,6 @@ async def test_config_flow_user_step_creates_entry():
         "name": "Alice",
         "phonetic_name": "Al-iss",
         "media_player": None,
-        "output_format": "visual",
         "commute_destination_zone": None,
         "transportation_mode": "fastest",
         "reset_time": "03:00:00",
@@ -367,7 +366,13 @@ async def test_add_person_subentry_creates_person(
     assert result["type"] == data_entry_flow.FlowResultType.FORM
     assert result["step_id"] == "user"
     keys = [str(k) for k in result["data_schema"].schema]
-    assert keys[:4] == ["name", "phonetic_name", "media_player", "output_format"]
+    assert keys[:4] == [
+        "name",
+        "phonetic_name",
+        "media_player",
+        "commute_destination_zone",
+    ]
+    assert "output_format" not in keys
     assert keys[-1] == "advanced"
 
     result = await hass.config_entries.subentries.async_configure(
@@ -376,7 +381,6 @@ async def test_add_person_subentry_creates_person(
             "name": "Sam",
             "phonetic_name": "Sam",
             "media_player": "media_player.kitchen_speaker",
-            "output_format": "audio",
             "transportation_mode": "driving",
         },
     )
@@ -386,7 +390,6 @@ async def test_add_person_subentry_creates_person(
     (sam,) = get_people(config_entry)
     assert sam.name == "Sam"
     assert sam.media_player == "media_player.kitchen_speaker"
-    assert sam.output_format == "audio"
     assert sam.transportation_mode == "driving"
     assert sam.commute_destination_zone is None
     assert sam.reset_time == time(3, 0)
@@ -405,7 +408,6 @@ async def test_add_person_flattens_advanced_section(
         user_input={
             "name": "Alex",
             "phonetic_name": "Al-ex",
-            "output_format": "visual",
             "transportation_mode": "transit",
             "commute_destination_zone": "zone.office",
             "reset_time": "04:00:00",
@@ -450,7 +452,6 @@ async def test_reconfigure_person_updates_subentry(
             user_input={
                 "name": "Samantha",
                 "phonetic_name": "Sa-man-tha",
-                "output_format": "audio",
                 "transportation_mode": "fastest",
                 "advanced": {"calendar_entities": ["calendar.sam", "calendar.family"]},
             },
@@ -463,7 +464,6 @@ async def test_reconfigure_person_updates_subentry(
     (person,) = get_people(entry_with_sam)
     assert person.person_id == SAM_ID
     assert person.name == "Samantha"
-    assert person.output_format == "audio"
     assert person.settings == {"calendar_entities": ["calendar.sam", "calendar.family"]}
     assert entry_with_sam.subentries[SAM_ID].title == "Samantha"
 
@@ -579,6 +579,47 @@ async def test_add_routine_keeps_segment_order_and_dashboard(
 
 
 @pytest.mark.asyncio
+async def test_routine_form_sets_output_format(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """The routine form offers Audio or Visual, defaulting to Visual."""
+    result = await _start_subentry(hass, entry_with_sam, "routine")
+    schema = {str(k): k for k in result["data_schema"].schema}
+    assert schema["output_format"].default() == "visual"
+    selectors = {str(k): v for k, v in result["data_schema"].schema.items()}
+    assert selectors["output_format"].config["options"] == ["audio", "visual"]
+
+    await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "person_id": SAM_ID,
+            "name": "Night",
+            "segments": ["closing"],
+            "output_format": "audio",
+        },
+    )
+    (routine,) = get_routines(entry_with_sam)
+    assert routine.output_format == "audio"
+
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    schema = {str(k): k for k in result["data_schema"].schema}
+    assert schema["output_format"].default() == "audio"
+    await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "person_id": SAM_ID,
+            "name": "Night",
+            "segments": ["closing"],
+            "output_format": "visual",
+        },
+    )
+    (routine,) = get_routines(entry_with_sam)
+    assert routine.output_format == "visual"
+
+
+@pytest.mark.asyncio
 async def test_add_routine_requires_segments(
     hass: HomeAssistant, entry_with_sam: MockConfigEntry
 ) -> None:
@@ -645,6 +686,10 @@ def test_subentry_translations_present() -> None:
             "audio",
             "visual",
         }
+        for step in ("user", "reconfigure"):
+            assert "output_format" in routine["step"][step]["data"]
+            assert "output_format" in routine["step"][step]["data_description"]
+            assert "output_format" not in person["step"][step]["data"]
 
 
 def test_hacs_floor_supports_subentries() -> None:
@@ -709,7 +754,6 @@ async def test_fresh_install_creates_first_person(hass: HomeAssistant) -> None:
     assert alex.phonetic_name == "Al-ex"
     assert alex.commute_destination_zone == "zone.office"
     assert alex.transportation_mode == "transit"
-    assert alex.output_format == "visual"
     assert alex.media_player is None
     assert get_routines(entry) == []
 
@@ -775,7 +819,6 @@ async def test_add_person_rejects_invalid_name(
         user_input={
             "name": name,
             "phonetic_name": "Sam",
-            "output_format": "audio",
             "transportation_mode": "driving",
         },
     )
@@ -795,7 +838,6 @@ async def test_add_person_rejects_duplicate_slug(
         user_input={
             "name": "SAM!",
             "phonetic_name": "Sam",
-            "output_format": "audio",
             "transportation_mode": "driving",
         },
     )
@@ -834,7 +876,6 @@ async def test_add_person_rejects_sensor_for_the_other_mode(
         user_input={
             "name": "Sam",
             "phonetic_name": "Sam",
-            "output_format": "audio",
             "transportation_mode": mode,
             "advanced": advanced,
         },
@@ -873,7 +914,6 @@ async def test_add_person_accepts_usable_commute_sensors(
         user_input={
             "name": "Sam",
             "phonetic_name": "Sam",
-            "output_format": "audio",
             "transportation_mode": mode,
             "advanced": advanced,
         },
@@ -889,7 +929,6 @@ async def test_reconfigure_person_keeps_own_name_but_rejects_other(
     entry = entry_with_alex_and_sam
     base_input = {
         "phonetic_name": "Sam",
-        "output_format": "audio",
         "transportation_mode": "driving",
     }
     result = await entry.start_subentry_reconfigure_flow(hass, SAM_ID)
@@ -963,7 +1002,6 @@ async def test_add_person_stores_commute_sensors_and_zone(
         user_input={
             "name": "Sam",
             "phonetic_name": "Sam",
-            "output_format": "audio",
             "transportation_mode": "driving",
             "commute_destination_zone": "zone.office",
             "reset_time": "03:00:00",
@@ -1009,7 +1047,6 @@ async def test_person_form_saves_pronunciations(
         user_input={
             "name": "Alex",
             "phonetic_name": "Al-ex",
-            "output_format": "visual",
             "transportation_mode": "fastest",
             "reset_time": "03:00:00",
             "max_age_minutes": 0,
@@ -1111,3 +1148,90 @@ def test_daily_text_picker_offers_jw_library_sensors_and_text_helpers() -> None:
         {"integration": "jw_library", "domain": ["sensor"]},
         {"domain": ["input_text"]},
     ]
+
+
+def _advanced_selectors(schema: vol.Schema) -> dict[str, Any]:
+    """Return the advanced section's selectors keyed by field name."""
+    advanced = next(
+        value for key, value in schema.schema.items() if str(key) == "advanced"
+    )
+    return {str(key): value for key, value in advanced.schema.schema.items()}
+
+
+def _option_values(sel: Any) -> set[str]:
+    return {option["value"] for option in sel.config["options"]}
+
+
+@pytest.mark.asyncio
+async def test_person_form_offers_role_personas(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """Each persona picker lists only the personas suited to its role."""
+    result = await _start_subentry(hass, config_entry, "person")
+    selectors = _advanced_selectors(result["data_schema"])
+    host = selectors["host_personas"]
+    reader = selectors["reader_personas"]
+    assert host.config["multiple"] is True
+    assert "arthur" in _option_values(host)
+    assert "malenfant" not in _option_values(host)
+    assert "malenfant" in _option_values(reader)
+    assert "theo" not in _option_values(reader)
+
+
+@pytest.mark.asyncio
+async def test_add_person_saves_persona_picks(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """The picked personas are stored as the person's settings."""
+    result = await _start_subentry(hass, config_entry, "person")
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "name": "Sam",
+            "phonetic_name": "Sam",
+            "transportation_mode": "driving",
+            "advanced": {
+                "host_personas": ["arthur", "theo"],
+                "reader_personas": ["sage"],
+            },
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    (sam,) = get_people(config_entry)
+    assert sam.settings["host_personas"] == ["arthur", "theo"]
+    assert sam.settings["reader_personas"] == ["sage"]
+
+
+def test_strings_cover_persona_fields() -> None:
+    """Both translation files label and describe the persona pickers."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for step in ("user", "reconfigure"):
+            advanced = data["config_subentries"]["person"]["step"][step]["sections"][
+                "advanced"
+            ]
+            for key in ("host_personas", "reader_personas"):
+                assert advanced["data"][key]
+                assert advanced["data_description"][key]
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_person_drops_removed_personas(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """A persona no longer in the catalog doesn't block saving the person."""
+    subentry = entry_with_sam.subentries[SAM_ID]
+    hass.config_entries.async_update_subentry(
+        entry_with_sam,
+        subentry,
+        data={**subentry.data, "host_personas": ["gone_persona", "arthur"]},
+    )
+    result = await entry_with_sam.start_subentry_reconfigure_flow(hass, SAM_ID)
+    advanced = next(
+        value
+        for key, value in result["data_schema"].schema.items()
+        if str(key) == "advanced"
+    )
+    field = next(key for key in advanced.schema.schema if str(key) == "host_personas")
+    assert field.description["suggested_value"] == ["arthur"]

@@ -31,7 +31,6 @@ async def _setup_entry_with_sam_quick(hass: Any, tmp_path: Path) -> Any:
             person_subentry(
                 SAM_ID,
                 "Sam",
-                output_format="audio",
                 media_player="media_player.kitchen_speaker",
             ),
             routine_subentry("r_sam_quick", SAM_ID, "Quick", ["greeting", "weather"]),

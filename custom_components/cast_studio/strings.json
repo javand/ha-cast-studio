@@ -42,7 +42,6 @@
             "name": "Name",
             "phonetic_name": "Phonetic pronunciation",
             "media_player": "Output device (optional)",
-            "output_format": "Output format",
             "commute_destination_zone": "Work or commute destination zone",
             "transportation_mode": "Travel mode",
             "reset_time": "Daily reset time",
@@ -51,7 +50,6 @@
           "data_description": {
             "phonetic_name": "How the name should be spoken, for example Al-ex.",
             "media_player": "Where this person's briefings play.",
-            "output_format": "Audio plays sound only. Visual also renders slides and video.",
             "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
             "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
             "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
@@ -69,6 +67,8 @@
                 "commute_transit_sensor": "Commute transit-time sensor",
                 "commute_drive_return_sensor": "Evening drive-home sensor",
                 "commute_transit_return_sensor": "Evening transit-home sensor",
+                "host_personas": "Host personas",
+                "reader_personas": "Reader personas",
                 "host_voice": "Host voice",
                 "scripture_voice": "Scripture voice",
                 "host_personality": "Host personality",
@@ -85,7 +85,9 @@
                 "commute_transit_sensor": "Travel-time sensor (minutes) for public transit to this person's work zone.",
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
-                "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text."
+                "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
+                "host_personas": "Who hosts the briefing: greeting, weather, agenda, commute and closing. Pick several to get a different one each day. Leave empty to use the host voice and personality below.",
+                "reader_personas": "Who reads the daily text and daily encouragement. Pick several to get a different one each day. Leave empty to use the scripture voice and personality below."
               }
             }
           }
@@ -97,7 +99,6 @@
             "name": "Name",
             "phonetic_name": "Phonetic pronunciation",
             "media_player": "Output device (optional)",
-            "output_format": "Output format",
             "commute_destination_zone": "Work or commute destination zone",
             "transportation_mode": "Travel mode",
             "reset_time": "Daily reset time",
@@ -106,7 +107,6 @@
           "data_description": {
             "phonetic_name": "How the name should be spoken, for example Al-ex.",
             "media_player": "Where this person's briefings play.",
-            "output_format": "Audio plays sound only. Visual also renders slides and video.",
             "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
             "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
             "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
@@ -124,6 +124,8 @@
                 "commute_transit_sensor": "Commute transit-time sensor",
                 "commute_drive_return_sensor": "Evening drive-home sensor",
                 "commute_transit_return_sensor": "Evening transit-home sensor",
+                "host_personas": "Host personas",
+                "reader_personas": "Reader personas",
                 "host_voice": "Host voice",
                 "scripture_voice": "Scripture voice",
                 "host_personality": "Host personality",
@@ -140,7 +142,9 @@
                 "commute_transit_sensor": "Travel-time sensor (minutes) for public transit to this person's work zone.",
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
-                "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text."
+                "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
+                "host_personas": "Who hosts the briefing: greeting, weather, agenda, commute and closing. Pick several to get a different one each day. Leave empty to use the host voice and personality below.",
+                "reader_personas": "Who reads the daily text and daily encouragement. Pick several to get a different one each day. Leave empty to use the scripture voice and personality below."
               }
             }
           }
@@ -169,12 +173,14 @@
             "person_id": "Person",
             "name": "Routine name",
             "segments": "Segments",
+            "output_format": "Output format",
             "dashboard": "Dashboard to show afterwards (optional)",
             "dashboard_display": "Dashboard display (optional)"
           },
           "data_description": {
             "name": "Must be unique for this person.",
             "segments": "Segments play in the order you pick them.",
+            "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
             "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
           }
@@ -185,12 +191,14 @@
             "person_id": "Person",
             "name": "Routine name",
             "segments": "Segments",
+            "output_format": "Output format",
             "dashboard": "Dashboard to show afterwards (optional)",
             "dashboard_display": "Dashboard display (optional)"
           },
           "data_description": {
             "name": "Must be unique for this person.",
             "segments": "Segments play in the order you pick them.",
+            "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
             "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
           }
@@ -264,7 +272,7 @@
   "services": {
     "prebuild": {
       "name": "Pre-build briefing",
-      "description": "Builds and stores a routine's segments, or the segments of all of a person's routines, without playing anything. For visual people the stitched routine video is stored too.",
+      "description": "Builds and stores a routine's segments, or the segments of all of a person's routines, without playing anything. For visual routines the stitched routine video and an audio copy are stored too.",
       "fields": {
         "person": {
           "name": "Person",
@@ -294,7 +302,7 @@
         },
         "skip_played": {
           "name": "Skip played segments",
-          "description": "If on, plays only the segments not yet heard in the person's briefing day. When everything has been heard, a short \"That's everything\" line plays."
+          "description": "If on, plays only the segments this routine has not yet played in the person's briefing day. When everything has been heard, a short \"That's everything\" line plays."
         }
       }
     }

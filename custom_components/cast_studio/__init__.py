@@ -31,7 +31,11 @@ from .const import (
     LOGGER,
 )
 from .people import (
+    DEFAULT_OUTPUT_FORMAT,
+    ROUTINE_OUTPUT_FORMAT,
+    ROUTINE_PERSON_ID,
     SUBENTRY_PERSON,
+    SUBENTRY_ROUTINE,
     build_person_data,
     find_person,
     find_routine,
@@ -155,10 +159,39 @@ async def async_migrate_entry(
                 unique_id=None,
             ),
         )
-        hass.config_entries.async_update_entry(entry, version=2)
+        hass.config_entries.async_update_entry(entry, version=2, minor_version=2)
         LOGGER.info("Migrated CastStudio entry to version 2 with person %s", name)
 
+    if entry.version == 2 and entry.minor_version < 2:  # noqa: PLR2004
+        _migrate_output_format_to_routines(hass, entry)
+        hass.config_entries.async_update_entry(entry, minor_version=2)
+        LOGGER.info("Moved CastStudio output formats from people to routines")
+
     return True
+
+
+def _migrate_output_format_to_routines(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Give each routine its person's output format, then drop it from people."""
+    # People stored the format under the same key routines use now.
+    formats = {
+        sub.subentry_id: sub.data.get(ROUTINE_OUTPUT_FORMAT) or DEFAULT_OUTPUT_FORMAT
+        for sub in entry.subentries.values()
+        if sub.subentry_type == SUBENTRY_PERSON
+    }
+    for sub in list(entry.subentries.values()):
+        data = dict(sub.data)
+        if sub.subentry_type == SUBENTRY_ROUTINE:
+            if ROUTINE_OUTPUT_FORMAT in data:
+                continue
+            data[ROUTINE_OUTPUT_FORMAT] = formats.get(
+                data.get(ROUTINE_PERSON_ID), DEFAULT_OUTPUT_FORMAT
+            )
+        elif sub.subentry_type == SUBENTRY_PERSON:
+            if data.pop(ROUTINE_OUTPUT_FORMAT, None) is None:
+                continue
+        else:
+            continue
+        hass.config_entries.async_update_subentry(entry, sub, data=data)
 
 
 async def async_setup_entry(

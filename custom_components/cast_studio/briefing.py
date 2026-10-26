@@ -2,14 +2,17 @@
 Briefing engine: pre-build and play routine subentries (spec §5.3 to §5.5).
 
 ``async_prebuild`` builds and stores a routine's (or a person's) segments, and
-for visual people also a fully stitched routine video. ``async_play`` plays
-fresh stored segments, building whatever is missing or stale live first, and
-can skip segment types the person already heard during the briefing day.
+for visual routines also a fully stitched routine video and audio.
+``async_play`` plays fresh stored segments, building whatever is missing or
+stale live first, and can skip segment types the routine already played during
+the briefing day. It plays video only for a visual routine on a screen.
 
 Per-routine files sit next to the segments of the day they were built for::
 
     people/<id>/<YYYY-MM-DD>/routine_<slug>.<version>.mp4   pre-stitched video
     people/<id>/<YYYY-MM-DD>/routine_<slug>.json   its file, what it was built from
+    people/<id>/<YYYY-MM-DD>/routine_<slug>-audio.<version>.mp3   the same as audio
+    people/<id>/<YYYY-MM-DD>/routine_<slug>-audio.json   its sidecar
     people/<id>/<YYYY-MM-DD>/play_<slug>.<version>.mp3|.mp4 stitched at play time
 
 Stitched files get a new versioned name each time, like segments, so a
@@ -41,8 +44,10 @@ from .ffmpeg_runner import async_run_ffmpeg, build_concat_command, write_concat_
 from .helpers import async_run_in_executor, create_task
 from .orchestrator import (
     SUPERSEDED_FLAG,
+    PlaybackNotStartedError,
     _is_cast_player,
     async_play_and_sync_routine,
+    has_screen,
 )
 from .people import (
     briefing_day,
@@ -80,6 +85,7 @@ DATA_LOCKS = "briefing_locks"
 DATA_PLAYS = "briefing_plays"
 
 ROUTINE_VIDEO_PREFIX = "routine_"
+ROUTINE_AUDIO_SUFFIX = "-audio"
 PLAY_PREFIX = "play_"
 
 UNAVAILABLE_STATES = ("unavailable", "unknown")
@@ -108,6 +114,9 @@ class _CurrentPlay:
     metadata: dict[str, Any]
     task: asyncio.Task[Any] | None = None
     superseded_by: str | None = field(default=None)
+    # Segment types this play newly marked heard, undone if it never plays.
+    newly_heard: set[str] = field(default_factory=set)
+    marked_at: datetime | None = None
 
 
 # How long a Cast display may keep reporting "playing" after the briefing's
@@ -193,20 +202,28 @@ async def async_refresh_sensors(hass: HomeAssistant, entry: ConfigEntry) -> None
 
 
 def _usable_segment(
-    store: SegmentStore, person: Person, key: str, now: datetime
+    store: SegmentStore, person: Person, key: str, now: datetime, *, visual: bool
 ) -> StoredSegment | None:
     """
-    Return a fresh stored segment that suits the person's current output format.
+    Return a fresh stored segment, with a clip when ``visual``.
 
-    A segment built while the person was audio-only has no clip; for a visual
-    person it counts as missing, so it is rebuilt with a clip.
+    A segment built audio-only has no clip; for a visual use it counts as
+    missing, so it is rebuilt with a clip.
     """
     segment = store.get_fresh(person, key, now)
     if segment is None:
         return None
-    if person.output_format == "visual" and not segment.clip_path:
+    if visual and not segment.clip_path:
         return None
     return segment
+
+
+def _is_visual(routine: Routine) -> bool:
+    return routine.output_format == "visual"
+
+
+def _person_has_visual_routine(entry: ConfigEntry, person: Person) -> bool:
+    return any(_is_visual(r) for r in get_routines(entry, person.person_id))
 
 
 def _ready_keys(
@@ -215,7 +232,8 @@ def _ready_keys(
     return [
         key
         for key in routine_segment_keys(routine)
-        if _usable_segment(store, person, key, now) is not None
+        if _usable_segment(store, person, key, now, visual=_is_visual(routine))
+        is not None
     ]
 
 
@@ -290,25 +308,28 @@ async def _async_concat(hass: HomeAssistant, inputs: list[str], output: Path) ->
     await async_run_in_executor(hass, partial.replace, output)
 
 
-def _routine_video_base(
-    store: SegmentStore, person: Person, routine: Routine, day: date
+def _routine_media_base(
+    store: SegmentStore, person: Person, routine: Routine, day: date, *, video: bool
 ) -> Path:
+    # "-audio" can't come out of slugify, so it never names another routine.
+    suffix = "" if video else ROUTINE_AUDIO_SUFFIX
     return store.day_dir(person, day) / (
-        f"{ROUTINE_VIDEO_PREFIX}{slugify_name(routine.name)}"
+        f"{ROUTINE_VIDEO_PREFIX}{slugify_name(routine.name)}{suffix}"
     )
 
 
-def _routine_video_file(base: Path, meta: dict[str, Any]) -> Path:
-    """Return the video a routine sidecar points to, inside the day folder."""
-    name = meta.get("video")
+def _routine_media_file(base: Path, meta: dict[str, Any], *, video: bool) -> Path:
+    """Return the file a routine sidecar points to, inside the day folder."""
+    name = meta.get("video" if video else "audio")
+    extension = ".mp4" if video else ".mp3"
     if (
         not isinstance(name, str)
         or Path(name).name != name
         or not name.startswith(base.name)
-        or not name.endswith(".mp4")
+        or not name.endswith(extension)
     ):
         # Sidecars written before versioned names: the fixed file name.
-        return base.with_suffix(".mp4")
+        return base.with_suffix(extension)
     return base.with_name(name)
 
 
@@ -329,26 +350,32 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-async def _async_store_routine_video(
+async def _async_store_routine_media(  # noqa: PLR0913
     hass: HomeAssistant,
     store: SegmentStore,
     person: Person,
     routine: Routine,
     now: datetime,
+    *,
+    video: bool,
 ) -> None:
-    """Stitch a visual routine's fresh clips into its pre-built video (R2)."""
+    """Stitch a visual routine's fresh clips or audio into its pre-built file."""
     segments = [
         segment
         for key in routine_segment_keys(routine)
-        if (segment := _usable_segment(store, person, key, now)) is not None
+        if (segment := _usable_segment(store, person, key, now, visual=True))
+        is not None
     ]
     if not segments:
         return
-    base = _routine_video_base(store, person, routine, segments[0].built_day)
-    video = versioned_path(base.with_suffix(".mp4"))
-    await _async_concat(hass, [s.clip_path for s in segments if s.clip_path], video)
+    base = _routine_media_base(
+        store, person, routine, segments[0].built_day, video=video
+    )
+    output = versioned_path(base.with_suffix(".mp4" if video else ".mp3"))
+    inputs = [_segment_media(s, visual=video) for s in segments]
+    await _async_concat(hass, inputs, output)
     payload = {
-        "video": video.name,
+        "video" if video else "audio": output.name,
         "built_at": now.isoformat(),
         "built_day": briefing_day(person, now).isoformat(),
         "duration": sum(segment.duration for segment in segments),
@@ -357,21 +384,41 @@ async def _async_store_routine_video(
     await async_run_in_executor(hass, _write_json, base.with_suffix(".json"), payload)
 
 
-async def _async_fresh_routine_video(  # noqa: PLR0913
+async def _async_store_visual_routines(
+    hass: HomeAssistant,
+    store: SegmentStore,
+    person: Person,
+    routines: list[Routine],
+    now: datetime,
+) -> None:
+    """Store each visual routine's video, and its audio for speakers."""
+    for routine in routines:
+        if _is_visual(routine):
+            for video in (True, False):
+                await _async_store_routine_media(
+                    hass, store, person, routine, now, video=video
+                )
+
+
+async def _async_fresh_routine_media(  # noqa: PLR0913
     hass: HomeAssistant,
     store: SegmentStore,
     person: Person,
     routine: Routine,
     segments: list[StoredSegment],
     now: datetime,
+    *,
+    video: bool,
 ) -> _Media | None:
-    """Return the pre-built video if it is fresh and made of exactly ``segments``."""
-    base = _routine_video_base(store, person, routine, briefing_day(person, now))
+    """Return the pre-built file if it is fresh and made of exactly ``segments``."""
+    base = _routine_media_base(
+        store, person, routine, briefing_day(person, now), video=video
+    )
     meta = await async_run_in_executor(hass, _read_json, base.with_suffix(".json"))
     if not isinstance(meta, dict):
         return None
-    video = _routine_video_file(base, meta)
-    if not await async_run_in_executor(hass, video.is_file):
+    media = _routine_media_file(base, meta, video=video)
+    if not await async_run_in_executor(hass, media.is_file):
         return None
     try:
         built_at = datetime.fromisoformat(meta["built_at"])
@@ -383,7 +430,7 @@ async def _async_fresh_routine_video(  # noqa: PLR0913
         return None
     if meta.get("segments") != _segments_signature(segments):
         return None
-    return _Media(str(video), is_video=True, duration=duration)
+    return _Media(str(media), is_video=video, duration=duration)
 
 
 async def _async_stitch_for_play(  # noqa: PLR0913
@@ -393,8 +440,9 @@ async def _async_stitch_for_play(  # noqa: PLR0913
     routine: Routine,
     segments: list[StoredSegment],
     now: datetime,
+    *,
+    visual: bool,
 ) -> _Media:
-    visual = person.output_format == "visual"
     inputs = [_segment_media(segment, visual=visual) for segment in segments]
     duration = sum(segment.duration for segment in segments)
     if len(inputs) == 1:
@@ -421,8 +469,8 @@ async def async_prebuild(
     """
     Build and store segments for one routine, or for all of a person's routines.
 
-    Plays nothing. For visual people the stitched routine video is stored too,
-    so a plain play needs no stitching (spec §5.3).
+    Plays nothing. For visual routines the stitched video and audio are stored
+    too, so a plain play needs no stitching (spec §5.3).
     """
     if (routine is None) == (person is None):
         msg = "async_prebuild needs exactly one of routine or person"
@@ -452,12 +500,25 @@ async def async_prebuild(
             now = dt_util.now()
             await store.async_prune(person, now)
             creds = await async_discover_ai_credentials(hass)
+            # Any of the person's visual routines, not just these: a shared
+            # segment must keep its clip when an audio routine is rebuilt.
+            visual_keys = {
+                key
+                for r in get_routines(entry, person.person_id)
+                if _is_visual(r)
+                for key in routine_segment_keys(r)
+            } & set(keys)
             results = await async_build_segments(
-                hass, store, person, keys, creds, now=now
+                hass,
+                store,
+                person,
+                keys,
+                creds,
+                now=now,
+                visual_keys=visual_keys,
+                all_heard_visual=_person_has_visual_routine(entry, person),
             )
-            if person.output_format == "visual":
-                for r in routines:
-                    await _async_store_routine_video(hass, store, person, r, now)
+            await _async_store_visual_routines(hass, store, person, routines, now)
     except Exception:
         for sensor in _not_playing():
             sensor.set_briefing_state("error")
@@ -521,6 +582,8 @@ async def _async_segments_to_play(  # noqa: PLR0913
     routine: Routine,
     keys: list[str],
     now: datetime,
+    *,
+    visual: bool,
 ) -> list[StoredSegment]:
     """
     Return fresh segments for ``keys``, building missing ones live.
@@ -534,14 +597,23 @@ async def _async_segments_to_play(  # noqa: PLR0913
         key
         for key in keys
         if segment_type_of(key) in LIVE_SEGMENT_TYPES
-        or _usable_segment(store, person, key, now) is None
+        or _usable_segment(store, person, key, now, visual=visual) is None
     ]
     if missing:
         creds = await async_discover_ai_credentials(hass)
-        await async_build_segments(hass, store, person, missing, creds, now=now)
+        await async_build_segments(
+            hass,
+            store,
+            person,
+            missing,
+            creds,
+            now=now,
+            visual_keys=missing if visual else (),
+            all_heard_visual=visual,
+        )
     segments: list[StoredSegment] = []
     for key in keys:
-        segment = _usable_segment(store, person, key, now)
+        segment = _usable_segment(store, person, key, now, visual=visual)
         if segment is None:
             LOGGER.warning(
                 "Skipping segment '%s' of %s's '%s': it could not be built",
@@ -558,17 +630,30 @@ async def _async_segments_to_play(  # noqa: PLR0913
 
 
 async def _async_all_heard(
-    hass: HomeAssistant, store: SegmentStore, person: Person, now: datetime
+    hass: HomeAssistant,
+    store: SegmentStore,
+    person: Person,
+    now: datetime,
+    *,
+    visual: bool,
 ) -> _Media:
     clip = store.all_heard_clip(person)
     if clip is None or clip.built_day != briefing_day(person, now):
         creds = await async_discover_ai_credentials(hass)
-        await async_build_segments(hass, store, person, [], creds, now=now)
+        await async_build_segments(
+            hass,
+            store,
+            person,
+            [],
+            creds,
+            now=now,
+            all_heard_visual=visual,
+        )
         clip = store.all_heard_clip(person)
     if clip is None:
         msg = f"CastStudio could not build the all-heard line for {person.name}"
         raise HomeAssistantError(msg)
-    path = _segment_media(clip, visual=person.output_format == "visual")
+    path = _segment_media(clip, visual=visual)
     return _Media(path, is_video=path.endswith(".mp4"), duration=clip.duration)
 
 
@@ -634,9 +719,11 @@ async def _async_back_to_ready(  # noqa: PLR0913
     Show the routine ready again when its playback ends or is superseded.
 
     With ``release_player`` set, a Cast player that finished the briefing is
-    turned off so it leaves the cast screen.
+    turned off so it leaves the cast screen. A player that never started
+    playing shows the routine as error instead.
     """
     play_task = current.task
+    state = "ready"
     try:
         if play_task is not None:
             await play_task
@@ -645,6 +732,14 @@ async def _async_back_to_ready(  # noqa: PLR0913
     except asyncio.CancelledError:
         if play_task is None or not play_task.cancelled():
             raise  # this task itself was cancelled
+    except PlaybackNotStartedError as err:
+        LOGGER.warning("%s's '%s' did not play: %s", person.name, routine.name, err)
+        state = "error"
+        if current.newly_heard and current.marked_at is not None:
+            history = await async_get_play_history(hass)
+            await history.async_unmark_played(
+                person, routine, current.newly_heard, current.marked_at
+            )
     except Exception as err:  # noqa: BLE001
         LOGGER.debug("Briefing playback ended with an error: %s", err)
     finally:
@@ -653,7 +748,7 @@ async def _async_back_to_ready(  # noqa: PLR0913
             del plays[person.person_id]
         # A newer play of the same routine owns the sensor now.
         if current.superseded_by != routine.routine_id:
-            _set_sensor(sensor, "ready", store, person, routine, dt_util.now())
+            _set_sensor(sensor, state, store, person, routine, dt_util.now())
 
 
 async def async_play(
@@ -667,8 +762,9 @@ async def async_play(
     """
     Play a routine now: stored fresh segments, or built live when missing.
 
-    With ``skip_played`` only segment types not yet heard in the person's
-    briefing day play; when nothing is left the all-heard line plays.
+    With ``skip_played`` only segment types this routine has not yet played in
+    the person's briefing day play; when nothing is left the all-heard line
+    plays.
     """
     person = _person_of(entry, routine)
     sensor = async_get_or_create_briefing_sensor(hass, person, routine)
@@ -681,29 +777,31 @@ async def async_play(
             # A play-only setup must not keep a folder for every day (spec §8).
             await store.async_prune(person, now)
             await store.async_load(person, now)
+            # Video only for a visual routine on a device with a screen.
+            video = _is_visual(routine) and has_screen(hass, player)
             all_keys = routine_segment_keys(routine)
             keys = all_keys
             if skip_played:
-                heard = history.played(person, now)
+                heard = history.played(person, routine, now)
                 keys = [key for key in all_keys if segment_type_of(key) not in heard]
 
             segments: list[StoredSegment] = []
             if keys:
                 sensor.set_briefing_state("generating")
                 segments = await _async_segments_to_play(
-                    hass, store, person, routine, keys, now
+                    hass, store, person, routine, keys, now, visual=video
                 )
                 media = None
-                if person.output_format == "visual" and keys == all_keys:
-                    media = await _async_fresh_routine_video(
-                        hass, store, person, routine, segments, now
+                if _is_visual(routine) and keys == all_keys:
+                    media = await _async_fresh_routine_media(
+                        hass, store, person, routine, segments, now, video=video
                     )
                 if media is None:
                     media = await _async_stitch_for_play(
-                        hass, store, person, routine, segments, now
+                        hass, store, person, routine, segments, now, visual=video
                     )
             else:
-                media = await _async_all_heard(hass, store, person, now)
+                media = await _async_all_heard(hass, store, person, now, visual=video)
 
             metadata: dict[str, Any] = {
                 ("video_path" if media.is_video else "audio_path"): media.path,
@@ -722,10 +820,11 @@ async def async_play(
             )
             # Marked when playback starts, not when it ends (spec §7). The
             # media is already playing, so a failure here must not show error.
+            types = {segment_type_of(s.key) for s in segments}
+            current.newly_heard = types - history.played(person, routine, now)
+            current.marked_at = now
             try:
-                await history.async_mark_played(
-                    person, {segment_type_of(s.key) for s in segments}, now
-                )
+                await history.async_mark_played(person, routine, types, now)
             except Exception:  # noqa: BLE001 - playback already started
                 LOGGER.exception(
                     "Could not record played segments for %s's '%s'",

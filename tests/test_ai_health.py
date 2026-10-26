@@ -162,7 +162,6 @@ async def test_sensor_attribute_shows_the_problem(hass: HomeAssistant) -> None:
         name="Alex",
         phonetic_name="Alex",
         media_player=None,
-        output_format="audio",
         commute_destination_zone=None,
         transportation_mode="driving",
         reset_time=time(3, 0),

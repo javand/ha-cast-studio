@@ -3,7 +3,7 @@ Per-person segments for the new briefing engine (spec §5.2, §5.4, §5.6).
 
 A segment is one stored piece of a briefing (greeting, weather, closing, ...).
 Segments are built one by one per person and briefing day, and stored as an
-audio file plus, for visual people, a video clip. Every segment is encoded
+audio file plus, for visual routines, a video clip. Every segment is encoded
 with the same parameters, so routines can be stitched by stream copy.
 
 On-disk layout, all inside ``output_dir``::
@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_HOST_VOICE, DEFAULT_SCRIPTURE_VOICE, LOGGER
 from .ffmpeg_runner import async_run_ffmpeg, build_slide_clip_command
@@ -49,15 +50,18 @@ from .people import (
     PERSON_COMMUTE_DRIVE_SENSOR,
     PERSON_COMMUTE_TRANSIT_RETURN_SENSOR,
     PERSON_COMMUTE_TRANSIT_SENSOR,
+    PERSON_HOST_PERSONAS,
+    PERSON_READER_PERSONAS,
     SEGMENT_TYPES,
     briefing_day,
     is_content_fresh,
     person_calendars,
 )
+from .personas import ROLE_HOST, ROLE_READER, pick_persona
 from .slide_renderer import CANVAS_HEIGHT, CANVAS_WIDTH
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Collection, Iterable
 
     from homeassistant.core import HomeAssistant
 
@@ -140,32 +144,77 @@ def routine_segment_keys(routine: Routine) -> list[str]:
     ]
 
 
-def build_segment_step(person: Person, segment_key: str) -> dict[str, Any]:
-    """Return the generator step for one of the person's segments."""
+# Each role's settings: persona picks, typed voice and style, and defaults.
+_ROLE_SETTINGS: dict[str, tuple[str, str, str, str, str]] = {
+    ROLE_HOST: (
+        PERSON_HOST_PERSONAS,
+        "host_voice",
+        "host_personality",
+        DEFAULT_HOST_VOICE,
+        DEFAULT_HOST_PERSONALITY,
+    ),
+    ROLE_READER: (
+        PERSON_READER_PERSONAS,
+        "scripture_voice",
+        "scripture_personality",
+        DEFAULT_SCRIPTURE_VOICE,
+        DEFAULT_SCRIPTURE_PERSONALITY,
+    ),
+}
+
+
+def _role_voice(person: Person, role: str, day: date) -> dict[str, Any]:
+    """
+    Return the step keys for whoever speaks a role on ``day``.
+
+    A picked persona wins; with none, the typed voice and style (or the
+    defaults) are used exactly as before personas existed.
+    """
+    personas_key, voice_key, personality_key, voice, personality = _ROLE_SETTINGS[role]
+    settings = person.settings
+    if persona := pick_persona(settings.get(personas_key), role, person.person_id, day):
+        return {
+            "voice": persona.gemini_voice,
+            "voice_personality": persona.character,
+            "voice_profile": persona.delivery,
+            "openai_voice": persona.openai_voice,
+        }
+    return {
+        "voice": settings.get(voice_key) or voice,
+        "voice_personality": settings.get(personality_key) or personality,
+    }
+
+
+def build_segment_step(
+    person: Person,
+    segment_key: str,
+    day: date | None = None,
+    *,
+    visual: bool = True,
+) -> dict[str, Any]:
+    """
+    Return the generator step for one of the person's segments.
+
+    ``day`` is the briefing day the segment is built for; it decides which of
+    the person's personas speaks when they picked several. ``visual`` builds
+    a slide and clip as well as the audio.
+    """
     segment_type = segment_type_of(segment_key)
     if segment_type not in SEGMENT_TYPES:
         msg = f"Unknown CastStudio segment '{segment_key}'"
         raise ValueError(msg)
 
     settings = person.settings
-    host = {
-        "voice": settings.get("host_voice") or DEFAULT_HOST_VOICE,
-        "voice_personality": (
-            settings.get("host_personality") or DEFAULT_HOST_PERSONALITY
-        ),
-    }
-    reader = {
-        "voice": settings.get("scripture_voice") or DEFAULT_SCRIPTURE_VOICE,
-        "voice_personality": (
-            settings.get("scripture_personality") or DEFAULT_SCRIPTURE_PERSONALITY
-        ),
-    }
+    if day is None:
+        day = briefing_day(person, dt_util.now())
+    host = _role_voice(person, ROLE_HOST, day)
+    reader = _role_voice(person, ROLE_READER, day)
     scripture_entity = settings.get("scripture_entity") or ""
 
     step: dict[str, Any] = {
         "name": segment_type,
         "type": segment_type,
-        "visual": person.output_format == "visual",
+        "visual": visual,
         "standalone_segment": True,
         **(reader if segment_type in ("scripture", "daily_encouragement") else host),
     }
@@ -227,9 +276,11 @@ def build_segment_step(person: Person, segment_key: str) -> dict[str, Any]:
     return step
 
 
-def _all_heard_step(person: Person) -> dict[str, Any]:
+def _all_heard_step(
+    person: Person, day: date | None = None, *, visual: bool = True
+) -> dict[str, Any]:
     """Return the step for the all-heard line: fixed narration, no LLM."""
-    step = build_segment_step(person, "closing")
+    step = build_segment_step(person, "closing", day, visual=visual)
     step.update(
         name=ALL_HEARD_KEY,
         type=ALL_HEARD_KEY,
@@ -245,7 +296,7 @@ class StoredSegment:
     """
     One built segment on disk.
 
-    ``duration`` is the clip length for visual people (speech plus slide pad)
+    ``duration`` is the clip length for visual segments (speech plus slide pad)
     and the speech length for audio-only people.
     """
 
@@ -511,7 +562,7 @@ async def _async_build_one(  # noqa: PLR0913
     if context := await async_extract_entity_context(hass, step):
         step["context"] = context
 
-    is_visual = person.output_format == "visual"
+    is_visual = bool(step.get("visual"))
     is_last = segment_type_of(key) in ("closing", ALL_HEARD_KEY)
     tts_path = scratch / f"{key}.wav"
     slide_path = scratch / f"{key}.jpg"
@@ -576,13 +627,16 @@ async def async_build_segments(  # noqa: PLR0913
     ai_creds: dict[str, Any],
     *,
     now: datetime,
+    visual_keys: Collection[str] = (),
+    all_heard_visual: bool = False,
 ) -> dict[str, StoredSegment | Exception]:
     """
     Build and store the person's segments for the briefing day of ``now``.
 
     Each key is built independently: a failure is logged and returned as the
     key's value, and the remaining keys are still built. The all-heard clip
-    is also built when it is missing for the day.
+    is also built when it is missing for the day. Keys in ``visual_keys``
+    (and the all-heard line when ``all_heard_visual``) get a slide and clip.
     """
     await store.async_load(person, now)
     creds = dict(ai_creds or {})
@@ -605,9 +659,11 @@ async def async_build_segments(  # noqa: PLR0913
         for key, target_dir in jobs:
             try:
                 step = (
-                    _all_heard_step(person)
+                    _all_heard_step(person, today, visual=all_heard_visual)
                     if key == ALL_HEARD_KEY
-                    else build_segment_step(person, key)
+                    else build_segment_step(
+                        person, key, today, visual=key in visual_keys
+                    )
                 )
                 segment, staged = await _async_build_one(
                     hass, person, key, step, creds, scratch, target_dir, now

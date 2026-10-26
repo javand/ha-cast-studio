@@ -101,6 +101,7 @@ async def test_migrate_v1_entry_creates_first_person_and_no_routine(
 
     assert entry.state is ConfigEntryState.LOADED
     assert entry.version == 2
+    assert entry.minor_version == 2
     people = get_people(entry)
     assert len(people) == 1
     alex = people[0]
@@ -108,7 +109,6 @@ async def test_migrate_v1_entry_creates_first_person_and_no_routine(
     assert alex.phonetic_name == "Al-ex"
     assert alex.commute_destination_zone == "zone.office"
     assert alex.transportation_mode == "fastest"
-    assert alex.output_format == "visual"
     assert alex.media_player is None
     assert alex.reset_time == time(3, 0)
     assert alex.max_age_minutes == 0
@@ -116,6 +116,37 @@ async def test_migrate_v1_entry_creates_first_person_and_no_routine(
     assert get_routines(entry) == []
     # The v1 keys stay in entry.data; the migration only adds the person.
     assert dict(entry.data) == V1_DATA
+
+
+@pytest.mark.asyncio
+async def test_migrate_minor_copies_person_format_to_routines(
+    hass: HomeAssistant,
+) -> None:
+    """Minor 2: each routine takes its person's format; the person loses it."""
+    plain = routine_subentry("r_a", ALEX_ID, "A", ["greeting"])
+    del plain["data"]["output_format"]
+    orphan = routine_subentry("r_c", "person_removed", "C", ["closing"])
+    del orphan["data"]["output_format"]
+    entry = make_entry(
+        [
+            person_subentry(ALEX_ID, "Alex", output_format="audio"),
+            plain,
+            routine_subentry("r_b", ALEX_ID, "B", ["weather"], output_format="visual"),
+            orphan,
+        ]
+    )
+    entry.add_to_hass(hass)
+
+    await _setup(hass, entry)
+
+    assert entry.minor_version == 2
+    formats = {
+        sub.subentry_id: sub.data.get("output_format")
+        for sub in entry.subentries.values()
+        if sub.subentry_type == "routine"
+    }
+    assert formats == {"r_a": "audio", "r_b": "visual", "r_c": "visual"}
+    assert "output_format" not in entry.subentries[ALEX_ID].data
 
 
 @pytest.mark.asyncio
@@ -159,7 +190,6 @@ def test_get_people_parses_fields_and_settings() -> None:
                 SAM_ID,
                 "Sam",
                 media_player="media_player.kitchen_speaker",
-                output_format="audio",
                 commute_destination_zone="zone.office",
                 transportation_mode="transit",
                 reset_time="04:30:00",
@@ -177,7 +207,6 @@ def test_get_people_parses_fields_and_settings() -> None:
         name="Sam",
         phonetic_name="Sam",
         media_player="media_player.kitchen_speaker",
-        output_format="audio",
         commute_destination_zone="zone.office",
         transportation_mode="transit",
         reset_time=time(4, 30),
@@ -282,7 +311,6 @@ def _reset_person(reset: time = time(3, 0), max_age: int = 0) -> Person:
         name="Alex",
         phonetic_name="Alex",
         media_player=None,
-        output_format="visual",
         commute_destination_zone=None,
         transportation_mode="fastest",
         reset_time=reset,
@@ -364,3 +392,18 @@ def test_person_calendars_reads_list_and_legacy_single_key(
 ) -> None:
     """The list wins; a person saved before multi-calendar keeps their one."""
     assert person_calendars(settings) == expected
+
+
+def test_routine_output_format_parsed_with_default() -> None:
+    without_key = routine_subentry("r2", SAM_ID, "Quick", ["greeting"])
+    del without_key["data"]["output_format"]
+    entry = make_entry(
+        [
+            person_subentry(SAM_ID, "Sam"),
+            routine_subentry("r1", SAM_ID, "Night", ["closing"], output_format="audio"),
+            without_key,
+        ]
+    )
+    night, quick = get_routines(entry)
+    assert night.output_format == "audio"
+    assert quick.output_format == "visual"

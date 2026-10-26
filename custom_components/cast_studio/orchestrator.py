@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.network import get_url
@@ -38,6 +39,14 @@ SUPERSEDED_FLAG = "_superseded"
 
 class OrchestratorError(Exception):
     """Base exception for orchestrator operations."""
+
+
+class PlaybackNotStartedError(OrchestratorError):
+    """The player was off or unavailable when the wait for 'playing' expired."""
+
+
+# Player states at the safety timeout that mean the media never played.
+_NOT_STARTED_STATES = ("off", "unavailable")
 
 
 def get_routine_sync_task(routine_name: str) -> asyncio.Task[Any] | None:
@@ -380,6 +389,43 @@ async def _async_sync_slides(
 _create_task = create_task
 
 
+def _model_has_screen(model: str) -> bool:
+    model = model.lower()
+    if "cast group" in model or "chromecast audio" in model:
+        return False
+    return any(word in model for word in ("hub", "chromecast", "google tv"))
+
+
+def has_screen(hass: HomeAssistant, entity_id: str | None) -> bool:
+    """
+    Return True when ``entity_id`` is a Cast player that can show video.
+
+    The device model decides (Nest Hub, Chromecast, Google TV). Without a
+    model, a name containing "display" counts as a screen. Cast groups and
+    non-Cast players never do.
+    """
+    if not entity_id or not _is_cast_player(hass, entity_id):
+        return False
+    entry = er.async_get(hass).async_get(entity_id)
+    device = (
+        dr.async_get(hass).async_get(entry.device_id)
+        if entry and entry.device_id
+        else None
+    )
+    if device and device.model:
+        return _model_has_screen(device.model)
+    state = hass.states.get(entity_id)
+    names = [
+        entity_id,
+        device and device.name_by_user,
+        device and device.name,
+        entry and entry.name,
+        entry and entry.original_name,
+        state and state.attributes.get("friendly_name"),
+    ]
+    return any("display" in str(name).lower() for name in names if name)
+
+
 def _is_cast_player(hass: HomeAssistant, entity_id: str) -> bool:
     """Check if target media player entity is a Google Cast device."""
     if not entity_id:
@@ -536,6 +582,7 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
     loop = asyncio.get_running_loop()
     playing_future: asyncio.Future[asyncio.Task[Any] | None] = loop.create_future()
     start_time = [loop.time()]
+    not_started = False
 
     # 2. Check if player is already 'playing' at call time
     current_state = hass.states.get(target_player)
@@ -596,6 +643,7 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
 
         @callback
         def _handle_timeout(_now: Any) -> None:
+            nonlocal not_started
             if sync_started:
                 return
             LOGGER.warning(
@@ -603,6 +651,8 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
                 timeout_val,
                 target_player,
             )
+            state = hass.states.get(target_player)
+            not_started = state is None or state.state in _NOT_STARTED_STATES
             _cleanup()
             if not playing_future.done():
                 playing_future.set_result(None)
@@ -619,16 +669,12 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
             sync_task = await playing_future
             if sync_task is not None:
                 await sync_task
-                if duration > 0:
-                    now = loop.time() - start_time[0]
-                    remaining = duration - now
-                    if remaining > 0:
-                        await asyncio.sleep(remaining)
-            elif duration > 0:
-                elapsed = loop.time() - start_time[0]
-                remaining = max(0.0, duration - elapsed)
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
+            elif not_started:
+                msg = f"'{target_player}' never started playing '{routine_name}'"
+                raise PlaybackNotStartedError(msg)
+            remaining = duration - (loop.time() - start_time[0])
+            if remaining > 0:
+                await asyncio.sleep(remaining)
         except asyncio.CancelledError:
             if not playing_future.done():
                 playing_future.cancel()

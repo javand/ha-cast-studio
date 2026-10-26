@@ -36,12 +36,13 @@ from .people import (
     PERSON_COMMUTE_TRANSIT_RETURN_SENSOR,
     PERSON_COMMUTE_TRANSIT_SENSOR,
     PERSON_CORE_KEYS,
+    PERSON_HOST_PERSONAS,
     PERSON_MAX_AGE_MINUTES,
     PERSON_MEDIA_PLAYER,
     PERSON_NAME,
-    PERSON_OUTPUT_FORMAT,
     PERSON_PHONETIC_NAME,
     PERSON_PRONUNCIATIONS,
+    PERSON_READER_PERSONAS,
     PERSON_RESET_TIME,
     PERSON_SETTINGS_KEYS,
     PERSON_TRANSPORTATION_MODE,
@@ -50,6 +51,7 @@ from .people import (
     ROUTINE_DASHBOARD_PATH,
     ROUTINE_DASHBOARD_VIEW,
     ROUTINE_NAME,
+    ROUTINE_OUTPUT_FORMAT,
     ROUTINE_PERSON_ID,
     ROUTINE_SEGMENTS,
     SEGMENT_TYPES,
@@ -64,6 +66,7 @@ from .people import (
     person_calendars,
     slugify_name,
 )
+from .personas import ROLE_HOST, ROLE_READER, get_persona, personas_for_role
 
 ADVANCED_SECTION = "advanced"
 
@@ -85,6 +88,7 @@ class CastStudioFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for CastStudio."""
 
     VERSION = 2
+    MINOR_VERSION = 2
 
     async def async_step_user(
         self,
@@ -213,6 +217,20 @@ def _entity_selector(domain: str | None = None) -> selector.EntitySelector:
     return selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
 
 
+def _persona_selector(role: str) -> selector.SelectSelector:
+    """Pick one or more of the built-in personas suited to a role."""
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[
+                selector.SelectOptionDict(value=persona.persona_id, label=persona.name)
+                for persona in personas_for_role(role)
+            ],
+            multiple=True,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
 def _person_settings_selectors() -> dict[str, selector.Selector]:
     """Selectors for the per-person segment settings, in form order."""
     return {
@@ -237,6 +255,8 @@ def _person_settings_selectors() -> dict[str, selector.Selector]:
         PERSON_COMMUTE_TRANSIT_SENSOR: _entity_selector("sensor"),
         PERSON_COMMUTE_DRIVE_RETURN_SENSOR: _entity_selector("sensor"),
         PERSON_COMMUTE_TRANSIT_RETURN_SENSOR: _entity_selector("sensor"),
+        PERSON_HOST_PERSONAS: _persona_selector(ROLE_HOST),
+        PERSON_READER_PERSONAS: _persona_selector(ROLE_READER),
         "host_voice": _text_selector(),
         "scripture_voice": _text_selector(),
         "host_personality": _text_selector(multiline=True),
@@ -265,7 +285,15 @@ def _suggested(value: Any) -> dict[str, Any] | None:
 
 def _person_schema(current: dict[str, Any], default_mode: str) -> vol.Schema:
     """Build the person form: §5.1 fields first, settings in a section."""
-    current = {**current, PERSON_CALENDARS: person_calendars(current) or None}
+    current = {
+        **current,
+        PERSON_CALENDARS: person_calendars(current) or None,
+        # A persona dropped from the catalog would fail the picker's validation.
+        **{
+            key: [pid for pid in current.get(key) or () if get_persona(pid)] or None
+            for key in (PERSON_HOST_PERSONAS, PERSON_READER_PERSONAS)
+        },
+    }
     settings_fields: dict[Any, Any] = {
         vol.Optional(key, description=_suggested(current.get(key))): sel
         for key, sel in _person_settings_selectors().items()
@@ -283,16 +311,6 @@ def _person_schema(current: dict[str, Any], default_mode: str) -> vol.Schema:
                 PERSON_MEDIA_PLAYER,
                 description=_suggested(current.get(PERSON_MEDIA_PLAYER)),
             ): _entity_selector("media_player"),
-            vol.Required(
-                PERSON_OUTPUT_FORMAT,
-                default=current.get(PERSON_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT),
-            ): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=list(OUTPUT_FORMATS),
-                    mode=selector.SelectSelectorMode.LIST,
-                    translation_key="output_format",
-                )
-            ),
             vol.Optional(
                 PERSON_COMMUTE_DESTINATION,
                 description=_suggested(current.get(PERSON_COMMUTE_DESTINATION)),
@@ -502,6 +520,8 @@ def _routine_data(user_input: dict[str, Any]) -> dict[str, Any]:
         ROUTINE_PERSON_ID: user_input[ROUTINE_PERSON_ID],
         ROUTINE_NAME: (user_input.get(ROUTINE_NAME) or "").strip(),
         ROUTINE_SEGMENTS: list(user_input.get(ROUTINE_SEGMENTS) or []),
+        ROUTINE_OUTPUT_FORMAT: user_input.get(ROUTINE_OUTPUT_FORMAT)
+        or DEFAULT_OUTPUT_FORMAT,
         **_split_dashboard(user_input.get(ROUTINE_DASHBOARD)),
         ROUTINE_DASHBOARD_DISPLAY: user_input.get(ROUTINE_DASHBOARD_DISPLAY) or None,
     }
@@ -601,6 +621,16 @@ def _routine_schema(
                     multiple=True,
                     mode=selector.SelectSelectorMode.DROPDOWN,
                     translation_key="segment_type",
+                )
+            ),
+            vol.Required(
+                ROUTINE_OUTPUT_FORMAT,
+                default=current.get(ROUTINE_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=list(OUTPUT_FORMATS),
+                    mode=selector.SelectSelectorMode.LIST,
+                    translation_key="output_format",
                 )
             ),
             # custom_value keeps a typed path working, and a stored one that is

@@ -7,9 +7,14 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.cast_studio.orchestrator import (
     OrchestratorError,
+    PlaybackNotStartedError,
     _async_sync_slides,
     _create_task,
     _is_routine_media_playing,
@@ -17,6 +22,7 @@ from custom_components.cast_studio.orchestrator import (
     async_play_and_sync_routine,
     get_media_payload,
     get_routine_sync_task,
+    has_screen,
     resolve_cast_media_url,
 )
 
@@ -1306,6 +1312,44 @@ async def test_async_play_and_sync_routine_executes_post_actions_on_timeout():
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state_at_timeout", ["unavailable", "off", None])
+async def test_play_and_sync_timeout_with_player_gone_fails_without_waiting(
+    state_at_timeout: str | None,
+) -> None:
+    """A player that is off or gone at the timeout never played: fail at once."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    hass.states.get.return_value = MagicMock(state="idle")
+    metadata = {
+        "video_path": "/local/morning.mp4",
+        "prepare_player": False,
+        "duration": 5.0,
+        "slide_timestamps": [],
+    }
+
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch(
+            "custom_components.cast_studio.orchestrator.async_call_later"
+        ) as mock_call_later,
+        patch("asyncio.sleep", new=AsyncMock()) as mock_sleep,
+    ):
+        playback_task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        hass.states.get.return_value = (
+            None if state_at_timeout is None else MagicMock(state=state_at_timeout)
+        )
+        mock_call_later.call_args[0][2](None)
+
+        with pytest.raises(PlaybackNotStartedError):
+            await playback_task
+        mock_sleep.assert_not_awaited()
+
+
 def test_is_routine_media_playing_default_media_receiver_proxy_stream() -> None:
     """Test _is_routine_media_playing recognizes Cast Default Media Receiver playing even with proxy URL."""
     from custom_components.cast_studio.orchestrator import _is_routine_media_playing
@@ -1388,3 +1432,84 @@ async def test_coordinate_playback_lifecycle_wakes_player_for_post_actions() -> 
         hass.services.async_call.assert_any_call(
             "media_player", "turn_on", {"entity_id": "media_player.bathroom_display"}
         )
+
+
+def _cast_player(
+    hass: HomeAssistant,
+    object_id: str,
+    *,
+    model: str | None,
+    device_name: str = "Device",
+    platform: str = "cast",
+) -> str:
+    """Register a media player entity on a device with ``model``."""
+    config_entry = MockConfigEntry(domain=platform)
+    config_entry.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        identifiers={(platform, object_id)},
+        name=device_name,
+        model=model,
+    )
+    entity = er.async_get(hass).async_get_or_create(
+        "media_player",
+        platform,
+        object_id,
+        config_entry=config_entry,
+        device_id=device.id,
+        suggested_object_id=object_id,
+    )
+    return entity.entity_id
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("Google Nest Hub", True),
+        ("Google Nest Hub Max", True),
+        ("Chromecast", True),
+        ("Google TV Streamer", True),
+        ("Chromecast Audio", False),
+        ("Google Nest Mini", False),
+        ("Google Home Max", False),
+        ("Google Cast Group", False),
+        ("SRS-XB501G", False),
+    ],
+)
+async def test_has_screen_by_model(
+    hass: HomeAssistant, model: str, *, expected: bool
+) -> None:
+    entity_id = _cast_player(hass, "office_speaker", model=model)
+    assert has_screen(hass, entity_id) is expected
+
+
+async def test_has_screen_group_named_display_is_not_a_screen(
+    hass: HomeAssistant,
+) -> None:
+    entity_id = _cast_player(
+        hass, "display_group", model="Google Cast Group", device_name="Display Group"
+    )
+    assert has_screen(hass, entity_id) is False
+
+
+async def test_has_screen_name_fallback_without_model(hass: HomeAssistant) -> None:
+    assert has_screen(hass, _cast_player(hass, "hall_display", model=None)) is True
+    assert has_screen(hass, _cast_player(hass, "hall_speaker", model=None)) is False
+
+
+async def test_has_screen_unregistered_entity_uses_name(hass: HomeAssistant) -> None:
+    for entity_id in ("media_player.office_display", "media_player.kitchen_speaker"):
+        hass.states.async_set(entity_id, "idle", {"app_name": "Default Media Receiver"})
+    assert has_screen(hass, "media_player.office_display") is True
+    assert has_screen(hass, "media_player.kitchen_speaker") is False
+
+
+async def test_has_screen_non_cast_player_is_never_a_screen(
+    hass: HomeAssistant,
+) -> None:
+    entity_id = _cast_player(
+        hass, "den_display", model="Google Nest Hub", platform="squeezebox"
+    )
+    assert has_screen(hass, entity_id) is False
+    assert has_screen(hass, None) is False
+    assert has_screen(hass, "") is False

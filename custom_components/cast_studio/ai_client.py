@@ -248,6 +248,17 @@ def _build_prompt(
             "and DO NOT greet them again. Jump directly into narrating the content.\n"
         )
 
+    if step_config.get("voice_profile"):
+        # A persona's character shapes the words, but it never names itself.
+        prompt += (
+            "SPEAKER CHARACTER: Write in the speaker's character described in "
+            "Voice Personality, but never state, invent or introduce a name for "
+            "the speaker. The narration is spoken aloud exactly as written: no "
+            "stage directions or actions in asterisks or brackets (such as "
+            "laughs or sighs), no markdown or emojis, and say numbers, times "
+            "and dates the way a person says them.\n"
+        )
+
     is_standalone = bool(step_config.get("standalone_segment"))
     is_encouragement = "daily_encouragement" in (step_key, name_key)
     include_signoff = step_config.get("include_signoff", True) is not False
