@@ -1,6 +1,9 @@
 {
   "domain": "cast_studio",
   "name": "CastStudio",
+  "after_dependencies": [
+    "lovelace"
+  ],
   "codeowners": [
     "@javand"
   ],
