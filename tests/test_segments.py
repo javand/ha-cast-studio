@@ -37,6 +37,7 @@ from custom_components.cast_studio.segments import (
     segment_key,
     segment_type_of,
 )
+from custom_components.cast_studio.tts_client import _mark_voice_fallback
 
 GEN = "custom_components.cast_studio.generator"
 SEG = "custom_components.cast_studio.segments"
@@ -328,6 +329,76 @@ async def test_audio_only_person_builds_no_visuals(
         assert Path(segment.audio_path).is_file()
         assert segment.built_day == now.date()
         assert segment.built_at == now
+
+
+def _fallback_tts(*, fell_back: bool) -> AsyncMock:
+    """A TTS fake that reports whether the configured voice fell back."""
+
+    async def _speak(_h: Any, _s: Any, _v: Any, _p: Any, path: str, **_k: Any) -> str:
+        if fell_back:
+            _mark_voice_fallback()
+        return path
+
+    return AsyncMock(side_effect=_speak)
+
+
+async def test_fallback_voiced_segment_is_flagged_and_replaced_by_the_next_build(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    _set_fake_states(hass)
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    now = at(8)
+    creds = {"platform": "gemini", "api_key": "k"}
+
+    with _Patched(_build_patches(tts=_fallback_tts(fell_back=True))):
+        result = await async_build_segments(
+            hass, store, person, ["greeting"], creds, now=now
+        )
+
+    segment = result["greeting"]
+    assert segment.degraded is True
+    assert _manifest(store, person, now)["segments"]["greeting"]["degraded"] is True
+    # It still plays: the flag does not make it stale.
+    assert store.get_fresh(person, "greeting", now) == segment
+    # The all-heard line was voiced by the fallback voice too.
+    assert store.all_heard_clip(person).degraded is True
+
+    with _Patched(_build_patches(tts=_fallback_tts(fell_back=False))):
+        result = await async_build_segments(
+            hass, store, person, ["greeting"], creds, now=now
+        )
+
+    assert result["greeting"].degraded is False
+    assert store.all_heard_clip(person).degraded is False
+
+
+async def test_manifest_without_degraded_reads_as_not_degraded(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    _set_fake_states(hass)
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    now = at(8)
+
+    with _Patched(_build_patches()):
+        await async_build_segments(
+            hass,
+            store,
+            person,
+            ["greeting"],
+            {"platform": "gemini", "api_key": "k"},
+            now=now,
+        )
+    manifest_path = store.person_dir(person) / "2026-10-20" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["segments"]["greeting"]["degraded"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    reloaded = SegmentStore(hass, str(tmp_path))
+    await reloaded.async_load(person, now)
+
+    assert reloaded.get_fresh(person, "greeting", now) is not None
 
 
 async def test_build_segments_visual_only_for_visual_keys(

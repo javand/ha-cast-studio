@@ -59,6 +59,7 @@ from .people import (
 )
 from .personas import ROLE_HOST, ROLE_READER, pick_persona
 from .slide_renderer import CANVAS_HEIGHT, CANVAS_WIDTH
+from .tts_client import track_voice_fallback
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable
@@ -325,7 +326,9 @@ class StoredSegment:
     One built segment on disk.
 
     ``duration`` is the clip length for visual segments (speech plus slide pad)
-    and the speech length for audio-only people.
+    and the speech length for audio-only people. ``degraded`` marks speech
+    voiced by the fallback voice after the configured AI voice failed. A play
+    still uses it; the next prebuild replaces it.
     """
 
     key: str
@@ -334,6 +337,7 @@ class StoredSegment:
     duration: float
     built_at: datetime
     built_day: date
+    degraded: bool = False
 
 
 def _segment_to_json(segment: StoredSegment) -> dict[str, Any]:
@@ -344,6 +348,7 @@ def _segment_to_json(segment: StoredSegment) -> dict[str, Any]:
         "duration": segment.duration,
         "built_at": segment.built_at.isoformat(),
         "built_day": segment.built_day.isoformat(),
+        "degraded": segment.degraded,
     }
 
 
@@ -356,6 +361,7 @@ def _segment_from_json(key: str, data: dict[str, Any], base: Path) -> StoredSegm
         duration=float(data["duration"]),
         built_at=datetime.fromisoformat(data["built_at"]),
         built_day=date.fromisoformat(data["built_day"]),
+        degraded=bool(data.get("degraded", False)),
     )
 
 
@@ -594,19 +600,20 @@ async def _async_build_one(  # noqa: PLR0913
     slide_path = scratch / f"{key}.jpg"
     # No clip target: the generator renders the slide, and the clip is
     # encoded below with the uniform segment parameters.
-    audio_path, duration, pad_seconds, _ = await _async_compile_single_step(
-        hass,
-        step,
-        str(step["name"]),
-        {"name": person.name, "phonetic_name": person.phonetic_name},
-        ai_creds,
-        is_visual=is_visual,
-        default_pad_seconds=(
-            FINAL_SLIDE_PAD_SECONDS if is_last else DEFAULT_SLIDE_PAD_SECONDS
-        ),
-        audio_target_path=str(tts_path),
-        slide_target_path=str(slide_path) if is_visual else None,
-    )
+    with track_voice_fallback() as voice:
+        audio_path, duration, pad_seconds, _ = await _async_compile_single_step(
+            hass,
+            step,
+            str(step["name"]),
+            {"name": person.name, "phonetic_name": person.phonetic_name},
+            ai_creds,
+            is_visual=is_visual,
+            default_pad_seconds=(
+                FINAL_SLIDE_PAD_SECONDS if is_last else DEFAULT_SLIDE_PAD_SECONDS
+            ),
+            audio_target_path=str(tts_path),
+            slide_target_path=str(slide_path) if is_visual else None,
+        )
 
     staged: dict[str, str] = {}
     audio_out = scratch / f"{key}.mp3"
@@ -638,6 +645,7 @@ async def _async_build_one(  # noqa: PLR0913
         duration=duration,
         built_at=now,
         built_day=briefing_day(person, now),
+        degraded=voice.used,
     )
     return segment, staged
 
@@ -671,7 +679,7 @@ async def async_build_segments(  # noqa: PLR0913
         (key, store.day_dir(person, today)) for key in dict.fromkeys(keys)
     ]
     all_heard = store.all_heard_clip(person)
-    if all_heard is None or all_heard.built_day != today:
+    if all_heard is None or all_heard.built_day != today or all_heard.degraded:
         jobs.append((ALL_HEARD_KEY, store.person_dir(person) / ALL_HEARD_DIR))
 
     scratch = Path(
