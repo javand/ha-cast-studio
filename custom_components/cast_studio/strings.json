@@ -164,7 +164,7 @@
       "entry_type": "Routine",
       "initiate_flow": {
         "user": "Add routine",
-        "reconfigure": "Edit routine"
+        "reconfigure": "Edit or play routine"
       },
       "step": {
         "user": {
@@ -186,6 +186,14 @@
           }
         },
         "reconfigure": {
+          "title": "Routine",
+          "menu_options": {
+            "edit": "Edit routine",
+            "play": "Play",
+            "regenerate_play": "Regenerate and play"
+          }
+        },
+        "edit": {
           "title": "Edit routine",
           "data": {
             "person_id": "Person",
@@ -202,6 +210,30 @@
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
             "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
           }
+        },
+        "play": {
+          "title": "Play routine",
+          "description": "Plays this routine now, building any segment that is missing. Nothing is changed or saved.",
+          "data": {
+            "target": "Play on (optional)",
+            "volume": "Volume (optional)"
+          },
+          "data_description": {
+            "target": "Speaker or display to play on. Leave empty to use the person's output device.",
+            "volume": "From 0 to 1, set on the player before playing. Leave empty for the default level."
+          }
+        },
+        "regenerate_play": {
+          "title": "Regenerate and play",
+          "description": "Rebuilds every segment of this routine from scratch, which can take a minute or two, then plays it. Nothing is changed or saved.",
+          "data": {
+            "target": "Play on (optional)",
+            "volume": "Volume (optional)"
+          },
+          "data_description": {
+            "target": "Speaker or display to play on. Leave empty to use the person's output device.",
+            "volume": "From 0 to 1, set on the player before playing. Leave empty for the default level."
+          }
         }
       },
       "error": {
@@ -211,7 +243,14 @@
       },
       "abort": {
         "no_people": "Add a person before adding a routine.",
-        "reconfigure_successful": "Routine updated."
+        "reconfigure_successful": "Routine updated.",
+        "played": "Played {routine} on {target}.",
+        "played_fallback_voice": "Played {routine} on {target}. These segments were voiced by the fallback voice because the AI voice failed: {segments}. Use Regenerate and play to try again.",
+        "play_failed": "Could not play the routine: {error}"
+      },
+      "progress": {
+        "playing": "Playing {routine}...",
+        "regenerating": "Regenerating {routine}, then playing it..."
       }
     },
     "announcement": {
