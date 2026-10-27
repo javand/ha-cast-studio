@@ -436,6 +436,36 @@ async def test_play_uses_fresh_prebuilt_segments_without_building(
     assert state.attributes["briefing_day"] == "2026-10-20"
 
 
+async def test_play_volume_is_set_on_the_player_before_playing(
+    prebuilt_sam_quick: Harness,
+) -> None:
+    h = prebuilt_sam_quick
+    levels: list[dict[str, Any]] = []
+
+    async def _volume(call: ServiceCall) -> None:
+        levels.append(dict(call.data))
+
+    h.hass.services.async_register("media_player", "volume_set", _volume)
+    await h.play("Quick", volume=0.5)
+
+    assert levels == [{"entity_id": SPEAKER, "volume_level": 0.5}]
+
+
+async def test_play_without_volume_uses_the_default_level(
+    prebuilt_sam_quick: Harness,
+) -> None:
+    h = prebuilt_sam_quick
+    levels: list[dict[str, Any]] = []
+
+    async def _volume(call: ServiceCall) -> None:
+        levels.append(dict(call.data))
+
+    h.hass.services.async_register("media_player", "volume_set", _volume)
+    await h.play("Quick")
+
+    assert levels == [{"entity_id": SPEAKER, "volume_level": 0.6}]
+
+
 async def test_skip_played_counts_only_the_same_routine(
     sam_quick_and_full: Harness,
 ) -> None:

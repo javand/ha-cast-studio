@@ -81,7 +81,11 @@ async def test_play_and_prebuild_actions_resolve_routines(
             blocking=True,
         )
         assert play.await_args.args[2].routine_id == "r_sam_quick"
-        assert play.await_args.kwargs == {"target": None, "skip_played": True}
+        assert play.await_args.kwargs == {
+            "target": None,
+            "skip_played": True,
+            "volume": None,
+        }
 
         await hass.services.async_call(
             DOMAIN, "prebuild", {"person": "sam"}, blocking=True
@@ -95,6 +99,17 @@ async def test_play_and_prebuild_actions_resolve_routines(
 
         with pytest.raises(vol.Invalid):
             await hass.services.async_call(DOMAIN, "prebuild", {}, blocking=True)
+
+        await hass.services.async_call(
+            DOMAIN, "play", {"routine": "Quick", "volume": 0.5}, blocking=True
+        )
+        assert play.await_args.kwargs["volume"] == 0.5
+
+        for bad in (1.5, -0.1):
+            with pytest.raises(vol.Invalid):
+                await hass.services.async_call(
+                    DOMAIN, "play", {"routine": "Quick", "volume": bad}, blocking=True
+                )
 
 
 async def test_routine_sensor_entity_id_is_person_and_routine_slug(

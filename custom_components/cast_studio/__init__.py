@@ -68,6 +68,7 @@ ATTR_PERSON = "person"
 ATTR_ROUTINE = "routine"
 ATTR_TARGET = "target"
 ATTR_SKIP_PLAYED = "skip_played"
+ATTR_VOLUME = "volume"
 ATTR_ANNOUNCEMENT = "announcement"
 
 PREBUILD_SCHEMA = vol.All(
@@ -85,6 +86,7 @@ PLAY_SCHEMA = vol.Schema(
         vol.Required(ATTR_ROUTINE): cv.string,
         vol.Optional(ATTR_TARGET): cv.entity_domain("media_player"),
         vol.Optional(ATTR_SKIP_PLAYED, default=False): cv.boolean,
+        vol.Optional(ATTR_VOLUME): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
     }
 )
 REBUILD_ANNOUNCEMENT_SCHEMA = vol.Schema({vol.Required(ATTR_ANNOUNCEMENT): cv.string})
@@ -130,6 +132,7 @@ def _register_briefing_actions(hass: HomeAssistant) -> None:
             routine,
             target=call.data.get(ATTR_TARGET),
             skip_played=call.data.get(ATTR_SKIP_PLAYED, False),
+            volume=call.data.get(ATTR_VOLUME),
         )
 
     hass.services.async_register(
