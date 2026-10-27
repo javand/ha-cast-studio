@@ -83,6 +83,48 @@ def test_each_control_is_on_the_routines_own_device(
     assert device.name == "Quick (Sam)"
 
 
+async def test_all_controls_belong_to_the_routines_subentry(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    entities = er.async_get(hass)
+    for entity_id in (PLAY, REBUILD, REGENERATE, PLAY_ON, SENSOR):
+        assert entities.async_get(entity_id).config_subentry_id == ROUTINE_ID
+    device = dr.async_get(hass).async_get(entities.async_get(PLAY).device_id)
+    assert device.config_entries_subentries[entry.entry_id] == {ROUTINE_ID}
+
+
+async def test_controls_survive_a_sensor_registered_before_the_device(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """Upgrading: the status sensor is already registered, with no device."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        minor_version=2,
+        unique_id=DOMAIN,
+        title="CastStudio",
+        data={CONF_OUTPUT_DIR: str(tmp_path)},
+        subentries_data=[
+            person_subentry(SAM_ID, "Sam", media_player=SPEAKER),
+            routine_subentry(ROUTINE_ID, SAM_ID, "Quick", ["greeting"]),
+        ],
+    )
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"cast_studio_routine_{ROUTINE_ID}",
+        suggested_object_id="cast_studio_sam_quick",
+        config_entry=entry,
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    entities = er.async_get(hass)
+    for entity_id in (PLAY, REBUILD, REGENERATE, PLAY_ON, SENSOR):
+        assert entities.async_get(entity_id) is not None, entity_id
+
+
 async def test_play_plays_on_the_persons_output_device(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:

@@ -40,6 +40,7 @@ class CastStudioBriefingSensor(SensorEntity):
     ) -> None:
         """Initialize the sensor as ``sensor.cast_studio_<person>_<routine>``."""
         self.hass = hass
+        self.routine_id = routine.routine_id
         self.routine_name = f"{slugify_name(person.name)}_{slugify_name(routine.name)}"
         self.entity_id = f"sensor.cast_studio_{self.routine_name}"
         self._attr_unique_id = f"cast_studio_routine_{routine.routine_id}"
@@ -125,7 +126,7 @@ def async_get_or_create_briefing_sensor(
         cb = domain_data.get("async_add_entities")
         if cb is not None and callable(cb):
             try:
-                cb([sensor])
+                cb([sensor], config_subentry_id=routine.routine_id)
             except Exception as err:  # noqa: BLE001
                 LOGGER.debug("Error adding entity dynamically: %s", err)
         elif hasattr(hass, "states") and hasattr(hass.states, "async_set"):
@@ -157,5 +158,6 @@ async def async_setup_entry(
 ) -> None:
     """Set up a sensor for each of the entry's routines."""
     hass.data.setdefault(DOMAIN, {})["async_add_entities"] = async_add_entities
-    if briefing_sensors := _briefing_sensors_for_entry(hass, entry):
-        async_add_entities(briefing_sensors)
+    for sensor in _briefing_sensors_for_entry(hass, entry):
+        # Same subentry as the routine's buttons, which share its device.
+        async_add_entities([sensor], config_subentry_id=sensor.routine_id)
