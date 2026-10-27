@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
@@ -12,7 +11,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
 
-from . import briefing
 from .announcements import (
     ANN_DESCRIPTION,
     ANN_FRESHNESS,
@@ -95,16 +93,8 @@ from .personas import (
     get_persona,
     personas_for_role,
 )
-from .segments import segment_type_of
-
-if TYPE_CHECKING:
-    from .people import Routine
 
 ADVANCED_SECTION = "advanced"
-
-# The play form of the routine dialog.
-PLAY_TARGET = "target"
-PLAY_VOLUME = "volume"
 
 # Install-wide settings kept on the entry; everything per person is a subentry.
 SHARED_SETTINGS_KEYS: tuple[str, ...] = (
@@ -496,12 +486,7 @@ class PersonSubentryFlow(config_entries.ConfigSubentryFlow):
 
 
 class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
-    """Add a routine, or edit, play or regenerate one: a person and its segments."""
-
-    _task: asyncio.Task[None] | None = None
-    _regenerate = False
-    _target: str | None = None
-    _error: str | None = None
+    """Add or edit a routine: one person and an ordered list of segments."""
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -510,127 +495,12 @@ class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
         return await self._async_step_form("user", None, user_input)
 
     async def async_step_reconfigure(
-        self,
-        user_input: dict[str, Any] | None = None,  # noqa: ARG002
-    ) -> config_entries.SubentryFlowResult:
-        """Offer to edit the routine, or to play it to test it."""
-        return self.async_show_menu(
-            step_id="reconfigure",
-            menu_options=["edit", "play", "regenerate_play"],
-        )
-
-    async def async_step_edit(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
-        """Edit the routine."""
+        """Edit an existing routine."""
         return await self._async_step_form(
-            "edit", self._get_reconfigure_subentry(), user_input
+            "reconfigure", self._get_reconfigure_subentry(), user_input
         )
-
-    async def async_step_play(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.SubentryFlowResult:
-        """Play the routine now, on a device picked here."""
-        return await self._async_step_play("play", user_input, regenerate=False)
-
-    async def async_step_regenerate_play(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.SubentryFlowResult:
-        """Rebuild every segment of the routine, then play it."""
-        return await self._async_step_play(
-            "regenerate_play", user_input, regenerate=True
-        )
-
-    def _routine(self) -> Routine:
-        subentry = self._get_reconfigure_subentry()
-        return next(
-            r
-            for r in get_routines(self._get_entry())
-            if r.routine_id == subentry.subentry_id
-        )
-
-    async def _async_step_play(
-        self, step_id: str, user_input: dict[str, Any] | None, *, regenerate: bool
-    ) -> config_entries.SubentryFlowResult:
-        entry = self._get_entry()
-        routine = self._routine()
-        if self._task is None:
-            if user_input is None:
-                player = next(
-                    p.media_player
-                    for p in get_people(entry)
-                    if p.person_id == routine.person_id
-                )
-                return self.async_show_form(
-                    step_id=step_id, data_schema=_play_schema(player)
-                )
-            self._regenerate = regenerate
-            self._target = user_input.get(PLAY_TARGET) or None
-            work = self.hass.async_create_task(
-                self._async_play(
-                    entry,
-                    routine,
-                    self._target,
-                    user_input.get(PLAY_VOLUME),
-                    regenerate=regenerate,
-                )
-            )
-            # Closing the dialog cancels the progress task. The work is shielded,
-            # so a rebuild is not cut off halfway, and never reported if nobody
-            # is waiting for it any more.
-            work.add_done_callback(_consume_result)
-            self._task = self.hass.async_create_task(_wait_for(work))
-        if not self._task.done():
-            return self.async_show_progress(
-                progress_action="regenerating" if regenerate else "playing",
-                description_placeholders={"routine": routine.name},
-                progress_task=self._task,
-            )
-        task, self._task = self._task, None
-        if err := task.exception():
-            self._error = str(err) or type(err).__name__
-        return self.async_show_progress_done(next_step_id="played")
-
-    async def _async_play(
-        self,
-        entry: config_entries.ConfigEntry,
-        routine: Routine,
-        target: str | None,
-        volume: float | None,
-        *,
-        regenerate: bool,
-    ) -> None:
-        if regenerate:
-            await briefing.async_prebuild(self.hass, entry, routine=routine)
-        await briefing.async_play(
-            self.hass, entry, routine, target=target, volume=volume
-        )
-
-    async def async_step_played(
-        self,
-        user_input: dict[str, Any] | None = None,  # noqa: ARG002
-    ) -> config_entries.SubentryFlowResult:
-        """Say how the play went; nothing is saved."""
-        if self._error:
-            return self.async_abort(
-                reason="play_failed", description_placeholders={"error": self._error}
-            )
-        entry = self._get_entry()
-        routine = self._routine()
-        player = self._target or next(
-            p.media_player
-            for p in get_people(entry)
-            if p.person_id == routine.person_id
-        )
-        placeholders = {"routine": routine.name, "target": player or ""}
-        if degraded := briefing.degraded_segment_keys(self.hass, entry, routine):
-            placeholders["segments"] = ", ".join(
-                dict.fromkeys(segment_type_of(key) for key in degraded)
-            )
-            return self.async_abort(
-                reason="played_fallback_voice", description_placeholders=placeholders
-            )
-        return self.async_abort(reason="played", description_placeholders=placeholders)
 
     async def _async_step_form(
         self,
@@ -677,32 +547,6 @@ class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
             ),
             errors=errors,
         )
-
-
-async def _wait_for(work: asyncio.Task[None]) -> None:
-    await asyncio.shield(work)
-
-
-def _consume_result(work: asyncio.Task[None]) -> None:
-    """Mark the work's error as seen when its dialog was closed before the end."""
-    if not work.cancelled() and (err := work.exception()):
-        LOGGER.debug("Routine play from the configuration dialog failed: %s", err)
-
-
-def _play_schema(player: str | None) -> vol.Schema:
-    """Build the play form: a device (the person's own is suggested) and a volume."""
-    return vol.Schema(
-        {
-            vol.Optional(PLAY_TARGET, description=_suggested(player)): _entity_selector(
-                "media_player"
-            ),
-            vol.Optional(PLAY_VOLUME): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=0, max=1, step=0.05, mode=selector.NumberSelectorMode.BOX
-                )
-            ),
-        }
-    )
 
 
 def _routine_data(user_input: dict[str, Any]) -> dict[str, Any]:

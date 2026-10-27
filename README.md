@@ -116,14 +116,18 @@ Pick an **Output format** for the routine. **Visual** (the default) builds slide
 
 Optionally pick a **Dashboard to show afterwards** and a **Dashboard display**: the dropdown lists every dashboard and its views (for example "Nest Display › Morning"), and the chosen view is shown on a Cast display (`cast.show_lovelace_view`) when the briefing finishes. You can also type a path such as `dashboard-home/morning`. The **Dashboard display** picker lists only Google Cast players, because only Cast can show a dashboard. It defaults to the person's output device, which must also be a Cast player (a Squeezebox or other non-Cast player cannot show a dashboard); otherwise the dashboard is skipped with a warning, so set a Cast display when the routine plays on another kind of player. Without a dashboard, a Cast player is turned off once it finishes the briefing, so a display leaves the cast screen and returns to its home screen; it is left alone if it is still playing something a minute later.
 
-**Play and test from the configuration screen.** The gear on a routine (in **Settings → Devices & services → CastStudio**) opens a menu with three choices:
-- **Edit routine** opens the form described above.
-- **Play** plays the routine now, like `cast_studio.play`: stored segments are used and any missing one is built first.
-- **Regenerate and play** rebuilds every segment of the routine from scratch, which can take a minute or two (a progress screen shows while it runs), then plays it. Segments the routine shares with the person's other routines are rebuilt too.
-
-Both play choices ask for the speaker or display to play on (the person's output device is suggested, and you can pick any media player) and an optional volume from 0 to 1 (empty keeps the default level). Nothing is saved. When it finishes, the message says where it played, or why it could not, and lists any segment voiced by the fallback voice because the AI voice failed (see [When the AI voice is slow or unavailable](#when-the-ai-voice-is-slow-or-unavailable)). Closing the dialog while a regenerate is running does not stop it.
-
 Each routine gets a status sensor named `sensor.cast_studio_<person>_<routine>` (states `idle`, `generating`, `ready`, `playing`, `error`). Routines added later work at once; their sensor may appear only after the first play or prebuild, or after the next integration reload.
+
+Each routine also has a device page, named like its row in the CastStudio list, for trying it out. Open it from **Settings → Devices & services → CastStudio**:
+
+| Control | Entity | What it does |
+|---|---|---|
+| **Play** | `button.cast_studio_play_<person>_<routine>` | Plays the routine on the player shown in **Play on**. |
+| **Rebuild** | `button.cast_studio_rebuild_<person>_<routine>` | Builds the routine's segments again and plays nothing. |
+| **Regenerate and play** | `button.cast_studio_regenerate_and_play_<person>_<routine>` | Rebuilds, then plays, in one press. |
+| **Play on** | `select.cast_studio_play_on_<person>_<routine>` | The player the two play buttons use. It starts at the person's output device; pick another to test on it. The choice lasts until the output device changes or Home Assistant restarts. |
+
+A failed press shows the reason as an error message. To set a volume, use the `volume` field of `cast_studio.play`.
 
 ### `cast_studio.prebuild`
 Builds and stores segments without playing anything. For Visual routines the stitched routine video, and a stitched audio copy for speakers, are stored too.

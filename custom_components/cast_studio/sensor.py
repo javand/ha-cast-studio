@@ -12,6 +12,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .ai_health import SIGNAL_AI_ACCOUNT_ISSUE, get_ai_account_issue
 from .const import DOMAIN, LOGGER
 from .people import get_people, get_routines, slugify_name
+from .routine_entity import routine_device_info
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -42,7 +43,8 @@ class CastStudioBriefingSensor(SensorEntity):
         self.routine_name = f"{slugify_name(person.name)}_{slugify_name(routine.name)}"
         self.entity_id = f"sensor.cast_studio_{self.routine_name}"
         self._attr_unique_id = f"cast_studio_routine_{routine.routine_id}"
-        self._attr_name = f"{person.name} {routine.name}"
+        self._attr_name = "Status"
+        self._attr_device_info = routine_device_info(person, routine)
         self.person_name = person.name
         self.routine_display_name = routine.name
         self._state = "idle"

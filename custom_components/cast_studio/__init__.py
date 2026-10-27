@@ -50,6 +50,7 @@ from .people import (
     find_routine,
     get_loaded_entry,
 )
+from .routine_entity import async_add_new_routine_entities
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -268,6 +269,7 @@ async def async_setup_entry(
     @callback
     def _entry_changed(change: ConfigEntryChange, changed: ConfigEntry) -> None:
         if change is ConfigEntryChange.UPDATED and changed is entry:
+            async_add_new_routine_entities(hass)
             hass.async_create_task(manager.async_sync(), f"{DOMAIN} announcement sync")
 
     entry.async_on_unload(

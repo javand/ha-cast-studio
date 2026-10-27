@@ -348,16 +348,6 @@ def test_supported_subentry_types(config_entry: MockConfigEntry) -> None:
     assert set(types) == {"person", "routine", "announcement"}
 
 
-async def _edit_routine(
-    hass: HomeAssistant, entry: MockConfigEntry, routine_id: str
-) -> dict[str, Any]:
-    """Open a routine's gear dialog and choose Edit."""
-    result = await entry.start_subentry_reconfigure_flow(hass, routine_id)
-    return await hass.config_entries.subentries.async_configure(
-        result["flow_id"], {"next_step_id": "edit"}
-    )
-
-
 async def _start_subentry(
     hass: HomeAssistant, entry: MockConfigEntry, subentry_type: str
 ) -> dict[str, Any]:
@@ -612,7 +602,9 @@ async def test_routine_form_sets_output_format(
     (routine,) = get_routines(entry_with_sam)
     assert routine.output_format == "audio"
 
-    result = await _edit_routine(hass, entry_with_sam, routine.routine_id)
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
     schema = {str(k): k for k in result["data_schema"].schema}
     assert schema["output_format"].default() == "audio"
     await hass.config_entries.subentries.async_configure(
@@ -653,8 +645,10 @@ async def test_reconfigure_routine_keeps_own_name_but_rejects_duplicate(
         )
     quick = find_routine(entry_with_sam, "Quick")
 
-    result = await _edit_routine(hass, entry_with_sam, quick.routine_id)
-    assert result["step_id"] == "edit"
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, quick.routine_id
+    )
+    assert result["step_id"] == "reconfigure"
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         user_input={"person_id": SAM_ID, "name": "full", "segments": ["greeting"]},
@@ -693,10 +687,9 @@ def test_subentry_translations_present() -> None:
             "audio",
             "visual",
         }
-        for step in ("user", "edit"):
+        for step in ("user", "reconfigure"):
             assert "output_format" in routine["step"][step]["data"]
             assert "output_format" in routine["step"][step]["data_description"]
-        for step in ("user", "reconfigure"):
             assert "output_format" not in person["step"][step]["data"]
 
 
@@ -1130,7 +1123,9 @@ async def test_reconfigure_routine_prefills_and_clears_dashboard(
     (routine,) = get_routines(entry_with_sam)
     assert (routine.dashboard_path, routine.dashboard_view) == ("dashboard-home", None)
 
-    result = await _edit_routine(hass, entry_with_sam, routine.routine_id)
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
     schema = result["data_schema"].schema
     (key,) = [k for k in schema if k == "dashboard"]
     assert key.description == {"suggested_value": "dashboard-home"}
