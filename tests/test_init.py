@@ -29,7 +29,12 @@ async def test_setup_component(hass: HomeAssistant) -> None:
     """Setting up the component registers only the briefing actions."""
     assert await async_setup(hass, {}) is True
     assert DOMAIN in hass.data
-    assert set(hass.services.async_services()[DOMAIN]) == {"prebuild", "play"}
+    assert set(hass.services.async_services()[DOMAIN]) == {
+        "prebuild",
+        "play",
+        "rebuild_announcement",
+        "announce",
+    }
 
 
 @pytest.mark.asyncio

@@ -280,3 +280,20 @@ async def test_closing_segment_uses_lexicon(
     )
     spoken = synth.call_args.args[1]
     assert spoken == "Hav a great day, Al-ex!"
+
+
+def test_household_lexicon_merges_everyones_rows() -> None:
+    """Announcements have no listener: everyone's names and rows apply."""
+    from custom_components.cast_studio.pronunciation import build_household_lexicon
+
+    alex = _person("Alex", "Al-ex", (("Siobhan", "Shiv-awn"),))
+    sam = _person("Sam", "Sahm", (("Siobhan", "Shuh-vawn"), ("Mary", "Mair-ee")))
+    lexicon = build_household_lexicon([alex, sam])
+    assert ("Alex", "Al-ex") in lexicon
+    assert ("Sam", "Sahm") in lexicon
+    assert ("Mary", "Mair-ee") in lexicon
+    assert ("Siobhan", "Shuh-vawn") in lexicon
+    assert ("Siobhan", "Shiv-awn") not in lexicon
+    assert [len(w) for w, _ in lexicon] == sorted(
+        (len(w) for w, _ in lexicon), reverse=True
+    )

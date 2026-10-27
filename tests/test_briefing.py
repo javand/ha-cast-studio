@@ -688,7 +688,7 @@ async def test_cast_display_is_released_after_playback_without_dashboard(
             ),
         ],
     )
-    with patch(f"{BRIEFING}._async_release_player") as release:
+    with patch(f"{BRIEFING}.async_release_player") as release:
         await h.play("Quick")
 
     release.assert_awaited_once_with(hass, DISPLAY)
@@ -698,7 +698,7 @@ async def test_display_with_dashboard_is_not_released(
     sam_visual_with_dashboard: Harness,
 ) -> None:
     h = sam_visual_with_dashboard
-    with patch(f"{BRIEFING}._async_release_player") as release:
+    with patch(f"{BRIEFING}.async_release_player") as release:
         await h.play("Quick")
 
     release.assert_not_awaited()
@@ -706,7 +706,7 @@ async def test_display_with_dashboard_is_not_released(
 
 
 async def test_non_cast_speaker_is_not_released(sam_quick: Harness) -> None:
-    with patch(f"{BRIEFING}._async_release_player") as release:
+    with patch(f"{BRIEFING}.async_release_player") as release:
         await sam_quick.play("Quick")
 
     release.assert_not_awaited()
@@ -715,7 +715,7 @@ async def test_non_cast_speaker_is_not_released(sam_quick: Harness) -> None:
 async def test_release_turns_off_an_idle_player(sam_quick: Harness) -> None:
     h = sam_quick
     h.hass.states.async_set(DISPLAY, "idle")
-    await briefing._async_release_player(h.hass, DISPLAY)
+    await briefing.async_release_player(h.hass, DISPLAY)
 
     assert h.turned_off == [DISPLAY]
 
@@ -723,7 +723,7 @@ async def test_release_turns_off_an_idle_player(sam_quick: Harness) -> None:
 async def test_release_waits_for_the_player_to_stop(sam_quick: Harness) -> None:
     h = sam_quick
     with patch(f"{BRIEFING}.RELEASE_WAIT_SECONDS", 3600):
-        task = asyncio.create_task(briefing._async_release_player(h.hass, DISPLAY))
+        task = asyncio.create_task(briefing.async_release_player(h.hass, DISPLAY))
         for _ in range(5):
             await asyncio.sleep(0)
         assert not task.done()
@@ -734,7 +734,7 @@ async def test_release_waits_for_the_player_to_stop(sam_quick: Harness) -> None:
 
 
 async def test_release_leaves_a_player_that_keeps_playing(sam_quick: Harness) -> None:
-    await briefing._async_release_player(sam_quick.hass, DISPLAY)  # stays "playing"
+    await briefing.async_release_player(sam_quick.hass, DISPLAY)  # stays "playing"
 
     assert sam_quick.turned_off == []
 
@@ -1330,3 +1330,66 @@ async def test_failed_live_commute_falls_back_to_the_prebuilt_one(
 
     assert "commute" in h.ffmpeg.concats[-1]
     assert len(h.played) == 1
+
+
+# --- pausable playback (announcements) ---------------------------------------
+
+
+async def _display_harness(
+    hass: HomeAssistant, tmp_path: Path, freezer: FrozenDateTimeFactory, request: Any
+) -> Harness:
+    return await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            person_subentry(SAM_ID, "Sam", media_player=DISPLAY),
+            routine_subentry(
+                "r_sam_quick", SAM_ID, "Quick", QUICK, output_format="audio"
+            ),
+        ],
+    )
+
+
+async def test_playing_on_returns_the_play_on_that_player(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    h = await _display_harness(hass, tmp_path, freezer, request)
+    h.hass.states.async_set(DISPLAY, "off")
+    await briefing.async_play(h.hass, h.entry, h.routine("Quick"))
+    current = briefing.playing_on(h.hass, DISPLAY)
+    assert current is not None
+    assert current.player == DISPLAY
+    assert briefing.playing_on(h.hass, SPEAKER) is None
+    assert briefing.media_of(current) == (h.played[0]["media_content_id"], False)
+
+    freezer.tick(30)
+    async_fire_time_changed(h.hass)
+    await h.hass.async_block_till_done()
+    assert briefing.playing_on(h.hass, DISPLAY) is None
+
+
+async def test_fail_play_sets_error_and_skips_release(  # noqa: PLR0913
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    h = await _display_harness(hass, tmp_path, freezer, request)
+    h.hass.states.async_set(DISPLAY, "off")
+    with patch(f"{BRIEFING}.async_release_player") as release:
+        await briefing.async_play(h.hass, h.entry, h.routine("Quick"))
+        current = briefing.playing_on(h.hass, DISPLAY)
+        briefing.async_fail_play(current, "resume failed")
+        await h.hass.async_block_till_done()
+    release.assert_not_called()
+    assert h.hass.states.get("sensor.cast_studio_sam_quick").state == "error"
+    assert "resume failed" in caplog.text
+    assert briefing.playing_on(h.hass, DISPLAY) is None

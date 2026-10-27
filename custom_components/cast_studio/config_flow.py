@@ -11,6 +11,26 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
 
+from .announcements import (
+    ANN_DESCRIPTION,
+    ANN_FRESHNESS,
+    ANN_MESSAGE,
+    ANN_NAME,
+    ANN_OUTPUT_FORMAT,
+    ANN_PERSONAS,
+    ANN_PICTURES,
+    ANN_REBUILD_TIME,
+    ANN_TARGET,
+    ANN_WORDING,
+    DEFAULT_PERSONA,
+    DEFAULT_REBUILD_TIME,
+    FRESHNESS,
+    LOCAL_MEDIA_PREFIX,
+    MAX_PICTURES,
+    SUBENTRY_ANNOUNCEMENT,
+    WORDINGS,
+    get_announcements,
+)
 from .const import (
     CONF_API_KEY,
     CONF_COMMUTE_DESTINATION,
@@ -66,7 +86,13 @@ from .people import (
     person_calendars,
     slugify_name,
 )
-from .personas import ROLE_HOST, ROLE_READER, get_persona, personas_for_role
+from .personas import (
+    PERSONAS,
+    ROLE_HOST,
+    ROLE_READER,
+    get_persona,
+    personas_for_role,
+)
 
 ADVANCED_SECTION = "advanced"
 
@@ -196,10 +222,11 @@ class CastStudioFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         cls,
         config_entry: config_entries.ConfigEntry,  # noqa: ARG003
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
-        """Return the person and routine subentry flows."""
+        """Return the person, routine and announcement subentry flows."""
         return {
             SUBENTRY_PERSON: PersonSubentryFlow,
             SUBENTRY_ROUTINE: RoutineSubentryFlow,
+            SUBENTRY_ANNOUNCEMENT: AnnouncementSubentryFlow,
         }
 
 
@@ -217,13 +244,13 @@ def _entity_selector(domain: str | None = None) -> selector.EntitySelector:
     return selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
 
 
-def _persona_selector(role: str) -> selector.SelectSelector:
-    """Pick one or more of the built-in personas suited to a role."""
+def _persona_selector(role: str | None) -> selector.SelectSelector:
+    """Pick one or more of the built-in personas suited to a role (any if None)."""
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=[
                 selector.SelectOptionDict(value=persona.persona_id, label=persona.name)
-                for persona in personas_for_role(role)
+                for persona in (PERSONAS if role is None else personas_for_role(role))
             ],
             multiple=True,
             mode=selector.SelectSelectorMode.DROPDOWN,
@@ -626,13 +653,7 @@ def _routine_schema(
             vol.Required(
                 ROUTINE_OUTPUT_FORMAT,
                 default=current.get(ROUTINE_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT),
-            ): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=list(OUTPUT_FORMATS),
-                    mode=selector.SelectSelectorMode.LIST,
-                    translation_key="output_format",
-                )
-            ),
+            ): _list_selector(OUTPUT_FORMATS, "output_format"),
             # custom_value keeps a typed path working, and a stored one that is
             # no longer listed (renamed dashboard) still shows.
             vol.Optional(
@@ -653,6 +674,147 @@ def _routine_schema(
             vol.Optional(
                 ROUTINE_DASHBOARD_DISPLAY,
                 description=_suggested(current.get(ROUTINE_DASHBOARD_DISPLAY)),
+            ): _entity_selector("media_player"),
+        }
+    )
+
+
+class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
+    """Add or edit a household announcement."""
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Add an announcement."""
+        return await self._async_step_form("user", None, user_input)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Edit an existing announcement."""
+        return await self._async_step_form(
+            "reconfigure", self._get_reconfigure_subentry(), user_input
+        )
+
+    async def _async_step_form(
+        self,
+        step_id: str,
+        subentry: config_entries.ConfigSubentry | None,
+        user_input: dict[str, Any] | None,
+    ) -> config_entries.SubentryFlowResult:
+        entry = self._get_entry()
+        errors: dict[str, str] = {}
+        current = dict(subentry.data) if subentry else {}
+        if user_input is not None:
+            data = _announcement_data(user_input)
+            current = data
+            own_id = subentry.subentry_id if subentry else None
+            errors = _validate_announcement(data)
+            if not errors and any(
+                other.announcement_id != own_id
+                and slugify_name(other.name) == slugify_name(data[ANN_NAME])
+                for other in get_announcements(entry)
+            ):
+                errors = {"base": "duplicate_announcement"}
+            if not errors:
+                # No reload: the update listener rebuilds what changed.
+                if subentry is None:
+                    return self.async_create_entry(title=data[ANN_NAME], data=data)
+                return self.async_update_and_abort(
+                    entry, subentry, title=data[ANN_NAME], data=data
+                )
+        return self.async_show_form(
+            step_id=step_id, data_schema=_announcement_schema(current), errors=errors
+        )
+
+
+def _announcement_data(user_input: dict[str, Any]) -> dict[str, Any]:
+    pictures = user_input.get(ANN_PICTURES) or []
+    if isinstance(pictures, dict):
+        pictures = [pictures]
+    return {
+        ANN_NAME: (user_input.get(ANN_NAME) or "").strip(),
+        ANN_DESCRIPTION: (user_input.get(ANN_DESCRIPTION) or "").strip(),
+        ANN_WORDING: user_input.get(ANN_WORDING) or "verbatim",
+        ANN_MESSAGE: (user_input.get(ANN_MESSAGE) or "").strip(),
+        ANN_FRESHNESS: user_input.get(ANN_FRESHNESS) or "static",
+        ANN_PERSONAS: list(user_input.get(ANN_PERSONAS) or [DEFAULT_PERSONA]),
+        ANN_REBUILD_TIME: user_input.get(ANN_REBUILD_TIME) or DEFAULT_REBUILD_TIME,
+        ANN_PICTURES: [
+            str(item.get("media_content_id"))
+            for item in pictures
+            if isinstance(item, dict) and item.get("media_content_id")
+        ],
+        ANN_OUTPUT_FORMAT: user_input.get(ANN_OUTPUT_FORMAT) or DEFAULT_OUTPUT_FORMAT,
+        **({ANN_TARGET: target} if (target := user_input.get(ANN_TARGET)) else {}),
+    }
+
+
+def _validate_announcement(data: dict[str, Any]) -> dict[str, str]:
+    if not is_valid_name(data[ANN_NAME]):
+        return {"base": "invalid_name"}
+    if data[ANN_WORDING] == "verbatim" and not data[ANN_MESSAGE]:
+        return {ANN_MESSAGE: "message_required"}
+    if data[ANN_FRESHNESS] == "static" and len(data[ANN_PERSONAS]) > 1:
+        return {ANN_PERSONAS: "one_persona"}
+    if len(data[ANN_PICTURES]) > MAX_PICTURES:
+        return {ANN_PICTURES: "too_many_pictures"}
+    if any(not p.startswith(LOCAL_MEDIA_PREFIX) for p in data[ANN_PICTURES]):
+        return {ANN_PICTURES: "local_pictures_only"}
+    return {}
+
+
+def _list_selector(options: tuple[str, ...], key: str) -> selector.SelectSelector:
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=list(options),
+            mode=selector.SelectSelectorMode.LIST,
+            translation_key=key,
+        )
+    )
+
+
+def _announcement_schema(current: dict[str, Any]) -> vol.Schema:
+    pictures = [
+        {"media_content_id": media_id, "media_content_type": "image/jpeg"}
+        for media_id in current.get(ANN_PICTURES) or []
+    ]
+    return vol.Schema(
+        {
+            vol.Required(
+                ANN_NAME, description=_suggested(current.get(ANN_NAME))
+            ): _text_selector(),
+            vol.Required(
+                ANN_DESCRIPTION, description=_suggested(current.get(ANN_DESCRIPTION))
+            ): _text_selector(multiline=True),
+            vol.Required(
+                ANN_WORDING, default=current.get(ANN_WORDING, "verbatim")
+            ): _list_selector(WORDINGS, "announcement_wording"),
+            vol.Optional(
+                ANN_MESSAGE, description=_suggested(current.get(ANN_MESSAGE))
+            ): _text_selector(multiline=True),
+            vol.Required(
+                ANN_FRESHNESS, default=current.get(ANN_FRESHNESS, "static")
+            ): _list_selector(FRESHNESS, "announcement_freshness"),
+            vol.Optional(
+                ANN_PERSONAS,
+                default=list(current.get(ANN_PERSONAS) or [DEFAULT_PERSONA]),
+            ): _persona_selector(None),
+            vol.Optional(
+                ANN_REBUILD_TIME,
+                default=current.get(ANN_REBUILD_TIME, DEFAULT_REBUILD_TIME),
+            ): selector.TimeSelector(),
+            vol.Optional(
+                ANN_PICTURES, description=_suggested(pictures or None)
+            ): selector.MediaSelector(
+                selector.MediaSelectorConfig(accept=["image/*"], multiple=True)
+            ),
+            vol.Required(
+                ANN_OUTPUT_FORMAT,
+                default=current.get(ANN_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT),
+            ): _list_selector(OUTPUT_FORMATS, "output_format"),
+            vol.Optional(
+                ANN_TARGET, description=_suggested(current.get(ANN_TARGET))
             ): _entity_selector("media_player"),
         }
     )

@@ -213,6 +213,80 @@
         "no_people": "Add a person before adding a routine.",
         "reconfigure_successful": "Routine updated."
       }
+    },
+    "announcement": {
+      "entry_type": "Announcement",
+      "initiate_flow": {
+        "user": "Add announcement",
+        "reconfigure": "Edit announcement"
+      },
+      "step": {
+        "user": {
+          "title": "Add an announcement",
+          "data": {
+            "name": "Name",
+            "description": "Description",
+            "wording": "Wording",
+            "message": "Message",
+            "freshness": "Freshness",
+            "personas": "Personas",
+            "rebuild_time": "Rebuild time",
+            "pictures": "Pictures",
+            "output_format": "Output format",
+            "target": "Play on"
+          },
+          "data_description": {
+            "name": "Used by the announce action and in entity ids.",
+            "description": "What the announcement is for, what the slide should show and what should be said. For example: \"AI background of a cosy front door at dusk, Alex and Sam in two circles, 'Welcome home' across the top\", or \"use the uploaded image as is, with Sam's photo in the bottom-right corner like a profile badge\".",
+            "wording": "Exactly as written speaks the Message. Written by the persona lets the AI write the words from the description, in the persona's character.",
+            "message": "The words to speak when the wording is exactly as written.",
+            "freshness": "Static is built once. Daily is rebuilt every day at the rebuild time, with a persona picked from your list.",
+            "personas": "Who speaks. Static: one persona. Daily: one or more, a different one each day.",
+            "rebuild_time": "Daily only: when the daily rebuild runs.",
+            "pictures": "Up to 4 pictures from your local media. Say in the description how each is used.",
+            "output_format": "Visual builds a slide and plays video on screens. Audio builds speech only.",
+            "target": "The speaker or display it plays on when an automation or the Play button names no other. Pick a different one to test on from the announcement's device page."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit announcement",
+          "data": {
+            "name": "Name",
+            "description": "Description",
+            "wording": "Wording",
+            "message": "Message",
+            "freshness": "Freshness",
+            "personas": "Personas",
+            "rebuild_time": "Rebuild time",
+            "pictures": "Pictures",
+            "output_format": "Output format",
+            "target": "Play on"
+          },
+          "data_description": {
+            "name": "Used by the announce action and in entity ids.",
+            "description": "What the announcement is for, what the slide should show and what should be said. For example: \"AI background of a cosy front door at dusk, Alex and Sam in two circles, 'Welcome home' across the top\", or \"use the uploaded image as is, with Sam's photo in the bottom-right corner like a profile badge\".",
+            "wording": "Exactly as written speaks the Message. Written by the persona lets the AI write the words from the description, in the persona's character.",
+            "message": "The words to speak when the wording is exactly as written.",
+            "freshness": "Static is built once. Daily is rebuilt every day at the rebuild time, with a persona picked from your list.",
+            "personas": "Who speaks. Static: one persona. Daily: one or more, a different one each day.",
+            "rebuild_time": "Daily only: when the daily rebuild runs.",
+            "pictures": "Up to 4 pictures from your local media. Say in the description how each is used.",
+            "output_format": "Visual builds a slide and plays video on screens. Audio builds speech only.",
+            "target": "The speaker or display it plays on when an automation or the Play button names no other. Pick a different one to test on from the announcement's device page."
+          }
+        }
+      },
+      "error": {
+        "invalid_name": "Enter a name with at least one letter or number.",
+        "duplicate_announcement": "Another announcement already has this name.",
+        "message_required": "Enter the message to speak, or choose written by the persona.",
+        "one_persona": "A static announcement has one persona. Pick one, or choose daily.",
+        "too_many_pictures": "Pick at most 4 pictures.",
+        "local_pictures_only": "Pick pictures from your local media only."
+      },
+      "abort": {
+        "reconfigure_successful": "The announcement was updated."
+      }
     }
   },
   "options": {
@@ -267,6 +341,18 @@
         "daily_encouragement": "Daily encouragement",
         "closing": "Closing"
       }
+    },
+    "announcement_wording": {
+      "options": {
+        "verbatim": "Exactly as written",
+        "creative": "Written by the persona"
+      }
+    },
+    "announcement_freshness": {
+      "options": {
+        "static": "Static",
+        "daily": "Daily"
+      }
     }
   },
   "services": {
@@ -303,6 +389,30 @@
         "skip_played": {
           "name": "Skip played segments",
           "description": "If on, plays only the segments this routine has not yet played in the person's briefing day. When everything has been heard, a short \"That's everything\" line plays."
+        }
+      }
+    },
+    "rebuild_announcement": {
+      "name": "Rebuild Announcement",
+      "description": "Builds an announcement again now. Creative wording gets new words, and visual announcements a new slide.",
+      "fields": {
+        "announcement": {
+          "name": "Announcement",
+          "description": "Name of the announcement to rebuild."
+        }
+      }
+    },
+    "announce": {
+      "name": "Play Announcement",
+      "description": "Plays an announcement now, video on a screen and audio otherwise. A CastStudio briefing playing on the target pauses and resumes after it.",
+      "fields": {
+        "announcement": {
+          "name": "Announcement",
+          "description": "Name of the announcement to play."
+        },
+        "target": {
+          "name": "Target Media Player",
+          "description": "Media player to play the announcement on. Defaults to the announcement's Play on setting."
         }
       }
     }

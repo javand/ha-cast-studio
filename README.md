@@ -10,7 +10,7 @@
   <a href="https://hacs.xyz"><img src="https://img.shields.io/badge/HACS-Custom-orange.svg" alt="HACS"></a>
   <a href="https://github.com/javand/ha-cast-studio/releases"><img src="https://img.shields.io/github/v/release/javand/ha-cast-studio?include_prereleases" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <img src="https://img.shields.io/badge/Home%20Assistant-2025.8.0%2B-blue" alt="Home Assistant Core 2025.8.0+">
+  <img src="https://img.shields.io/badge/Home%20Assistant-2025.12.0%2B-blue" alt="Home Assistant Core 2025.12.0+">
 </p>
 
 ---
@@ -66,7 +66,7 @@ Instead of a plain text-to-speech readout, each person in the house gets their o
 
 ## 👥 People, Routines & Briefings
 
-CastStudio can brief several people, each with their own routines. People and routines are config subentries of the CastStudio entry (**Settings** > **Devices & Services** > **CastStudio**). Home Assistant 2025.8.0 or newer is required (see `hacs.json`).
+CastStudio can brief several people, each with their own routines. People and routines are config subentries of the CastStudio entry (**Settings** > **Devices & Services** > **CastStudio**). Home Assistant 2025.12.0 or newer is required (see `hacs.json`).
 
 ### Add person
 Use **Add person** on the CastStudio entry. Fields:
@@ -267,6 +267,62 @@ actions:
 ```
 
 For a work-day routine with a commute, set the person's work zone (for example `zone.office`) and commute sensors in **Add person** > **Advanced**.
+
+---
+
+## 📣 Announcements
+
+Announcements are short household messages, not tied to a person: "Close the freezer door", "The front door is locked", or a welcome-home slide. You describe each one once; CastStudio builds the words, the voice and a slide, and your own automations play it whenever they need it.
+
+### Add announcement
+Use **Add announcement** on the CastStudio integration.
+
+| Field | Meaning |
+| :--- | :--- |
+| Name | Used by the actions and in entity ids. Unique among announcements. |
+| Description | What the announcement is for, what the slide should show and what should be said, for example "AI background of a cosy front door at dusk, Alex and Sam in two circles, 'Welcome home' across the top". |
+| Wording | **Exactly as written** speaks the Message. **Written by the persona** lets the AI write the words from the description, in the persona's character. |
+| Message | The words to speak with exactly-as-written wording. |
+| Freshness | **Static** (the default) is built once and rebuilt only when you edit it or ask. **Daily** is rebuilt every day at the rebuild time, so it feels new each day. |
+| Personas | Who speaks. Static: one persona. Daily: one or more; each day one is picked at random, never the same as the day before. |
+| Rebuild time | Daily only: when the daily rebuild runs (default 03:00). |
+| Pictures | Up to 4 pictures from your local media (upload them in the Media panel). Say in the description how each is used. |
+| Output format | **Visual** builds a slide and plays video on screens. **Audio** builds speech only. |
+| Play on | Optional. The speaker or display it plays on when an automation or the **Play** button names no other. |
+
+The slide is painted by Gemini's image model from the description and your pictures; it may redraw the people in them. Without Gemini image access the slide is a plain card with the name (and your first picture), and the announcement still speaks. A restart reuses the last build, so creative words don't change on their own. If a rebuild fails, the previous build keeps playing.
+
+Each announcement gets an image entity, `image.cast_studio_announcement_<name>`, showing the current slide with the spoken words, wording, freshness, persona, build time and `status` (`idle`, `building`, `ready`, `error`, `fallback`) as attributes, and a **Rebuild** button, `button.cast_studio_rebuild_<name>`.
+
+To try an announcement, open its device page: **Play** (`button.cast_studio_play_<name>`) plays it on the player shown in **Play on** (`select.cast_studio_play_on_<name>`). Play on starts at the announcement's own Play on setting; pick another player there to test on it. That choice lasts until you change the setting or restart.
+
+### `cast_studio.announce`
+Plays an announcement now. Video on a device with a screen, audio otherwise. The action returns once the announcement is playing; announcements sent to the same player play one after another.
+
+If a CastStudio briefing is playing on that player, it pauses: the announcement plays as audio only, then the briefing is cast again and picks up where it was (a second or two of gap is normal). If the player can't say where the briefing was, it restarts from the beginning.
+
+| Field | Required | Meaning |
+| :--- | :--- | :--- |
+| `announcement` | yes | Name of the announcement. |
+| `target` | no | Media player to play on. Defaults to the announcement's Play on setting. |
+
+```yaml
+actions:
+  - action: cast_studio.announce
+    data:
+      announcement: Freezer Door
+      target: media_player.kitchen_speaker
+```
+
+### `cast_studio.rebuild_announcement`
+Builds an announcement again now: new words for creative wording, and a new slide. Fails if the build fails, leaving the previous build in use.
+
+```yaml
+actions:
+  - action: cast_studio.rebuild_announcement
+    data:
+      announcement: Welcome Sam
+```
 
 ---
 

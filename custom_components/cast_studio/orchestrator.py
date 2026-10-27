@@ -24,6 +24,8 @@ from .const import LOGGER
 from .helpers import create_task
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from homeassistant.core import Event, HomeAssistant
 
 
@@ -35,6 +37,55 @@ DEFAULT_PLAYING_TIMEOUT = 25.0
 # Set in a play's metadata when a newer play replaces it: its lifecycle then
 # skips the post-routine actions, which would otherwise run over the newer play.
 SUPERSEDED_FLAG = "_superseded"
+
+
+class PlayControl:
+    """
+    A handle another play uses to pause this one and move its end.
+
+    ``started`` resolves once playback starts (or is assumed started at the
+    safety timeout). While ``hold`` is entered the play's lifecycle never
+    ends, so nothing runs over whatever holds it.
+    """
+
+    def __init__(self, started: asyncio.Future[None] | None = None) -> None:
+        """Start unheld; ``started`` is resolved when playback starts."""
+        self._loop = asyncio.get_running_loop()
+        self.started: asyncio.Future[None] = started or self._loop.create_future()
+        self.started_at: float | None = None
+        # Seconds added to the play's duration while it runs.
+        self.extra_seconds = 0.0
+        self._released = asyncio.Event()
+        self._released.set()
+
+    def mark_started(self, at: float) -> None:
+        """Record that playback started at loop time ``at``."""
+        self.started_at = at
+        if not self.started.done():
+            self.started.set_result(None)
+
+    @contextlib.contextmanager
+    def hold(self) -> Iterator[None]:
+        """Keep the play from ending until the block exits."""
+        self._released.clear()
+        try:
+            yield
+        finally:
+            self._released.set()
+
+    async def async_wait_released(self) -> None:
+        """Wait until nothing holds the play."""
+        await self._released.wait()
+
+    def resumed_at(self, position: float) -> None:
+        """
+        Note the play now continues from ``position`` seconds in.
+
+        Its end becomes now plus what is left, so the extra time is set from
+        scratch, not added to an earlier pause's.
+        """
+        if self.started_at is not None:
+            self.extra_seconds = self._loop.time() - self.started_at - position
 
 
 class OrchestratorError(Exception):
@@ -404,7 +455,7 @@ def has_screen(hass: HomeAssistant, entity_id: str | None) -> bool:
     model, a name containing "display" counts as a screen. Cast groups and
     non-Cast players never do.
     """
-    if not entity_id or not _is_cast_player(hass, entity_id):
+    if not entity_id or not is_cast_player(hass, entity_id):
         return False
     entry = er.async_get(hass).async_get(entity_id)
     device = (
@@ -426,7 +477,7 @@ def has_screen(hass: HomeAssistant, entity_id: str | None) -> bool:
     return any("display" in str(name).lower() for name in names if name)
 
 
-def _is_cast_player(hass: HomeAssistant, entity_id: str) -> bool:
+def is_cast_player(hass: HomeAssistant, entity_id: str) -> bool:
     """Check if target media player entity is a Google Cast device."""
     if not entity_id:
         return False
@@ -452,6 +503,8 @@ def _is_routine_media_playing(  # noqa: PLR0911
     state_obj: Any,
     expected_media_url: str | None = None,
     media_path: str | None = None,
+    *,
+    strict: bool = False,
 ) -> bool:
     """
     Check if the given state represents our routine media playing.
@@ -497,9 +550,13 @@ def _is_routine_media_playing(  # noqa: PLR0911
         if any(cand in current_clean for cand in valid_candidates):
             # Actively loading or playing our specific routine media!
             return state_val in ("playing", "buffering", "idle")
+        if strict:
+            return False
         # Check if proxy or internal stream from Default Media Receiver
         is_dmr = app_id == "CC1AD845" or "default media receiver" in app_name
         return is_dmr and state_val in ("playing", "buffering")
+    if strict:
+        return False
 
     # 4. If Default Media Receiver is active and state is playing or buffering
     if app_id == "CC1AD845" or "default media receiver" in app_name:
@@ -513,12 +570,15 @@ def _is_routine_media_playing(  # noqa: PLR0911
     return app_name not in ("backdrop", "ambient", "google cast", "homescreen")
 
 
-async def async_play_and_sync_routine(  # noqa: C901, PLR0915
+async def async_play_and_sync_routine(  # noqa: C901, PLR0913, PLR0915
     hass: HomeAssistant,
     routine_name: str,
     target_player: str,
     metadata: dict[str, Any],
     steps: list[dict[str, Any]],
+    *,
+    control: PlayControl | None = None,
+    strict_media: bool = False,
 ) -> asyncio.Task[Any]:
     """
     Play routine media and synchronize slide actions upon 'playing' state.
@@ -529,6 +589,10 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
         target_player: Media player entity ID.
         metadata: Routine companion metadata dictionary.
         steps: List of routine step definitions.
+        control: Lets another play pause this one and move its end.
+        strict_media: Count only the requested media as playing, not whatever
+            the receiver still shows: a Cast reports the previous media until
+            the new one loads.
 
     Returns:
         An awaitable task representing the full playback lifecycle.
@@ -543,10 +607,11 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
         )
     )
     duration = float(metadata.get("duration", 0.0))
+    control = control or PlayControl()
 
     # 0. Wake up, unmute, and initialize volume if configured
     if metadata.get("prepare_player", True) and target_player:
-        if not _is_cast_player(hass, target_player):
+        if not is_cast_player(hass, target_player):
             with contextlib.suppress(Exception):
                 await hass.services.async_call(
                     "media_player", "turn_on", {"entity_id": target_player}
@@ -581,16 +646,19 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
     schedule = extract_slide_schedule(metadata, steps)
     loop = asyncio.get_running_loop()
     playing_future: asyncio.Future[asyncio.Task[Any] | None] = loop.create_future()
-    start_time = [loop.time()]
+    dispatched_at = loop.time()
     not_started = False
 
     # 2. Check if player is already 'playing' at call time
     current_state = hass.states.get(target_player)
-    if _is_routine_media_playing(current_state, resolved_media_url, media_path):
+    if _is_routine_media_playing(
+        current_state, resolved_media_url, media_path, strict=strict_media
+    ):
         LOGGER.debug(
             "Player '%s' is already in 'playing' state; starting sync",
             target_player,
         )
+        control.mark_started(dispatched_at)
         task = _create_task(
             hass,
             _async_sync_slides(hass, schedule),
@@ -616,7 +684,7 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
             if sync_started:
                 return None
             sync_started = True
-            start_time[0] = loop.time()
+            control.mark_started(loop.time())
             _cleanup()
 
             task = _create_task(
@@ -632,7 +700,9 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
         @callback
         def _handle_state_changed(event: Event) -> asyncio.Task[Any] | None:
             new_state = event.data.get("new_state")
-            if _is_routine_media_playing(new_state, resolved_media_url, media_path):
+            if _is_routine_media_playing(
+                new_state, resolved_media_url, media_path, strict=strict_media
+            ):
                 LOGGER.debug(
                     "Player '%s' entered 'playing'; starting slide sync for '%s'",
                     target_player,
@@ -653,6 +723,9 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
             )
             state = hass.states.get(target_player)
             not_started = state is None or state.state in _NOT_STARTED_STATES
+            if not not_started:
+                # It may be playing without saying so: carry on as started.
+                control.mark_started(dispatched_at)
             _cleanup()
             if not playing_future.done():
                 playing_future.set_result(None)
@@ -672,9 +745,17 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
             elif not_started:
                 msg = f"'{target_player}' never started playing '{routine_name}'"
                 raise PlaybackNotStartedError(msg)
-            remaining = duration - (loop.time() - start_time[0])
-            if remaining > 0:
-                await asyncio.sleep(remaining)
+            # An announcement may hold the play and add time: wait out the
+            # hold, then sleep until the moved end.
+            while True:
+                extra = control.extra_seconds
+                started_at = control.started_at or dispatched_at
+                remaining = duration + extra - (loop.time() - started_at)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                await control.async_wait_released()
+                if control.extra_seconds == extra:
+                    break
         except asyncio.CancelledError:
             if not playing_future.done():
                 playing_future.cancel()
@@ -692,7 +773,7 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0915
                     if (
                         metadata.get("prepare_player", True)
                         and target_player
-                        and not _is_cast_player(hass, target_player)
+                        and not is_cast_player(hass, target_player)
                     ):
                         with contextlib.suppress(Exception):
                             await hass.services.async_call(

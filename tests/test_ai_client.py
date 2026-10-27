@@ -750,3 +750,127 @@ def test_build_prompt_gives_personas_spoken_output_rules() -> None:
     assert "no stage directions" in prompt
     assert "no markdown or emojis" in prompt
     assert "numbers, times and dates the way a person says them" in prompt
+
+
+# --- Announcements ------------------------------------------------------------
+
+
+def _elena():
+    from custom_components.cast_studio.personas import get_persona
+
+    return get_persona("elena")
+
+
+def test_announcement_prompt_carries_description_character_and_rules() -> None:
+    """The prompt gives the description, the character and the spoken rules."""
+    from custom_components.cast_studio.ai_client import build_announcement_prompt
+
+    prompt = build_announcement_prompt("Welcome Sam home after work", "a warm aunt")
+    for phrase in (
+        "Welcome Sam home after work",
+        "Voice Personality: a warm aunt",
+        "This is a short household announcement spoken aloud on a smart speaker",
+        "never state, invent or introduce a name for the speaker",
+        "no stage directions",
+        "no markdown or emojis",
+        "the way a person says them",
+        "under 40 words unless the description asks for more",
+        '"narration_script"',
+    ):
+        assert phrase in prompt
+
+
+async def test_generate_announcement_words_returns_narration() -> None:
+    """The writer's narration comes back stripped."""
+    from custom_components.cast_studio.ai_client import (
+        async_generate_announcement_words,
+    )
+
+    with patch(
+        "custom_components.cast_studio.ai_client._query_gemini_structured",
+        new=AsyncMock(return_value={"narration_script": "  Welcome home, Sam.  "}),
+    ) as query:
+        words = await async_generate_announcement_words(
+            MagicMock(),
+            "Welcome Sam home",
+            _elena(),
+            {"platform": "gemini", "api_key": "fake"},
+        )
+    assert words == "Welcome home, Sam."
+    assert _elena().character in query.call_args.kwargs["prompt"]
+
+
+async def test_generate_announcement_words_empty_raises() -> None:
+    """No words is an error, so the caller can keep the last build."""
+    from custom_components.cast_studio.ai_client import (
+        async_generate_announcement_words,
+    )
+
+    with (
+        patch(
+            "custom_components.cast_studio.ai_client._query_gemini_structured",
+            new=AsyncMock(return_value={}),
+        ),
+        pytest.raises(AIClientError),
+    ):
+        await async_generate_announcement_words(
+            MagicMock(), "Hi", _elena(), {"platform": "gemini", "api_key": "fake"}
+        )
+
+
+async def test_image_api_sends_reference_images_and_aspect_ratio() -> None:
+    """Reference pictures go as inline parts; the aspect ratio is requested."""
+    import base64
+
+    from custom_components.cast_studio.ai_client import _query_gemini_image_api
+
+    resp = MagicMock()
+    resp.status = 200
+    resp.json = AsyncMock(return_value={"candidates": []})
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock()
+    session.post.return_value = cm
+    with patch(
+        "custom_components.cast_studio.ai_client.async_get_clientsession",
+        return_value=session,
+    ):
+        await _query_gemini_image_api(
+            MagicMock(),
+            "A slide",
+            "key",
+            images=[("image/jpeg", b"abc")],
+            aspect_ratio="16:9",
+        )
+    payload = session.post.call_args.kwargs["json"]
+    assert payload["contents"][0]["parts"] == [
+        {"text": "A slide"},
+        {
+            "inlineData": {
+                "mimeType": "image/jpeg",
+                "data": base64.b64encode(b"abc").decode(),
+            }
+        },
+    ]
+    assert payload["generationConfig"]["imageConfig"] == {"aspectRatio": "16:9"}
+
+
+async def test_generate_ai_image_passes_reference_images(tmp_path: Path) -> None:
+    """async_generate_ai_image forwards pictures and aspect ratio."""
+    from custom_components.cast_studio.ai_client import async_generate_ai_image
+
+    with patch(
+        "custom_components.cast_studio.ai_client._query_gemini_image_api",
+        new=AsyncMock(return_value={"candidates": []}),
+    ) as query:
+        await async_generate_ai_image(
+            MagicMock(),
+            "A slide",
+            str(tmp_path / "s.png"),
+            {"platform": "gemini", "api_key": "k"},
+            reference_images=[("image/png", b"x")],
+            aspect_ratio="16:9",
+        )
+    assert query.call_args.kwargs["images"] == [("image/png", b"x")]
+    assert query.call_args.kwargs["aspect_ratio"] == "16:9"

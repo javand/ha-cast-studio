@@ -41,13 +41,14 @@ from homeassistant.util import dt as dt_util
 from .ai_client import async_discover_ai_credentials
 from .const import CONF_OUTPUT_DIR, DEFAULT_OUTPUT_DIR, DOMAIN, LOGGER
 from .ffmpeg_runner import async_run_ffmpeg, build_concat_command, write_concat_file
-from .helpers import async_run_in_executor, create_task
+from .helpers import async_run_in_executor, create_task, write_json_atomic
 from .orchestrator import (
     SUPERSEDED_FLAG,
     PlaybackNotStartedError,
-    _is_cast_player,
+    PlayControl,
     async_play_and_sync_routine,
     has_screen,
+    is_cast_player,
 )
 from .people import (
     briefing_day,
@@ -117,6 +118,11 @@ class _CurrentPlay:
     # Segment types this play newly marked heard, undone if it never plays.
     newly_heard: set[str] = field(default_factory=set)
     marked_at: datetime | None = None
+    # The media player it plays on, and why it was stopped as failed.
+    player: str | None = None
+    failed: str | None = None
+    # Lets an announcement pause the play and move its end.
+    control: PlayControl = field(default_factory=PlayControl)
 
 
 # How long a Cast display may keep reporting "playing" after the briefing's
@@ -129,6 +135,34 @@ _STILL_PLAYING = ("playing", "buffering")
 
 def _current_plays(hass: HomeAssistant) -> dict[str, _CurrentPlay]:
     return hass.data.setdefault(DOMAIN, {}).setdefault(DATA_PLAYS, {})
+
+
+def playing_on(hass: HomeAssistant, player: str) -> _CurrentPlay | None:
+    """Return the briefing play still running on ``player``, if any."""
+    for current in _current_plays(hass).values():
+        if (
+            current.player == player
+            and current.task is not None
+            and not current.task.done()
+        ):
+            return current
+    return None
+
+
+def media_of(current: _CurrentPlay) -> tuple[str, bool] | None:
+    """Return the file a play streams and whether it is video."""
+    if path := current.metadata.get("video_path"):
+        return str(path), True
+    if path := current.metadata.get("audio_path"):
+        return str(path), False
+    return None
+
+
+def async_fail_play(current: _CurrentPlay, reason: str) -> None:
+    """Stop a play that could not continue; its routine shows error."""
+    current.failed = reason
+    if current.task is not None and not current.task.done():
+        current.task.cancel()
 
 
 def _supersede_play(hass: HomeAssistant, person: Person, routine: Routine) -> None:
@@ -344,12 +378,6 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    tmp = path.with_name(f"{path.name}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(path)
-
-
 async def _async_store_routine_media(  # noqa: PLR0913
     hass: HomeAssistant,
     store: SegmentStore,
@@ -381,7 +409,9 @@ async def _async_store_routine_media(  # noqa: PLR0913
         "duration": sum(segment.duration for segment in segments),
         "segments": _segments_signature(segments),
     }
-    await async_run_in_executor(hass, _write_json, base.with_suffix(".json"), payload)
+    await async_run_in_executor(
+        hass, write_json_atomic, base.with_suffix(".json"), payload
+    )
 
 
 async def _async_store_visual_routines(
@@ -558,7 +588,7 @@ def _dashboard_actions(
     if not routine.dashboard_path:
         return []
     display = routine.dashboard_display or person.media_player
-    if not display or not _is_cast_player(hass, display):
+    if not display or not is_cast_player(hass, display):
         LOGGER.warning(
             "Skipping post-briefing dashboard for %s's '%s': %s is not a Cast display",
             person.name,
@@ -667,12 +697,12 @@ async def _async_dispatch_play(  # noqa: PLR0913
 ) -> _CurrentPlay:
     """Supersede the person's earlier play, then start this one."""
     _supersede_play(hass, person, routine)
-    current = _CurrentPlay(routine.routine_id, metadata)
+    current = _CurrentPlay(routine.routine_id, metadata, player=player)
     plays = _current_plays(hass)
     plays[person.person_id] = current
     try:
         current.task = await async_play_and_sync_routine(
-            hass, sensor.routine_name, player, metadata, []
+            hass, sensor.routine_name, player, metadata, [], control=current.control
         )
     except Exception:
         if plays.get(person.person_id) is current:
@@ -681,7 +711,7 @@ async def _async_dispatch_play(  # noqa: PLR0913
     return current
 
 
-async def _async_release_player(hass: HomeAssistant, player: str) -> None:
+async def async_release_player(hass: HomeAssistant, player: str) -> None:
     """Turn ``player`` off once it stops playing; leave it if it keeps playing."""
     state = hass.states.get(player)
     if state is not None and state.state in _STILL_PLAYING:
@@ -728,10 +758,15 @@ async def _async_back_to_ready(  # noqa: PLR0913
         if play_task is not None:
             await play_task
         if release_player and current.superseded_by is None:
-            await _async_release_player(hass, release_player)
+            await async_release_player(hass, release_player)
     except asyncio.CancelledError:
         if play_task is None or not play_task.cancelled():
             raise  # this task itself was cancelled
+        if current.failed is not None:
+            LOGGER.warning(
+                "%s's '%s' stopped: %s", person.name, routine.name, current.failed
+            )
+            state = "error"
     except PlaybackNotStartedError as err:
         LOGGER.warning("%s's '%s' did not play: %s", person.name, routine.name, err)
         state = "error"
@@ -810,7 +845,7 @@ async def async_play(
             release_player: str | None = None
             if actions := _dashboard_actions(hass, person, routine):
                 metadata["post_routine_actions"] = actions
-            elif _is_cast_player(hass, player):
+            elif is_cast_player(hass, player):
                 # No dashboard to show: leave the cast screen when done.
                 release_player = player
 

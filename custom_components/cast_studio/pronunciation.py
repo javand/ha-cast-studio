@@ -6,7 +6,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from .people import Person
 
@@ -20,13 +20,30 @@ def build_lexicon(
     Every person's phonetic name applies in every briefing. The listener's own
     pronunciation rows apply only to the listener, and win any conflict.
     """
+    return _lexicon(people, listener.pronunciations if listener else ())
+
+
+def build_household_lexicon(people: Sequence[Person]) -> list[tuple[str, str]]:
+    """
+    Return the (written, spoken) pairs for the whole household, longest first.
+
+    For announcements, which have no single listener: every person's phonetic
+    name and every person's pronunciation rows apply; a later person's row
+    wins a conflict.
+    """
+    return _lexicon(people, [row for p in people for row in p.pronunciations])
+
+
+def _lexicon(
+    people: Sequence[Person], pronunciations: Iterable[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Merge phonetic names, then pronunciation rows over them; longest first."""
     merged: dict[str, tuple[str, str]] = {}
     for person in people:
         if person.phonetic_name != person.name:
             merged[person.name.casefold()] = (person.name, person.phonetic_name)
-    if listener is not None:
-        for written, spoken in listener.pronunciations:
-            merged[written.casefold()] = (written, spoken)
+    for written, spoken in pronunciations:
+        merged[written.casefold()] = (written, spoken)
     rows = [
         (written, spoken)
         for written, spoken in merged.values()

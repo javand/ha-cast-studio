@@ -44,7 +44,7 @@ from .generator import (
     _is_unconfigured_optional_step,
     async_extract_entity_context,
 )
-from .helpers import async_run_in_executor
+from .helpers import async_run_in_executor, write_json_atomic
 from .people import (
     PERSON_COMMUTE_DRIVE_RETURN_SENSOR,
     PERSON_COMMUTE_DRIVE_SENSOR,
@@ -109,7 +109,35 @@ SEGMENT_CLIP_UNIFORM_ARGS: tuple[str, ...] = (
 )
 
 
-def _is_safe_subpath(target_path: Path, base_path: Path) -> bool:
+async def async_encode_segment_audio(
+    hass: HomeAssistant, source: str, output: str
+) -> bool:
+    """Encode ``source`` to the uniform segment MP3; False if FFmpeg fails."""
+    return await async_run_ffmpeg(
+        hass, ["ffmpeg", "-y", "-i", source, *SEGMENT_AUDIO_ARGS, output]
+    )
+
+
+async def async_encode_segment_clip(  # noqa: PLR0913
+    hass: HomeAssistant,
+    slide: str,
+    audio: str,
+    output: str,
+    *,
+    duration: float,
+    pad_seconds: float,
+) -> bool:
+    """Mux ``slide`` and ``audio`` into a uniform segment clip; False on failure."""
+    cmd = build_slide_clip_command(
+        slide, audio, output, duration=duration, pad_seconds=pad_seconds
+    )
+    # The uniform args go before the output path, which comes last.
+    return await async_run_ffmpeg(
+        hass, [*cmd[:-1], *SEGMENT_CLIP_UNIFORM_ARGS, cmd[-1]]
+    )
+
+
+def is_safe_subpath(target_path: Path, base_path: Path) -> bool:
     """Return True if target_path is strictly a child of base_path."""
     resolved_base = base_path.resolve()
     resolved_target = target_path.resolve()
@@ -390,9 +418,7 @@ def _commit_segment(
     payload = {
         "segments": {key: _segment_to_json(seg) for key, seg in segments.items()}
     }
-    tmp = directory / f"{MANIFEST_FILE}.tmp"
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(directory / MANIFEST_FILE)
+    write_json_atomic(directory / MANIFEST_FILE, payload)
     return segments
 
 
@@ -453,7 +479,7 @@ class SegmentStore:
     def person_dir(self, person: Person) -> Path:
         """Return the person's folder, which must lie inside ``output_dir``."""
         path = self._output_dir / PEOPLE_DIR / person.person_id
-        if not _is_safe_subpath(path, self._output_dir):
+        if not is_safe_subpath(path, self._output_dir):
             msg = f"Segment folder for '{person.person_id}' is outside the output dir"
             raise ValueError(msg)
         return path
@@ -584,9 +610,7 @@ async def _async_build_one(  # noqa: PLR0913
 
     staged: dict[str, str] = {}
     audio_out = scratch / f"{key}.mp3"
-    if not await async_run_ffmpeg(
-        hass, ["ffmpeg", "-y", "-i", audio_path, *SEGMENT_AUDIO_ARGS, str(audio_out)]
-    ):
+    if not await async_encode_segment_audio(hass, audio_path, str(audio_out)):
         msg = f"FFmpeg audio encode failed for segment '{key}'"
         raise GeneratorError(msg)
     staged[str(audio_out)] = str(target_dir / audio_out.name)
@@ -594,15 +618,14 @@ async def _async_build_one(  # noqa: PLR0913
     clip_target: str | None = None
     if is_visual:
         clip_out = scratch / f"{key}.mp4"
-        cmd = build_slide_clip_command(
+        if not await async_encode_segment_clip(
+            hass,
             str(slide_path),
             audio_path,
             str(clip_out),
             duration=duration,
             pad_seconds=pad_seconds,
-        )
-        cmd = [*cmd[:-1], *SEGMENT_CLIP_UNIFORM_ARGS, cmd[-1]]
-        if not await async_run_ffmpeg(hass, cmd):
+        ):
             msg = f"FFmpeg clip encode failed for segment '{key}'"
             raise GeneratorError(msg)
         clip_target = str(target_dir / clip_out.name)

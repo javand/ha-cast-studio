@@ -21,7 +21,11 @@ from .const import DOMAIN, LOGGER
 from .helpers import async_run_in_executor
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from homeassistant.core import HomeAssistant
+
+    from .personas import Persona
 
 STEP_PROMPT_GUIDELINES: dict[str, str] = {
     "greeting": (
@@ -177,6 +181,14 @@ def _step_guideline(
     return guideline
 
 
+# How narration and announcements must read, since TTS speaks them verbatim.
+_SPOKEN_AS_WRITTEN = (
+    "no stage directions or actions in asterisks or brackets (such as laughs "
+    "or sighs), no markdown or emojis, and say numbers, times and dates the "
+    "way a person says them."
+)
+
+
 def _build_prompt(
     step_config: dict[str, Any],
     recipient: dict[str, Any] | None = None,
@@ -253,10 +265,8 @@ def _build_prompt(
         prompt += (
             "SPEAKER CHARACTER: Write in the speaker's character described in "
             "Voice Personality, but never state, invent or introduce a name for "
-            "the speaker. The narration is spoken aloud exactly as written: no "
-            "stage directions or actions in asterisks or brackets (such as "
-            "laughs or sighs), no markdown or emojis, and say numbers, times "
-            "and dates the way a person says them.\n"
+            "the speaker. The narration is spoken aloud exactly as written: "
+            f"{_SPOKEN_AS_WRITTEN}\n"
         )
 
     is_standalone = bool(step_config.get("standalone_segment"))
@@ -452,20 +462,35 @@ async def _query_gemini_structured(
         raise AIClientError(msg) from err
 
 
-async def _query_gemini_image_api(
+async def _query_gemini_image_api(  # noqa: PLR0913
     hass: HomeAssistant,
     prompt: str,
     api_key: str,
     model: str = "models/gemini-2.5-flash-image",
+    *,
+    images: Sequence[tuple[str, bytes]] = (),
+    aspect_ratio: str | None = None,
 ) -> dict[str, Any]:
-    """Query Gemini multimodal image generation API with 429 retry."""
+    """
+    Query Gemini multimodal image generation API with 429 retry.
+
+    ``images`` are (mime type, bytes) reference pictures sent after the prompt.
+    """
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent"
         f"?key={api_key}"
     )
+    parts: list[dict[str, Any]] = [{"text": prompt}]
+    parts += [
+        {"inlineData": {"mimeType": mime, "data": base64.b64encode(data).decode()}}
+        for mime, data in images
+    ]
+    generation_config: dict[str, Any] = {"responseModalities": ["IMAGE"]}
+    if aspect_ratio:
+        generation_config["imageConfig"] = {"aspectRatio": aspect_ratio}
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseModalities": ["IMAGE"]},
+        "contents": [{"parts": parts}],
+        "generationConfig": generation_config,
     }
     session = async_get_clientsession(hass)
     max_retries = 3
@@ -514,11 +539,14 @@ async def _query_gemini_image_api(
     raise AIClientError(msg)
 
 
-async def async_generate_ai_image(
+async def async_generate_ai_image(  # noqa: PLR0913
     hass: HomeAssistant,
     prompt: str,
     target_image_path: str,
     ai_creds: dict[str, Any] | None = None,
+    *,
+    reference_images: Sequence[tuple[str, bytes]] = (),
+    aspect_ratio: str | None = None,
 ) -> str | None:
     """Generate an image using Gemini, saving to target_image_path."""
     creds = ai_creds or await async_discover_ai_credentials(hass)
@@ -526,7 +554,13 @@ async def async_generate_ai_image(
         return None
 
     try:
-        data = await _query_gemini_image_api(hass, prompt, creds["api_key"])
+        data = await _query_gemini_image_api(
+            hass,
+            prompt,
+            creds["api_key"],
+            images=reference_images,
+            aspect_ratio=aspect_ratio,
+        )
         candidates = data.get("candidates", [])
         if not candidates:
             return None
@@ -723,6 +757,28 @@ async def async_discover_ai_credentials(  # noqa: PLR0912
     return {"platform": "conversation_agent", "api_key": None}
 
 
+async def _async_query_structured(
+    hass: HomeAssistant, prompt: str, creds: dict[str, Any], purpose: str
+) -> dict[str, Any]:
+    """Ask Gemini when it is configured, else (or on failure) the agent."""
+    api_key = creds.get("api_key")
+    agent_id = creds.get("agent_id")
+    if creds.get("platform") == "gemini" and api_key:
+        try:
+            return await _query_gemini_structured(
+                hass=hass, prompt=prompt, api_key=api_key
+            )
+        except (AIClientError, aiohttp.ClientError, TimeoutError) as err:
+            LOGGER.warning(
+                "Gemini %s failed (%s), falling back to conversation agent",
+                purpose,
+                err,
+            )
+    return await _query_conversation_agent_structured(
+        hass=hass, prompt=prompt, agent_id=agent_id
+    )
+
+
 async def async_generate_step_content(
     hass: HomeAssistant,
     step_config: dict[str, Any],
@@ -739,30 +795,44 @@ async def async_generate_step_content(
     api_key = effective_creds.get("api_key")
     agent_id = effective_creds.get("agent_id") or step_config.get("conversation_agent")
 
-    if platform == "gemini" and api_key:
-        try:
-            raw_content = await _query_gemini_structured(
-                hass=hass,
-                prompt=prompt,
-                api_key=api_key,
-            )
-        except (AIClientError, aiohttp.ClientError, TimeoutError) as err:
-            LOGGER.warning(
-                "Gemini structured content generation failed (%s), "
-                "falling back to conversation agent",
-                err,
-            )
-            raw_content = await _query_conversation_agent_structured(
-                hass=hass,
-                prompt=prompt,
-                agent_id=agent_id,
-            )
-    else:
-        raw_content = await _query_conversation_agent_structured(
-            hass=hass,
-            prompt=prompt,
-            agent_id=agent_id,
-        )
+    raw_content = await _async_query_structured(
+        hass,
+        prompt,
+        {"platform": platform, "api_key": api_key, "agent_id": agent_id},
+        "structured content generation",
+    )
 
     is_first = step_config.get("is_first_step")
     return _enforce_recipient_separation(raw_content, rec, is_first=is_first)
+
+
+def build_announcement_prompt(description: str, character: str) -> str:
+    """Construct the prompt for an announcement's spoken words."""
+    return (
+        "This is a short household announcement spoken aloud on a smart speaker "
+        "or display.\n"
+        f"Voice Personality: {character}\n"
+        f"What the announcement is for and what it should say: {description}\n\n"
+        "Write only the words to be said, in the speaker's character, but never "
+        "state, invent or introduce a name for the speaker. The words are spoken "
+        f"aloud exactly as written: {_SPOKEN_AS_WRITTEN} Keep it under 40 "
+        "words unless the description asks for more.\n"
+        "Return ONLY a valid JSON object: "
+        '{"narration_script": "<Text to be spoken aloud by TTS>"}\n'
+    )
+
+
+async def async_generate_announcement_words(
+    hass: HomeAssistant,
+    description: str,
+    persona: Persona,
+    ai_creds: dict[str, Any],
+) -> str:
+    """Write an announcement's words in the persona's character."""
+    prompt = build_announcement_prompt(description, persona.character)
+    raw = await _async_query_structured(hass, prompt, ai_creds, "announcement words")
+    words = str((raw or {}).get("narration_script") or "").strip()
+    if not words:
+        msg = "No announcement words were returned"
+        raise AIClientError(msg)
+    return words

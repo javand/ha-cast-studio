@@ -48,11 +48,16 @@ async def sam_quick(hass: Any, tmp_path: Path) -> Any:
     return await _setup_entry_with_sam_quick(hass, tmp_path)
 
 
-async def test_only_the_briefing_actions_are_registered(
+async def test_only_the_current_actions_are_registered(
     hass: Any, sam_quick: Any
 ) -> None:
-    """The old pipeline's actions are gone; prebuild and play remain."""
-    assert set(hass.services.async_services()[DOMAIN]) == {"prebuild", "play"}
+    """The old pipeline's actions are gone; briefing and announcement ones remain."""
+    assert set(hass.services.async_services()[DOMAIN]) == {
+        "prebuild",
+        "play",
+        "rebuild_announcement",
+        "announce",
+    }
 
 
 async def test_play_and_prebuild_actions_resolve_routines(

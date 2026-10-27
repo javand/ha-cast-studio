@@ -1513,3 +1513,42 @@ async def test_has_screen_non_cast_player_is_never_a_screen(
     assert has_screen(hass, entity_id) is False
     assert has_screen(hass, None) is False
     assert has_screen(hass, "") is False
+
+
+async def test_lifecycle_waits_extra_seconds_added_during_playback() -> None:
+    """Time added while playing (an announcement pause) delays the end."""
+    from custom_components.cast_studio.orchestrator import PlayControl
+
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    hass.states.get.return_value = MagicMock(state="idle")
+    metadata: dict = {
+        "video_path": "/local/morning.mp4",
+        "prepare_player": False,
+        "duration": 0.1,
+    }
+    loop = asyncio.get_running_loop()
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ) as mock_track,
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        control = PlayControl()
+        task = await async_play_and_sync_routine(
+            hass,
+            "morning",
+            "media_player.office_display",
+            metadata,
+            [],
+            control=control,
+        )
+        event = MagicMock()
+        event.data = {"new_state": MagicMock(state="playing")}
+        mock_track.call_args[0][2](event)
+        started = loop.time()
+        await asyncio.sleep(0.03)
+        assert control.started.done()
+        control.extra_seconds = 0.2
+        await task
+    assert loop.time() - started >= 0.28

@@ -340,8 +340,13 @@ def briefing_day(person: Person, now: datetime) -> date:
     The day rolls over at ``person.reset_time`` local wall-clock time, so
     times before the reset still belong to the previous calendar day.
     """
+    return rolled_day(now, person.reset_time)
+
+
+def rolled_day(now: datetime, rollover: time) -> date:
+    """Return the local day of ``now`` for a day that starts at ``rollover``."""
     local = dt_util.as_local(now)
-    if local.time() < person.reset_time:
+    if local.time() < rollover:
         return local.date() - timedelta(days=1)
     return local.date()
 

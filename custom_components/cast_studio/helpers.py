@@ -1,14 +1,16 @@
-"""Shared async task and executor helpers for CastStudio."""
+"""Shared async task, executor and file helpers for CastStudio."""
 
 from __future__ import annotations
 
 import asyncio
 import functools
 import inspect
+import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+    from pathlib import Path
 
     from homeassistant.core import HomeAssistant
 
@@ -49,3 +51,10 @@ async def async_run_in_executor(
         return await loop.run_in_executor(None, target, *args)
     except Exception:  # noqa: BLE001
         return func(*args, **kwargs)
+
+
+def write_json_atomic(path: Path, payload: Any) -> None:
+    """Write ``payload`` as JSON to ``path`` so readers never see half a file."""
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)

@@ -50,3 +50,35 @@ play:
       default: false
       selector:
         boolean:
+
+rebuild_announcement:
+  name: Rebuild Announcement
+  description: Builds an announcement again now. Creative wording gets new words, and visual announcements a new slide.
+  fields:
+    announcement:
+      name: Announcement
+      description: Name of the announcement to rebuild.
+      required: true
+      example: Freezer Door
+      selector:
+        text:
+
+announce:
+  name: Play Announcement
+  description: Plays an announcement now, video on a screen and audio otherwise. A CastStudio briefing playing on the target pauses and resumes after it.
+  fields:
+    announcement:
+      name: Announcement
+      description: Name of the announcement to play.
+      required: true
+      example: Freezer Door
+      selector:
+        text:
+    target:
+      name: Target Media Player
+      description: Media player to play the announcement on. Defaults to the announcement's Play on setting.
+      required: false
+      example: media_player.kitchen_speaker
+      selector:
+        entity:
+          domain: media_player

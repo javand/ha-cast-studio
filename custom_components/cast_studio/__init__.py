@@ -11,12 +11,21 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigSubentry
+from homeassistant.config_entries import (
+    SIGNAL_CONFIG_ENTRY_CHANGED,
+    ConfigEntryChange,
+    ConfigSubentry,
+)
 from homeassistant.const import Platform
+from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from . import briefing
+from .announcement_play import async_announce
+from .announcement_runtime import DATA_ANNOUNCEMENTS, AnnouncementManager, get_manager
+from .announcements import find_announcement
 from .const import (
     CONF_COMMUTE_DESTINATION,
     CONF_DEFAULT_TRANSPORTATION_MODE,
@@ -47,6 +56,9 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, ServiceCall
 
 PLATFORMS: list[Platform] = [
+    Platform.BUTTON,
+    Platform.IMAGE,
+    Platform.SELECT,
     Platform.SENSOR,
 ]
 
@@ -56,6 +68,7 @@ ATTR_PERSON = "person"
 ATTR_ROUTINE = "routine"
 ATTR_TARGET = "target"
 ATTR_SKIP_PLAYED = "skip_played"
+ATTR_ANNOUNCEMENT = "announcement"
 
 PREBUILD_SCHEMA = vol.All(
     vol.Schema(
@@ -72,6 +85,13 @@ PLAY_SCHEMA = vol.Schema(
         vol.Required(ATTR_ROUTINE): cv.string,
         vol.Optional(ATTR_TARGET): cv.entity_domain("media_player"),
         vol.Optional(ATTR_SKIP_PLAYED, default=False): cv.boolean,
+    }
+)
+REBUILD_ANNOUNCEMENT_SCHEMA = vol.Schema({vol.Required(ATTR_ANNOUNCEMENT): cv.string})
+ANNOUNCE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ANNOUNCEMENT): cv.string,
+        vol.Optional(ATTR_TARGET): cv.entity_domain("media_player"),
     }
 )
 
@@ -118,10 +138,40 @@ def _register_briefing_actions(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "play", _async_handle_play, schema=PLAY_SCHEMA)
 
 
+def _register_announcement_actions(hass: HomeAssistant) -> None:
+    """Register the ``announce`` and ``rebuild_announcement`` actions."""
+
+    async def _async_handle_announce(call: ServiceCall) -> None:
+        entry = _require_loaded_entry(hass)
+        announcement = find_announcement(entry, call.data[ATTR_ANNOUNCEMENT])
+        await async_announce(hass, announcement, call.data.get(ATTR_TARGET))
+
+    async def _async_handle_rebuild(call: ServiceCall) -> None:
+        entry = _require_loaded_entry(hass)
+        announcement = find_announcement(entry, call.data[ATTR_ANNOUNCEMENT])
+        manager = get_manager(hass)
+        await manager.async_rebuild(announcement.announcement_id)
+        state = manager.state(announcement.announcement_id)
+        if state is not None and state.status == "error":
+            msg = f"Announcement '{announcement.name}' did not build: {state.error}"
+            raise HomeAssistantError(msg)
+
+    hass.services.async_register(
+        DOMAIN, "announce", _async_handle_announce, schema=ANNOUNCE_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "rebuild_announcement",
+        _async_handle_rebuild,
+        schema=REBUILD_ANNOUNCEMENT_SCHEMA,
+    )
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:  # noqa: ARG001
-    """Register the ``prebuild`` and ``play`` actions."""
+    """Register the briefing and announcement actions."""
     hass.data.setdefault(DOMAIN, {})
     _register_briefing_actions(hass)
+    _register_announcement_actions(hass)
     return True
 
 
@@ -204,9 +254,22 @@ async def async_setup_entry(
         entry, CONF_OUTPUT_DIR, DEFAULT_OUTPUT_DIR
     )
     await briefing.async_setup_runtime(hass, entry)
+    manager = AnnouncementManager(hass, entry, domain_data["output_dir"])
+    domain_data[DATA_ANNOUNCEMENTS] = manager
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await briefing.async_refresh_sensors(hass, entry)
+    await manager.async_setup()
+
+    # Not an update listener: those cannot be used with OptionsFlowWithReload.
+    @callback
+    def _entry_changed(change: ConfigEntryChange, changed: ConfigEntry) -> None:
+        if change is ConfigEntryChange.UPDATED and changed is entry:
+            hass.async_create_task(manager.async_sync(), f"{DOMAIN} announcement sync")
+
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_CONFIG_ENTRY_CHANGED, _entry_changed)
+    )
     return True
 
 
@@ -217,5 +280,7 @@ async def async_unload_entry(
     """Handle removal of an entry."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
+        if manager := hass.data.get(DOMAIN, {}).pop(DATA_ANNOUNCEMENTS, None):
+            await manager.async_unload()
         briefing.async_unload_runtime(hass)
     return unloaded

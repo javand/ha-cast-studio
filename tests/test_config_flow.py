@@ -343,9 +343,9 @@ async def test_second_entry_aborts_with_add_person_hint(
 
 
 def test_supported_subentry_types(config_entry: MockConfigEntry) -> None:
-    """Exactly the person and routine subentry types are offered."""
+    """Exactly the person, routine and announcement subentry types are offered."""
     types = CastStudioFlowHandler.async_get_supported_subentry_types(config_entry)
-    assert set(types) == {"person", "routine"}
+    assert set(types) == {"person", "routine", "announcement"}
 
 
 async def _start_subentry(
@@ -693,11 +693,11 @@ def test_subentry_translations_present() -> None:
 
 
 def test_hacs_floor_supports_subentries() -> None:
-    """Subentries need 2025.3; OptionsFlowWithReload needs 2025.8."""
+    """Subentries need 2025.3; the multi-picture media selector needs 2025.12."""
     hacs = json.loads(
         (Path(__file__).parent.parent / "hacs.json").read_text(encoding="utf-8")
     )
-    assert hacs["homeassistant"] == "2025.8.0"
+    assert hacs["homeassistant"] == "2025.12.0"
 
 
 @pytest.mark.asyncio
@@ -1235,3 +1235,183 @@ async def test_reconfigure_person_drops_removed_personas(
     )
     field = next(key for key in advanced.schema.schema if str(key) == "host_personas")
     assert field.description["suggested_value"] == ["arthur"]
+
+
+# --- Announcements ------------------------------------------------------------
+
+DOOR_PICTURE = "media-source://media_source/local/door.jpg"
+
+
+def _announcement_input(**overrides: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "name": "Freezer Door",
+        "description": "A cold blue slide with 'Close the freezer' across the top",
+        "wording": "verbatim",
+        "message": "Close the freezer door, please.",
+        "freshness": "static",
+        "personas": [],
+        "rebuild_time": "03:00:00",
+        "output_format": "visual",
+    }
+    data.update(overrides)
+    return data
+
+
+async def _add_announcement(
+    hass: HomeAssistant, entry: MockConfigEntry, user_input: dict[str, Any]
+) -> dict[str, Any]:
+    result = await _start_subentry(hass, entry, "announcement")
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=user_input
+    )
+
+
+async def test_add_announcement_stores_settings(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """The form stores every setting, pictures as their media ids."""
+    result = await _add_announcement(
+        hass,
+        entry_with_sam,
+        _announcement_input(
+            pictures=[
+                {"media_content_id": DOOR_PICTURE, "media_content_type": "image/jpeg"}
+            ],
+            target="media_player.kitchen_speaker",
+        ),
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Freezer Door"
+    assert result["data"] == {
+        "name": "Freezer Door",
+        "description": "A cold blue slide with 'Close the freezer' across the top",
+        "wording": "verbatim",
+        "message": "Close the freezer door, please.",
+        "freshness": "static",
+        "personas": ["default_host"],
+        "rebuild_time": "03:00:00",
+        "pictures": [DOOR_PICTURE],
+        "output_format": "visual",
+        "target": "media_player.kitchen_speaker",
+    }
+
+
+@pytest.mark.parametrize(
+    ("overrides", "errors"),
+    [
+        ({"name": "  "}, {"base": "invalid_name"}),
+        ({"name": "freezer door"}, {"base": "duplicate_announcement"}),
+        ({"name": "Other", "message": " "}, {"message": "message_required"}),
+        (
+            {"name": "Other", "personas": ["elena", "cole"]},
+            {"personas": "one_persona"},
+        ),
+        (
+            {
+                "name": "Other",
+                "pictures": [
+                    {
+                        "media_content_id": f"{DOOR_PICTURE}{n}",
+                        "media_content_type": "image/jpeg",
+                    }
+                    for n in range(5)
+                ],
+            },
+            {"pictures": "too_many_pictures"},
+        ),
+        (
+            {
+                "name": "Other",
+                "pictures": [
+                    {
+                        "media_content_id": "media-source://camera/camera.door",
+                        "media_content_type": "image/jpeg",
+                    }
+                ],
+            },
+            {"pictures": "local_pictures_only"},
+        ),
+    ],
+)
+async def test_announcement_errors(
+    hass: HomeAssistant,
+    entry_with_sam: MockConfigEntry,
+    overrides: dict[str, Any],
+    errors: dict[str, str],
+) -> None:
+    """Each bad input shows its error and stores nothing."""
+    await _add_announcement(hass, entry_with_sam, _announcement_input())
+    result = await _add_announcement(
+        hass, entry_with_sam, _announcement_input(**overrides)
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["errors"] == errors
+
+
+async def test_daily_announcement_allows_several_personas_and_no_message(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """Creative daily announcements need no message and may list personas."""
+    result = await _add_announcement(
+        hass,
+        entry_with_sam,
+        _announcement_input(
+            wording="creative",
+            message="",
+            freshness="daily",
+            personas=["elena", "cole"],
+        ),
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["data"]["personas"] == ["elena", "cole"]
+
+
+async def test_reconfigure_announcement_updates_data(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """Reconfigure keeps its own name and saves the change."""
+    await _add_announcement(hass, entry_with_sam, _announcement_input())
+    (subentry_id,) = [
+        sid
+        for sid, sub in entry_with_sam.subentries.items()
+        if sub.subentry_type == "announcement"
+    ]
+    result = await entry_with_sam.start_subentry_reconfigure_flow(hass, subentry_id)
+    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=_announcement_input(message="Shut the freezer.")
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry_with_sam.subentries[subentry_id].data["message"] == "Shut the freezer."
+
+
+def test_announcement_translations_present() -> None:
+    """Both translation files cover the announcement form and its selectors."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        ann = data["config_subentries"]["announcement"]
+        assert ann["initiate_flow"]["user"] == "Add announcement"
+        for step in ("user", "reconfigure"):
+            for field in _announcement_input() | {"pictures": [], "target": None}:
+                assert field in ann["step"][step]["data"]
+                assert field in ann["step"][step]["data_description"]
+        for error in (
+            "invalid_name",
+            "duplicate_announcement",
+            "message_required",
+            "one_persona",
+            "too_many_pictures",
+            "local_pictures_only",
+        ):
+            assert ann["error"][error]
+        assert set(data["selector"]["announcement_wording"]["options"]) == {
+            "verbatim",
+            "creative",
+        }
+        assert set(data["selector"]["announcement_freshness"]["options"]) == {
+            "static",
+            "daily",
+        }
