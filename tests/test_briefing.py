@@ -488,6 +488,18 @@ async def test_play_uses_a_fallback_voiced_segment_as_it_is(
     assert h.ffmpeg.concats == [QUICK]
 
 
+async def test_degraded_segment_keys_lists_fallback_voiced_segments(
+    prebuilt_sam_quick: Harness,
+) -> None:
+    h = prebuilt_sam_quick
+    routine = h.routine("Quick")
+    assert briefing.degraded_segment_keys(h.hass, h.entry, routine) == []
+
+    _mark_degraded(h, "weather")
+
+    assert briefing.degraded_segment_keys(h.hass, h.entry, routine) == ["weather"]
+
+
 async def test_skip_played_counts_only_the_same_routine(
     sam_quick_and_full: Harness,
 ) -> None:
