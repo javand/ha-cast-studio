@@ -5,7 +5,6 @@ from logging import Logger, getLogger
 LOGGER: Logger = getLogger(__package__)
 
 DOMAIN = "cast_studio"
-ATTRIBUTION = "Data provided by CastStudio"
 
 DEFAULT_OUTPUT_DIR = "/config/www/cast_studio"
 DEFAULT_HOST_VOICE = "Pulcherrima"

@@ -1197,15 +1197,15 @@ async def test_async_play_and_sync_routine_executes_post_actions():
 
 
 @pytest.mark.asyncio
-async def test_async_play_and_sync_routine_executes_post_actions_fallback():
-    """Verify post_actions fallback key and single dict format execute upon playback completion."""
+async def test_async_play_and_sync_routine_executes_single_post_action_dict():
+    """Verify a single post-action dict (not a list) executes upon playback completion."""
     hass = MagicMock()
     hass.services.async_call = AsyncMock()
     mock_state = MagicMock()
     mock_state.state = "idle"
     hass.states.get.return_value = mock_state
 
-    # Test single dictionary provided via 'post_actions'
+    # A single dictionary rather than a list
     post_action_dict = {
         "service": "cast.show_lovelace_view",
         "target": {"entity_id": "media_player.kitchen_hub"},
@@ -1219,7 +1219,7 @@ async def test_async_play_and_sync_routine_executes_post_actions_fallback():
         "prepare_player": False,
         "duration": 0.02,
         "slide_timestamps": [],
-        "post_actions": post_action_dict,
+        "post_routine_actions": post_action_dict,
     }
 
     with (

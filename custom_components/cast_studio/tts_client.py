@@ -570,7 +570,7 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
                 await asyncio.to_thread(temp_file.unlink, missing_ok=True)
             if conv_ok and target_path.exists() and target_path.stat().st_size > 0:
                 return output_wav_path
-    except (HomeAssistantError, Exception) as err:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001
         LOGGER.warning(
             "Home Assistant TTS media synthesis encountered warning/error: %s",
             err,
@@ -615,62 +615,51 @@ async def async_synthesize_speech(  # noqa: PLR0913
     api_key = safe_creds.get("api_key")
     session = async_get_clientsession(hass)
 
+    provider: tuple[str, Callable[[], Awaitable[str]]] | None = None
     if platform == "gemini" and api_key:
-        try:
-            wav_path = await _with_one_retry(
-                "Gemini",
-                lambda: _synthesize_gemini_tts(
-                    script,
-                    effective_voice,
-                    effective_personality,
-                    output_wav_path,
-                    api_key,
-                    session=session,
-                    profile=voice_profile,
-                ),
-            )
-        except TTSClientError as err:
-            async_report_ai_failure(hass, "Gemini", "voice", err.status, err.body)
-            LOGGER.warning(
-                "Gemini TTS synthesis failed (%s), falling back to Home Assistant TTS",
-                err,
-            )
-            _mark_voice_fallback()
-        except (TimeoutError, aiohttp.ClientError, OSError) as err:
-            LOGGER.warning(
-                "Gemini TTS synthesis failed (%s), falling back to Home Assistant TTS",
-                err,
-            )
-            _mark_voice_fallback()
-        else:
-            async_report_ai_success(hass, "voice")
-            return wav_path
-
+        provider = (
+            "Gemini",
+            lambda: _synthesize_gemini_tts(
+                script,
+                effective_voice,
+                effective_personality,
+                output_wav_path,
+                api_key,
+                session=session,
+                profile=voice_profile,
+            ),
+        )
     elif platform == "openai" and api_key:
+        if openai_voice not in OPENAI_KNOWN_VOICES:
+            openai_voice = map_voice_for_openai(effective_voice)
+        provider = (
+            "OpenAI",
+            lambda: _synthesize_openai_tts(
+                script,
+                openai_voice,
+                effective_personality,
+                output_wav_path,
+                api_key,
+                session=session,
+            ),
+        )
+
+    if provider is not None:
+        name, synthesize = provider
         try:
-            if openai_voice not in OPENAI_KNOWN_VOICES:
-                openai_voice = map_voice_for_openai(effective_voice)
-            wav_path = await _with_one_retry(
-                "OpenAI",
-                lambda: _synthesize_openai_tts(
-                    script,
-                    openai_voice,
-                    effective_personality,
-                    output_wav_path,
-                    api_key,
-                    session=session,
-                ),
-            )
+            wav_path = await _with_one_retry(name, synthesize)
         except TTSClientError as err:
-            async_report_ai_failure(hass, "OpenAI", "voice", err.status, err.body)
+            async_report_ai_failure(hass, name, "voice", err.status, err.body)
             LOGGER.warning(
-                "OpenAI TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                "%s TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                name,
                 err,
             )
             _mark_voice_fallback()
         except (TimeoutError, aiohttp.ClientError, OSError) as err:
             LOGGER.warning(
-                "OpenAI TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                "%s TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                name,
                 err,
             )
             _mark_voice_fallback()

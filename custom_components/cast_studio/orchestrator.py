@@ -761,11 +761,7 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0913, PLR0915
                 playing_future.cancel()
             raise
         finally:
-            post_actions = (
-                metadata.get("post_routine_actions")
-                or metadata.get("post_actions")
-                or metadata.get("post_briefing_actions")
-            )
+            post_actions = metadata.get("post_routine_actions")
             if post_actions and not metadata.get(SUPERSEDED_FLAG):
                 if isinstance(post_actions, dict):
                     post_actions = [post_actions]
