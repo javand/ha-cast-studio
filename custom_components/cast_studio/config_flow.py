@@ -238,6 +238,13 @@ def _text_selector(*, multiline: bool = False) -> selector.TextSelector:
     )
 
 
+def _cast_display_selector() -> selector.EntitySelector:
+    """Pick a Google Cast media player: only Cast can show a dashboard."""
+    return selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="media_player", integration="cast")
+    )
+
+
 def _entity_selector(domain: str | None = None) -> selector.EntitySelector:
     if domain is None:
         return selector.EntitySelector(selector.EntitySelectorConfig())
@@ -674,7 +681,7 @@ def _routine_schema(
             vol.Optional(
                 ROUTINE_DASHBOARD_DISPLAY,
                 description=_suggested(current.get(ROUTINE_DASHBOARD_DISPLAY)),
-            ): _entity_selector("media_player"),
+            ): _cast_display_selector(),
         }
     )
 

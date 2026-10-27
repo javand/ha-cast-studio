@@ -495,6 +495,7 @@ async def test_add_routine_form_selectors(
     assert segments["multiple"] is True
     assert segments["options"] == list(SEGMENT_TYPES)
     assert schema["dashboard_display"].config["domain"] == ["media_player"]
+    assert schema["dashboard_display"].config["integration"] == "cast"
 
 
 async def _add_routine(
