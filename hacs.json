@@ -1,5 +1,5 @@
 {
-    "name": "Integration blueprint",
-    "homeassistant": "2026.6.4",
+    "name": "CastStudio",
+    "homeassistant": "2025.12.0",
     "hacs": "2.0.5"
 }
