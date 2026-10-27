@@ -134,6 +134,7 @@ Plays a routine now from fresh stored segments. Missing or stale segments are bu
 | `routine` | yes | | Routine to play. |
 | `person` | no | | Needed only when more than one person has a routine with this name. |
 | `target` | no | person's output device | Media player to play on instead. |
+| `volume` | no | default level | Sets the player to this volume, from `0` to `1`, before playing (for example `0.5` for the bathroom). Leave it out for the default level. |
 | `skip_played` | no | `false` | Plays only the segment types this routine has not yet played in the person's briefing day. Each routine keeps its own record, so hearing the weather in one routine does not skip it in another. When everything has been heard, a short "That's everything" line plays. |
 
 ### Briefing day, freshness and skip played

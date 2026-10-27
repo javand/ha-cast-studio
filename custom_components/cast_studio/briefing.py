@@ -786,20 +786,22 @@ async def _async_back_to_ready(  # noqa: PLR0913
             _set_sensor(sensor, state, store, person, routine, dt_util.now())
 
 
-async def async_play(
+async def async_play(  # noqa: PLR0913
     hass: HomeAssistant,
     entry: ConfigEntry,
     routine: Routine,
     *,
     target: str | None = None,
     skip_played: bool = False,
+    volume: float | None = None,
 ) -> None:
     """
     Play a routine now: stored fresh segments, or built live when missing.
 
     With ``skip_played`` only segment types this routine has not yet played in
     the person's briefing day play; when nothing is left the all-heard line
-    plays.
+    plays. ``volume`` (0-1) sets the player's level before playback; without
+    it the player is set to the default level.
     """
     person = _person_of(entry, routine)
     sensor = async_get_or_create_briefing_sensor(hass, person, routine)
@@ -842,6 +844,8 @@ async def async_play(
                 ("video_path" if media.is_video else "audio_path"): media.path,
                 "duration": media.duration,
             }
+            if volume is not None:
+                metadata["volume_level"] = volume
             release_player: str | None = None
             if actions := _dashboard_actions(hass, person, routine):
                 metadata["post_routine_actions"] = actions

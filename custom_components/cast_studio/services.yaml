@@ -50,6 +50,17 @@ play:
       default: false
       selector:
         boolean:
+    volume:
+      name: Volume
+      description: Sets the player to this volume, from 0 to 1, before playing. Leave empty for the default level.
+      required: false
+      example: 0.5
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+          mode: slider
 
 rebuild_announcement:
   name: Rebuild Announcement
