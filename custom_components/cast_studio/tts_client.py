@@ -6,7 +6,9 @@ import asyncio
 import base64
 import re
 import struct
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
+from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,6 +23,8 @@ from .ai_health import async_report_ai_failure, async_report_ai_success
 from .const import DEFAULT_HOST_VOICE, LOGGER
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Iterator
+
     from homeassistant.core import HomeAssistant
 
 DEFAULT_PERSONALITY = "news_anchor"
@@ -31,6 +35,56 @@ DEFAULT_GEMINI_SAMPLE_RATE = 24000
 TTS_BASE_TIMEOUT_SECONDS = 30.0
 TTS_SECONDS_PER_WORD = 0.3
 TTS_MAX_TIMEOUT_SECONDS = 120.0
+# A provider that timed out or errored is tried once more before the voice
+# falls back to Home Assistant TTS.
+TTS_RETRY_DELAY_SECONDS = 1.0
+
+
+@dataclass
+class VoiceFallback:
+    """Whether a configured AI voice was replaced by the fallback voice."""
+
+    used: bool = False
+
+
+_voice_fallback: ContextVar[VoiceFallback | None] = ContextVar(
+    "cast_studio_voice_fallback", default=None
+)
+
+
+@contextmanager
+def track_voice_fallback() -> Iterator[VoiceFallback]:
+    """Record whether speech synthesised inside the block fell back."""
+    tracker = VoiceFallback()
+    token = _voice_fallback.set(tracker)
+    try:
+        yield tracker
+    finally:
+        _voice_fallback.reset(token)
+
+
+def _mark_voice_fallback() -> None:
+    if (tracker := _voice_fallback.get()) is not None:
+        tracker.used = True
+
+
+def _is_retryable(err: TTSClientError) -> bool:
+    """Return whether a timeout, network or server error may pass on a retry."""
+    return err.status is None or err.status >= HTTPStatus.INTERNAL_SERVER_ERROR
+
+
+async def _with_one_retry(
+    provider: str, synthesize: Callable[[], Awaitable[str]]
+) -> str:
+    """Run ``synthesize``, trying once more if it failed in a way that may pass."""
+    try:
+        return await synthesize()
+    except TTSClientError as err:
+        if not _is_retryable(err):
+            raise
+        LOGGER.warning("%s TTS synthesis failed (%s), retrying once", provider, err)
+    await asyncio.sleep(TTS_RETRY_DELAY_SECONDS)
+    return await synthesize()
 
 
 def tts_timeout(script: str) -> float:
@@ -516,7 +570,7 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
                 await asyncio.to_thread(temp_file.unlink, missing_ok=True)
             if conv_ok and target_path.exists() and target_path.stat().st_size > 0:
                 return output_wav_path
-    except (HomeAssistantError, Exception) as err:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001
         LOGGER.warning(
             "Home Assistant TTS media synthesis encountered warning/error: %s",
             err,
@@ -530,6 +584,7 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
             "All TTS engines failed for %s; writing silent fallback WAV",
             output_wav_path,
         )
+        _mark_voice_fallback()
         await asyncio.to_thread(target_path.write_bytes, _generate_silent_wav())
 
     return output_wav_path
@@ -560,9 +615,11 @@ async def async_synthesize_speech(  # noqa: PLR0913
     api_key = safe_creds.get("api_key")
     session = async_get_clientsession(hass)
 
+    provider: tuple[str, Callable[[], Awaitable[str]]] | None = None
     if platform == "gemini" and api_key:
-        try:
-            wav_path = await _synthesize_gemini_tts(
+        provider = (
+            "Gemini",
+            lambda: _synthesize_gemini_tts(
                 script,
                 effective_voice,
                 effective_personality,
@@ -570,45 +627,42 @@ async def async_synthesize_speech(  # noqa: PLR0913
                 api_key,
                 session=session,
                 profile=voice_profile,
-            )
-        except TTSClientError as err:
-            async_report_ai_failure(hass, "Gemini", "voice", err.status, err.body)
-            LOGGER.warning(
-                "Gemini TTS synthesis failed (%s), falling back to Home Assistant TTS",
-                err,
-            )
-        except (TimeoutError, aiohttp.ClientError, OSError) as err:
-            LOGGER.warning(
-                "Gemini TTS synthesis failed (%s), falling back to Home Assistant TTS",
-                err,
-            )
-        else:
-            async_report_ai_success(hass, "voice")
-            return wav_path
-
+            ),
+        )
     elif platform == "openai" and api_key:
-        try:
-            if openai_voice not in OPENAI_KNOWN_VOICES:
-                openai_voice = map_voice_for_openai(effective_voice)
-            wav_path = await _synthesize_openai_tts(
+        if openai_voice not in OPENAI_KNOWN_VOICES:
+            openai_voice = map_voice_for_openai(effective_voice)
+        provider = (
+            "OpenAI",
+            lambda: _synthesize_openai_tts(
                 script,
                 openai_voice,
                 effective_personality,
                 output_wav_path,
                 api_key,
                 session=session,
-            )
+            ),
+        )
+
+    if provider is not None:
+        name, synthesize = provider
+        try:
+            wav_path = await _with_one_retry(name, synthesize)
         except TTSClientError as err:
-            async_report_ai_failure(hass, "OpenAI", "voice", err.status, err.body)
+            async_report_ai_failure(hass, name, "voice", err.status, err.body)
             LOGGER.warning(
-                "OpenAI TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                "%s TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                name,
                 err,
             )
+            _mark_voice_fallback()
         except (TimeoutError, aiohttp.ClientError, OSError) as err:
             LOGGER.warning(
-                "OpenAI TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                "%s TTS synthesis failed (%s), falling back to Home Assistant TTS",
+                name,
                 err,
             )
+            _mark_voice_fallback()
         else:
             async_report_ai_success(hass, "voice")
             return wav_path

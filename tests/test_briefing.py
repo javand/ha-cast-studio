@@ -466,6 +466,28 @@ async def test_play_without_volume_uses_the_default_level(
     assert levels == [{"entity_id": SPEAKER, "volume_level": 0.6}]
 
 
+def _mark_degraded(h: Harness, key: str) -> None:
+    """Mark a stored segment as voiced by the fallback voice."""
+    person = h.person(h.routine("Quick").person_id)
+    store = briefing._store(h.hass, h.entry)
+    segment = store.get_fresh(person, key, dt_util.now())
+    assert segment is not None
+    segment.degraded = True
+
+
+async def test_play_uses_a_fallback_voiced_segment_as_it_is(
+    prebuilt_sam_quick: Harness,
+) -> None:
+    h = prebuilt_sam_quick
+    _mark_degraded(h, "weather")
+
+    await h.play("Quick")
+
+    assert h.builder.calls == []
+    assert len(h.played) == 1
+    assert h.ffmpeg.concats == [QUICK]
+
+
 async def test_skip_played_counts_only_the_same_routine(
     sam_quick_and_full: Harness,
 ) -> None:

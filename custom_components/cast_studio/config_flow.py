@@ -893,8 +893,3 @@ class CastStudioOptionsFlowHandler(config_entries.OptionsFlowWithReload):
             step_id="init",
             data_schema=vol.Schema(schema_fields),
         )
-
-
-# Backward-compatible aliases
-AutomationGeneratorFlowHandler = CastStudioFlowHandler
-AutomationGeneratorOptionsFlowHandler = CastStudioOptionsFlowHandler

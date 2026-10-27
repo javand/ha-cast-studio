@@ -21,7 +21,135 @@ from custom_components.cast_studio.tts_client import (
     _synthesize_openai_tts,
     async_synthesize_speech,
     map_voice_for_openai,
+    track_voice_fallback,
 )
+
+TTS = "custom_components.cast_studio.tts_client"
+
+
+async def _speak(tmp_path: Path, creds: dict[str, Any]) -> tuple[str, bool]:
+    """Synthesise one line; return the file and whether the voice fell back."""
+    output_wav = str(tmp_path / "out.wav")
+    with track_voice_fallback() as voice:
+        result = await async_synthesize_speech(
+            hass=MagicMock(),
+            script="Good morning",
+            voice="Pulcherrima",
+            personality="calm",
+            output_wav_path=output_wav,
+            creds=creds,
+        )
+    return result, voice.used
+
+
+@pytest.fixture
+def no_retry_delay() -> Any:
+    with patch(f"{TTS}.TTS_RETRY_DELAY_SECONDS", 0):
+        yield
+
+
+@pytest.mark.usefixtures("no_retry_delay")
+@pytest.mark.parametrize(
+    "failure", [TTSClientError("timeout"), TTSClientError("5", status=503)]
+)
+async def test_gemini_retries_once_and_keeps_the_ai_voice(
+    tmp_path: Path, failure: TTSClientError
+) -> None:
+    wav = str(tmp_path / "out.wav")
+    with (
+        patch(f"{TTS}._synthesize_gemini_tts", side_effect=[failure, wav]) as gemini,
+        patch(f"{TTS}._synthesize_ha_tts", new=AsyncMock()) as ha,
+    ):
+        result, fell_back = await _speak(
+            tmp_path, {"platform": "gemini", "api_key": "k"}
+        )
+
+    assert result == wav
+    assert gemini.await_count == 2
+    ha.assert_not_awaited()
+    assert fell_back is False
+
+
+@pytest.mark.usefixtures("no_retry_delay")
+async def test_gemini_falls_back_after_the_retry_also_fails(tmp_path: Path) -> None:
+    wav = str(tmp_path / "out.wav")
+    with (
+        patch(
+            f"{TTS}._synthesize_gemini_tts", side_effect=TTSClientError("timeout")
+        ) as gemini,
+        patch(f"{TTS}._synthesize_ha_tts", new=AsyncMock(return_value=wav)) as ha,
+    ):
+        result, fell_back = await _speak(
+            tmp_path, {"platform": "gemini", "api_key": "k"}
+        )
+
+    assert result == wav
+    assert gemini.await_count == 2
+    ha.assert_awaited_once()
+    assert fell_back is True
+
+
+@pytest.mark.usefixtures("no_retry_delay")
+async def test_gemini_client_error_is_not_retried(tmp_path: Path) -> None:
+    wav = str(tmp_path / "out.wav")
+    with (
+        patch(
+            f"{TTS}._synthesize_gemini_tts",
+            side_effect=TTSClientError("bad", status=400),
+        ) as gemini,
+        patch(f"{TTS}._synthesize_ha_tts", new=AsyncMock(return_value=wav)),
+    ):
+        _, fell_back = await _speak(tmp_path, {"platform": "gemini", "api_key": "k"})
+
+    assert gemini.await_count == 1
+    assert fell_back is True
+
+
+@pytest.mark.usefixtures("no_retry_delay")
+async def test_openai_retries_once_before_falling_back(tmp_path: Path) -> None:
+    wav = str(tmp_path / "out.wav")
+    with (
+        patch(
+            f"{TTS}._synthesize_openai_tts",
+            side_effect=[TTSClientError("timeout"), wav],
+        ) as openai,
+        patch(f"{TTS}._synthesize_ha_tts", new=AsyncMock()) as ha,
+    ):
+        result, fell_back = await _speak(
+            tmp_path, {"platform": "openai", "api_key": "k"}
+        )
+
+    assert result == wav
+    assert openai.await_count == 2
+    ha.assert_not_awaited()
+    assert fell_back is False
+
+
+async def test_home_assistant_voice_by_choice_is_not_a_fallback(
+    tmp_path: Path,
+) -> None:
+    wav = str(tmp_path / "out.wav")
+    with patch(f"{TTS}._synthesize_ha_tts", new=AsyncMock(return_value=wav)):
+        _, fell_back = await _speak(tmp_path, {"platform": "conversation_agent"})
+
+    assert fell_back is False
+
+
+async def test_silent_wav_when_every_engine_fails_is_a_fallback(
+    tmp_path: Path,
+) -> None:
+    hass = MagicMock()
+    output_wav = str(tmp_path / "silent.wav")
+    with (
+        patch(
+            f"{TTS}.ha_tts.async_get_media_source_audio",
+            side_effect=HomeAssistantError("no"),
+        ),
+        track_voice_fallback() as voice,
+    ):
+        await _synthesize_ha_tts(hass, "Hi", "Pulcherrima", "calm", output_wav)
+
+    assert voice.used is True
 
 
 @pytest.mark.asyncio

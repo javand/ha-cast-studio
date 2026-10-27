@@ -7,7 +7,6 @@ import base64
 import json
 import re
 from collections.abc import Mapping
-from contextlib import suppress
 from datetime import datetime
 from http import HTTPStatus
 from pathlib import Path
@@ -701,7 +700,7 @@ def _extract_entry_api_key(entry: Any) -> str | None:
     return None
 
 
-async def async_discover_ai_credentials(  # noqa: PLR0912
+async def async_discover_ai_credentials(
     hass: HomeAssistant,
 ) -> dict[str, Any]:
     """
@@ -712,48 +711,11 @@ async def async_discover_ai_credentials(  # noqa: PLR0912
     2. Auto-detected google_generative_ai active entry.
     3. Fallback to native Home Assistant conversation agent.
     """
-    if not hasattr(hass, "config_entries") or not hasattr(
-        hass.config_entries, "async_entries"
-    ):
-        return {"platform": "conversation_agent", "api_key": None}
+    for domain in (DOMAIN, "google_generative_ai", "google_generative_ai_conversation"):
+        for entry in hass.config_entries.async_entries(domain):
+            if api_key := _extract_entry_api_key(entry):
+                return {"platform": "gemini", "api_key": api_key}
 
-    # 1. Check explicit cast_studio integration entries
-    with suppress(AttributeError, TypeError, KeyError):
-        explicit_entries = hass.config_entries.async_entries(DOMAIN)
-        for entry in explicit_entries:
-            if _is_entry_disabled(entry):
-                continue
-            if getattr(entry, "domain", DOMAIN) == DOMAIN:
-                api_key = _extract_entry_api_key(entry)
-                if api_key:
-                    return {"platform": "gemini", "api_key": api_key}
-
-    # 2. Check google_generative_ai and google_generative_ai_conversation config entries
-    for domain in ("google_generative_ai", "google_generative_ai_conversation"):
-        with suppress(AttributeError, TypeError, KeyError):
-            genai_entries = hass.config_entries.async_entries(domain)
-            for entry in genai_entries:
-                if _is_entry_disabled(entry):
-                    continue
-                api_key = _extract_entry_api_key(entry)
-                if api_key:
-                    return {"platform": "gemini", "api_key": api_key}
-
-    # Fallback across all entries if mock or system didn't support domain filtering
-    with suppress(AttributeError, TypeError, KeyError):
-        all_entries = hass.config_entries.async_entries()
-        for entry in all_entries:
-            if _is_entry_disabled(entry):
-                continue
-            if getattr(entry, "domain", None) in (
-                "google_generative_ai",
-                "google_generative_ai_conversation",
-            ):
-                api_key = _extract_entry_api_key(entry)
-                if api_key:
-                    return {"platform": "gemini", "api_key": api_key}
-
-    # 3. Fallback to native conversation agent
     return {"platform": "conversation_agent", "api_key": None}
 
 

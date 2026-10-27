@@ -114,7 +114,7 @@ Use **Add routine**: pick the person, a routine name (unique for that person) an
 
 Pick an **Output format** for the routine. **Visual** (the default) builds slides and video. It plays the video on a device with a screen (a Nest Hub, Chromecast or Google TV) and the audio on a speaker, so one routine can serve both, for example a bathroom routine that your automation sends to whichever room you walk into. **Audio** builds sound only, with no slides or video, for routines that only ever play on speakers, such as a night-time routine. A Cast group always gets audio. A player whose model isn't reported counts as a screen when its name contains "display".
 
-Optionally pick a **Dashboard to show afterwards** and a **Dashboard display**: the dropdown lists every dashboard and its views (for example "Nest Display › Morning"), and the chosen view is shown on a Cast display (`cast.show_lovelace_view`) when the briefing finishes. You can also type a path such as `dashboard-home/morning`. The display defaults to the person's output device and must be a Cast player, otherwise the dashboard is skipped with a warning. Without a dashboard, a Cast player is turned off once it finishes the briefing, so a display leaves the cast screen and returns to its home screen; it is left alone if it is still playing something a minute later.
+Optionally pick a **Dashboard to show afterwards** and a **Dashboard display**: the dropdown lists every dashboard and its views (for example "Nest Display › Morning"), and the chosen view is shown on a Cast display (`cast.show_lovelace_view`) when the briefing finishes. You can also type a path such as `dashboard-home/morning`. The **Dashboard display** picker lists only Google Cast players, because only Cast can show a dashboard. It defaults to the person's output device, which must also be a Cast player (a Squeezebox or other non-Cast player cannot show a dashboard); otherwise the dashboard is skipped with a warning, so set a Cast display when the routine plays on another kind of player. Without a dashboard, a Cast player is turned off once it finishes the briefing, so a display leaves the cast screen and returns to its home screen; it is left alone if it is still playing something a minute later.
 
 Each routine gets a status sensor named `sensor.cast_studio_<person>_<routine>` (states `idle`, `generating`, `ready`, `playing`, `error`). Routines added later work at once; their sensor may appear only after the first play or prebuild, or after the next integration reload.
 
@@ -148,6 +148,13 @@ When Gemini or OpenAI rejects a request because of the account (key rejected, bi
 - A notice appears in **Settings → Repairs** with the provider's own message and a link to its account page.
 
 Both clear on their own after the next successful request.
+
+### When the AI voice is slow or unavailable
+- If a Gemini or OpenAI voice request times out or fails with a network or server error, CastStudio tries it once more after a second. A request the provider rejects outright (for example a bad key or no credits) is not retried; see [AI account problems](#ai-account-problems).
+- If the second try also fails, that segment is voiced by the fallback Home Assistant voice, and the warning `... falling back to Home Assistant TTS` is logged.
+- A segment voiced by the fallback voice is marked in its manifest (`degraded`). A play still uses it as it is, so a provider outage never delays a briefing. The next `cast_studio.prebuild` rebuilds every segment and replaces it with the AI voice.
+- The "That's everything" line is normally built once a day; while it is voiced by the fallback voice, any build replaces it.
+- To fix a segment that was voiced by the fallback voice, run `cast_studio.prebuild` for that routine again.
 
 ### Pronunciations
 - Every person's phonetic name applies **household-wide**, in everyone's briefings.

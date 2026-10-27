@@ -375,76 +375,73 @@ def _write_bytes_to_file(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
-async def async_resolve_google_maps_api_key(  # noqa: PLR0912
+def _first_key(names: tuple[str, ...], *sources: Any) -> str | None:
+    """Return the first non-blank value for any of ``names``, name by name."""
+    for name in names:
+        for source in sources:
+            if (val := (source or {}).get(name)) and (val_str := str(val).strip()):
+                return val_str
+    return None
+
+
+async def async_resolve_google_maps_api_key(
     hass: HomeAssistant,
 ) -> str | None:
     """Resolve Google Maps API key from config entry, secrets.yaml, or hass.data."""
     # 1. Check CastStudio config entries
-    if hasattr(hass, "config_entries") and hasattr(
-        hass.config_entries, "async_entries"
-    ):
-        for entry in hass.config_entries.async_entries(DOMAIN):
-            options = getattr(entry, "options", {}) or {}
-            data = getattr(entry, "data", {}) or {}
-            for key_name in (
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if key := _first_key(
+            (
                 CONF_MAPS_API_KEY,
                 "google_maps_api_key",
                 "google_maps_key",
                 "gmaps_api_key",
-            ):
-                if val := options.get(key_name) or data.get(key_name):
-                    val_str = str(val).strip()
-                    if val_str:
-                        return val_str
+            ),
+            getattr(entry, "options", None),
+            getattr(entry, "data", None),
+        ):
+            return key
 
     # 2. Check secrets.yaml via hass.config.path("secrets.yaml")
-    if hasattr(hass, "config") and hasattr(hass.config, "path"):
-        try:
-            secrets_path = Path(hass.config.path("secrets.yaml"))
-            if secrets_path.is_file():
+    try:
+        secrets_path = Path(hass.config.path("secrets.yaml"))
+        if secrets_path.is_file():
 
-                def _read_secrets() -> dict[str, Any]:
-                    with secrets_path.open("r", encoding="utf-8") as f:
-                        return yaml.safe_load(f) or {}
+            def _read_secrets() -> dict[str, Any]:
+                with secrets_path.open("r", encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
 
-                secrets_data = await _async_run_in_executor(hass, _read_secrets)
-                if isinstance(secrets_data, dict):
-                    for key_name in (
+            secrets_data = await _async_run_in_executor(hass, _read_secrets)
+            if isinstance(secrets_data, dict) and (
+                key := _first_key(
+                    (
                         "google_maps_api_key",
                         "google_maps_key",
                         "gmaps_api_key",
                         "maps_api_key",
                         "google_directions_api_key",
-                    ):
-                        if val := secrets_data.get(key_name):
-                            val_str = str(val).strip()
-                            if val_str:
-                                return val_str
-        except Exception as err:  # noqa: BLE001
-            LOGGER.debug("Could not inspect secrets.yaml for Google Maps key: %s", err)
+                    ),
+                    secrets_data,
+                )
+            ):
+                return key
+    except Exception as err:  # noqa: BLE001
+        LOGGER.debug("Could not inspect secrets.yaml for Google Maps key: %s", err)
 
     # 3. Check other integrations in config_entries and hass.data
-    if hasattr(hass, "config_entries") and hasattr(
-        hass.config_entries, "async_entries"
-    ):
-        for domain in ("google_travel_time", "google_maps"):
-            for entry in hass.config_entries.async_entries(domain):
-                options = getattr(entry, "options", {}) or {}
-                data = getattr(entry, "data", {}) or {}
-                if val := options.get("api_key") or data.get("api_key"):
-                    val_str = str(val).strip()
-                    if val_str:
-                        return val_str
+    for domain in ("google_travel_time", "google_maps"):
+        for entry in hass.config_entries.async_entries(domain):
+            if key := _first_key(
+                ("api_key",),
+                getattr(entry, "options", None),
+                getattr(entry, "data", None),
+            ):
+                return key
 
-    if hasattr(hass, "data") and isinstance(hass.data, dict):
-        domain_data = hass.data.get(DOMAIN, {})
-        if isinstance(domain_data, dict) and domain_data.get(CONF_MAPS_API_KEY):
-            return str(domain_data[CONF_MAPS_API_KEY]).strip()
-        for key_name in ("google_maps_api_key", "maps_api_key"):
-            if val := hass.data.get(key_name):
-                return str(val).strip()
-
-    return None
+    domain_data = hass.data.get(DOMAIN, {})
+    if isinstance(domain_data, dict) and domain_data.get(CONF_MAPS_API_KEY):
+        return str(domain_data[CONF_MAPS_API_KEY]).strip()
+    return _first_key(("google_maps_api_key", "maps_api_key"), hass.data)
 
 
 async def async_fetch_commute_map(  # noqa: PLR0913
