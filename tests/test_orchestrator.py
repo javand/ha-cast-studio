@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -85,6 +86,64 @@ async def test_play_and_sync_waits_for_playing_state():
         assert call_args[0][2]["media_content_id"].startswith("/local/morning.mp4?v=")
         assert call_args[0][2]["media_content_type"] == "video/mp4"
         mock_track.assert_called_once()
+
+
+def _play_media_calls(hass: MagicMock) -> list[Any]:
+    return [
+        c for c in hass.services.async_call.await_args_list if c[0][1] == "play_media"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_play_and_sync_retries_dropped_connection():
+    """A failed play_media is blocking, retried once, and then carries on."""
+    hass = MagicMock()
+    outcomes = iter([HomeAssistantError("socket"), None])
+
+    async def _call(_domain: str, service: str, *_args: Any, **_kwargs: Any) -> None:
+        if service == "play_media":
+            outcome = next(outcomes)
+            if outcome:
+                raise outcome
+
+    hass.services.async_call = AsyncMock(side_effect=_call)
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+        patch("custom_components.cast_studio.orchestrator.asyncio.sleep", AsyncMock()),
+    ):
+        await async_play_and_sync_routine(
+            hass, "morning", "media_player.display", {"audio_path": "/local/a.mp3"}, []
+        )
+    calls = _play_media_calls(hass)
+    assert len(calls) == CALL_COUNT_TWO
+    assert all(c[1]["blocking"] is True for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_play_and_sync_raises_when_retry_also_fails():
+    """Two failed play_media calls surface the error instead of waiting it out."""
+    hass = MagicMock()
+
+    async def _call(_domain: str, service: str, *_args: Any, **_kwargs: Any) -> None:
+        if service == "play_media":
+            msg = "socket"
+            raise HomeAssistantError(msg)
+
+    hass.services.async_call = AsyncMock(side_effect=_call)
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.cast_studio.orchestrator.asyncio.sleep", AsyncMock()),
+        pytest.raises(HomeAssistantError),
+    ):
+        await async_play_and_sync_routine(
+            hass, "morning", "media_player.display", {"audio_path": "/local/a.mp3"}, []
+        )
+    assert len(_play_media_calls(hass)) == CALL_COUNT_TWO
 
 
 @pytest.mark.asyncio
