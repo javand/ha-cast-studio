@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
@@ -98,6 +99,10 @@ class PlaybackNotStartedError(OrchestratorError):
 
 # Player states at the safety timeout that mean the media never played.
 _NOT_STARTED_STATES = ("off", "unavailable")
+
+# A dropped Cast connection reconnects within seconds: try again once.
+PLAY_DISPATCH_ATTEMPTS = 2
+PLAY_RETRY_DELAY = 5.0
 
 
 def get_routine_sync_task(routine_name: str) -> asyncio.Task[Any] | None:
@@ -570,6 +575,75 @@ def _is_routine_media_playing(  # noqa: PLR0911
     return app_name not in ("backdrop", "ambient", "google cast", "homescreen")
 
 
+async def _async_prepare_player(
+    hass: HomeAssistant, target_player: str, metadata: dict[str, Any]
+) -> None:
+    """Wake up, unmute, and initialize volume if configured."""
+    if not (metadata.get("prepare_player", True) and target_player):
+        return
+    if not is_cast_player(hass, target_player):
+        with contextlib.suppress(Exception):
+            await hass.services.async_call(
+                "media_player", "turn_on", {"entity_id": target_player}
+            )
+    if metadata.get("unmute", True):
+        with contextlib.suppress(Exception):
+            await hass.services.async_call(
+                "media_player",
+                "volume_mute",
+                {"entity_id": target_player, "is_volume_muted": False},
+            )
+    with contextlib.suppress(Exception):
+        vol_val = metadata.get("volume_level")
+        target_vol = float(vol_val if vol_val is not None else 0.60)
+        await hass.services.async_call(
+            "media_player",
+            "volume_set",
+            {"entity_id": target_player, "volume_level": target_vol},
+        )
+
+
+async def _async_dispatch_with_retry(
+    hass: HomeAssistant,
+    target_player: str,
+    metadata: dict[str, Any],
+    media_url: str,
+    content_type: str,
+) -> None:
+    """
+    Prepare the player and send ``play_media``, retrying once if it fails.
+
+    A Cast speaker can drop its connection just as a routine starts and
+    reconnects within seconds. The call blocks so that failure is seen here
+    rather than 25 seconds later as a player that never started.
+    """
+    for attempt in range(PLAY_DISPATCH_ATTEMPTS):
+        await _async_prepare_player(hass, target_player, metadata)
+        try:
+            await hass.services.async_call(
+                "media_player",
+                "play_media",
+                {
+                    "entity_id": target_player,
+                    "media_content_id": media_url,
+                    "media_content_type": content_type,
+                },
+                blocking=True,
+            )
+        except HomeAssistantError as err:
+            if attempt + 1 >= PLAY_DISPATCH_ATTEMPTS:
+                raise
+            LOGGER.warning(
+                "Could not start playback on '%s' (%s); retrying in %.0fs",
+                target_player,
+                err,
+                PLAY_RETRY_DELAY,
+            )
+            await asyncio.sleep(PLAY_RETRY_DELAY)
+        else:
+            return
+
+
 async def async_play_and_sync_routine(  # noqa: C901, PLR0913, PLR0915
     hass: HomeAssistant,
     routine_name: str,
@@ -609,38 +683,9 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0913, PLR0915
     duration = float(metadata.get("duration", 0.0))
     control = control or PlayControl()
 
-    # 0. Wake up, unmute, and initialize volume if configured
-    if metadata.get("prepare_player", True) and target_player:
-        if not is_cast_player(hass, target_player):
-            with contextlib.suppress(Exception):
-                await hass.services.async_call(
-                    "media_player", "turn_on", {"entity_id": target_player}
-                )
-        if metadata.get("unmute", True):
-            with contextlib.suppress(Exception):
-                await hass.services.async_call(
-                    "media_player",
-                    "volume_mute",
-                    {"entity_id": target_player, "is_volume_muted": False},
-                )
-        with contextlib.suppress(Exception):
-            vol_val = metadata.get("volume_level")
-            target_vol = float(vol_val if vol_val is not None else 0.60)
-            await hass.services.async_call(
-                "media_player",
-                "volume_set",
-                {"entity_id": target_player, "volume_level": target_vol},
-            )
-
-    # 1. Dispatch playback request to media player
-    await hass.services.async_call(
-        "media_player",
-        "play_media",
-        {
-            "entity_id": target_player,
-            "media_content_id": resolved_media_url,
-            "media_content_type": content_type,
-        },
+    # 0-1. Wake up, unmute, set the volume, and dispatch playback
+    await _async_dispatch_with_retry(
+        hass, target_player, metadata, resolved_media_url, content_type
     )
 
     schedule = extract_slide_schedule(metadata, steps)

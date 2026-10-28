@@ -252,20 +252,6 @@ def _usable_segment(
     return segment
 
 
-def degraded_segment_keys(
-    hass: HomeAssistant, entry: ConfigEntry, routine: Routine
-) -> list[str]:
-    """Return the routine's stored segments voiced by the fallback voice."""
-    person = _person_of(entry, routine)
-    store = _store(hass, entry)
-    now = dt_util.now()
-    return [
-        key
-        for key in routine_segment_keys(routine)
-        if (segment := store.get_fresh(person, key, now)) and segment.degraded
-    ]
-
-
 def _is_visual(routine: Routine) -> bool:
     return routine.output_format == "visual"
 
