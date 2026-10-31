@@ -662,7 +662,7 @@ async def _async_refresh_sensors(
     hass: HomeAssistant,
     entity_ids: list[str | None],
     *,
-    timeout: float = SENSOR_REFRESH_TIMEOUT,
+    wait_seconds: float = SENSOR_REFRESH_TIMEOUT,
 ) -> None:
     """
     Ask the commute sensors for a fresh reading before they are read.
@@ -674,7 +674,7 @@ async def _async_refresh_sensors(
     if not ids:
         return
     try:
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(wait_seconds):
             await hass.services.async_call(
                 "homeassistant", "update_entity", {"entity_id": ids}, blocking=True
             )
@@ -791,7 +791,9 @@ async def async_extract_commute_data(  # noqa: C901, PLR0912, PLR0915
         await _async_refresh_sensors(
             hass,
             [drive_sensor, drive_return_sensor, transit_sensor, transit_return_sensor],
-            timeout=float(step.get("sensor_refresh_timeout") or SENSOR_REFRESH_TIMEOUT),
+            wait_seconds=float(
+                step.get("sensor_refresh_timeout") or SENSOR_REFRESH_TIMEOUT
+            ),
         )
     else:
         drive_return_sensor = transit_return_sensor = None
