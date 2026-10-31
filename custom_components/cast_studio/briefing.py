@@ -128,8 +128,8 @@ class _CurrentPlay:
 # How long a Cast display may keep reporting "playing" after the briefing's
 # playback task ends (a stall makes it run late) before it is left alone.
 RELEASE_WAIT_SECONDS = 60.0
-# Segment types rebuilt at play time so they reflect that moment (traffic).
-LIVE_SEGMENT_TYPES = frozenset({"commute"})
+# Segment types that change through the day; ``async_refresh`` rebuilds them.
+DYNAMIC_SEGMENT_TYPES = frozenset({"weather", "commute"})
 _STILL_PLAYING = ("playing", "buffering")
 
 
@@ -614,20 +614,20 @@ async def _async_segments_to_play(  # noqa: PLR0913
     now: datetime,
     *,
     visual: bool,
+    build_dynamic: bool = True,
 ) -> list[StoredSegment]:
     """
     Return fresh segments for ``keys``, building missing ones live.
 
-    ``LIVE_SEGMENT_TYPES`` (the commute) are always rebuilt, falling back to
-    the stored copy if that fails. Keys that still have no fresh segment are
+    Without ``build_dynamic``, missing ``DYNAMIC_SEGMENT_TYPES`` are not built
+    (a refresh is building them). Keys that still have no fresh segment are
     skipped with a warning; raises when none is left to play.
     """
-    # Live segments are rebuilt on every play; a stored copy is the fallback.
     missing = [
         key
         for key in keys
-        if segment_type_of(key) in LIVE_SEGMENT_TYPES
-        or _usable_segment(store, person, key, now, visual=visual) is None
+        if _usable_segment(store, person, key, now, visual=visual) is None
+        and (build_dynamic or segment_type_of(key) not in DYNAMIC_SEGMENT_TYPES)
     ]
     if missing:
         creds = await async_discover_ai_credentials(hass)
@@ -640,6 +640,7 @@ async def _async_segments_to_play(  # noqa: PLR0913
             now=now,
             visual_keys=missing if visual else (),
             all_heard_visual=visual,
+            source="play",
         )
     segments: list[StoredSegment] = []
     for key in keys:
@@ -678,6 +679,7 @@ async def _async_all_heard(
             creds,
             now=now,
             all_heard_visual=visual,
+            source="play",
         )
         clip = store.all_heard_clip(person)
     if clip is None:

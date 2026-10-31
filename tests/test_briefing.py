@@ -76,6 +76,8 @@ class FakeBuilder:
     started: asyncio.Event = field(default_factory=asyncio.Event)
     calls: list[list[str]] = field(default_factory=list)
     visual_calls: list[set[str]] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+    sensor_timeouts: list[float | None] = field(default_factory=list)
 
     async def __call__(  # noqa: PLR0913
         self,
@@ -88,11 +90,15 @@ class FakeBuilder:
         now: datetime,
         visual_keys: Iterable[str] = (),
         all_heard_visual: bool = False,
+        source: str = "prebuild",
+        sensor_refresh_timeout: float | None = None,
     ) -> dict[str, StoredSegment | Exception]:
         wanted = list(dict.fromkeys(keys))
         visual = set(visual_keys)
         self.calls.append(wanted)
         self.visual_calls.append(visual)
+        self.sources.append(source)
+        self.sensor_timeouts.append(sensor_refresh_timeout)
         self.started.set()
         if self.gate is not None:
             await self.gate.wait()
@@ -1357,31 +1363,32 @@ async def test_play_only_setup_prunes_earlier_briefing_days(
     assert len(h.played) == 2
 
 
-async def test_play_rebuilds_the_commute_live_after_a_prebuild(
+async def test_play_after_prebuild_builds_nothing_including_commute(
     sam_full: Harness,
 ) -> None:
     h = sam_full
     await h.prebuild("Full")
     h.builder.calls.clear()
+    h.ffmpeg.concats.clear()
 
     await h.play("Full")
 
-    assert h.builder.calls == [["commute"]]
-    assert len(h.played) == 1
+    assert h.builder.calls == []
+    assert h.ffmpeg.concats[-1] == FULL
 
 
-async def test_failed_live_commute_falls_back_to_the_prebuilt_one(
+async def test_play_builds_missing_segments_live_with_play_source(
     sam_full: Harness,
 ) -> None:
     h = sam_full
-    await h.prebuild("Full")
-    h.ffmpeg.concats.clear()
-    h.builder.fail = {"commute"}
-
     await h.play("Full")
 
-    assert "commute" in h.ffmpeg.concats[-1]
-    assert len(h.played) == 1
+    assert h.builder.sources == ["play"]
+    assert h.builder.calls == [FULL]
+
+
+def test_dynamic_segment_types_are_weather_and_commute() -> None:
+    assert {"weather", "commute"} == briefing.DYNAMIC_SEGMENT_TYPES
 
 
 # --- pausable playback (announcements) ---------------------------------------
