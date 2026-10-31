@@ -26,6 +26,7 @@ import json
 import secrets
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -660,6 +661,8 @@ async def async_build_segments(  # noqa: PLR0913
     now: datetime,
     visual_keys: Collection[str] = (),
     all_heard_visual: bool = False,
+    source: str = "prebuild",
+    sensor_refresh_timeout: float | None = None,
 ) -> dict[str, StoredSegment | Exception]:
     """
     Build and store the person's segments for the briefing day of ``now``.
@@ -668,6 +671,8 @@ async def async_build_segments(  # noqa: PLR0913
     key's value, and the remaining keys are still built. The all-heard clip
     is also built when it is missing for the day. Keys in ``visual_keys``
     (and the all-heard line when ``all_heard_visual``) get a slide and clip.
+    Every build logs how long it took, labelled with ``source`` (what asked
+    for it). ``sensor_refresh_timeout`` caps the commute's sensor refresh.
     """
     await store.async_load(person, now)
     creds = dict(ai_creds or {})
@@ -688,6 +693,7 @@ async def async_build_segments(  # noqa: PLR0913
     results: dict[str, StoredSegment | Exception] = {}
     try:
         for key, target_dir in jobs:
+            started = time.monotonic()
             try:
                 step = (
                     _all_heard_step(person, today, visual=all_heard_visual)
@@ -696,21 +702,36 @@ async def async_build_segments(  # noqa: PLR0913
                         person, key, today, visual=key in visual_keys
                     )
                 )
+                if (
+                    sensor_refresh_timeout is not None
+                    and segment_type_of(key) == "commute"
+                ):
+                    step["sensor_refresh_timeout"] = sensor_refresh_timeout
                 segment, staged = await _async_build_one(
                     hass, person, key, step, creds, scratch, target_dir, now
                 )
                 segment = await store.async_store(person, target_dir, segment, staged)
             except Exception as err:  # noqa: BLE001 - one segment must not stop the rest
                 LOGGER.warning(
-                    "CastStudio could not build segment '%s' for %s: %s",
+                    "CastStudio could not build segment '%s' for %s after %.1fs "
+                    "(%s): %s",
                     key,
                     person.name,
+                    time.monotonic() - started,
+                    source,
                     err,
                     exc_info=err,
                 )
                 if key != ALL_HEARD_KEY:
                     results[key] = err
             else:
+                LOGGER.info(
+                    "Built segment '%s' for %s in %.1fs (%s)",
+                    key,
+                    person.name,
+                    time.monotonic() - started,
+                    source,
+                )
                 if key != ALL_HEARD_KEY:
                     results[key] = segment
     finally:
