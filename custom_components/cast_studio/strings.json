@@ -370,6 +370,20 @@
         }
       }
     },
+    "refresh": {
+      "name": "Refresh dynamic segments",
+      "description": "Rebuilds only the weather and commute segments of a routine, or of all of a person's routines that have them, so they reflect this moment. Other segments are left as they are. A play started while a refresh runs waits up to 10 seconds for it, then plays the stored segments.",
+      "fields": {
+        "person": {
+          "name": "Person",
+          "description": "Person to refresh. Alone, refreshes every routine of that person that has a weather or commute segment; with a routine, picks which person's routine is meant."
+        },
+        "routine": {
+          "name": "Routine",
+          "description": "Routine whose weather and commute segments to refresh. Give a person or a routine, or both."
+        }
+      }
+    },
     "play": {
       "name": "Play briefing",
       "description": "Plays a routine now from fresh stored segments, building anything missing or stale live first.",
