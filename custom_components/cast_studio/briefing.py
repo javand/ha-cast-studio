@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -84,6 +85,7 @@ DATA_STORE = "segment_store"
 DATA_HISTORY = "play_history"
 DATA_LOCKS = "briefing_locks"
 DATA_PLAYS = "briefing_plays"
+DATA_REFRESHING = "briefing_refreshing"
 
 ROUTINE_VIDEO_PREFIX = "routine_"
 ROUTINE_AUDIO_SUFFIX = "-audio"
@@ -489,29 +491,22 @@ async def _async_stitch_for_play(  # noqa: PLR0913
 # --- prebuild -----------------------------------------------------------------
 
 
-async def async_prebuild(
+async def _async_build_and_store(  # noqa: PLR0913
     hass: HomeAssistant,
     entry: ConfigEntry,
+    person: Person,
+    routines: list[Routine],
+    keys: list[str],
     *,
-    routine: Routine | None = None,
-    person: Person | None = None,
-) -> None:
+    source: str,
+    sensor_refresh_timeout: float | None = None,
+) -> dict[str, StoredSegment | Exception]:
     """
-    Build and store segments for one routine, or for all of a person's routines.
+    Build and store ``keys`` for ``routines`` under the person's lock.
 
-    Plays nothing. For visual routines the stitched video and audio are stored
-    too, so a plain play needs no stitching (spec §5.3).
+    Stores the stitched files of the visual ones among ``routines`` and sets
+    their sensors; a routine that is playing keeps showing "playing".
     """
-    if (routine is None) == (person is None):
-        msg = "async_prebuild needs exactly one of routine or person"
-        raise ValueError(msg)
-    if routine is not None:
-        person = _person_of(entry, routine)
-        routines = [routine]
-    else:
-        assert person is not None  # noqa: S101 - narrowed by the check above
-        routines = get_routines(entry, person.person_id)
-    keys = list(dict.fromkeys(key for r in routines for key in routine_segment_keys(r)))
     sensors = {
         r.routine_id: async_get_or_create_briefing_sensor(hass, person, r)
         for r in routines
@@ -547,6 +542,8 @@ async def async_prebuild(
                 now=now,
                 visual_keys=visual_keys,
                 all_heard_visual=_person_has_visual_routine(entry, person),
+                source=source,
+                sensor_refresh_timeout=sensor_refresh_timeout,
             )
             await _async_store_visual_routines(hass, store, person, routines, now)
     except Exception:
@@ -561,8 +558,109 @@ async def async_prebuild(
         else:
             state = "ready" if _ready_keys(store, person, r, now) else "error"
         _set_sensor(sensor, state, store, person, r, now)
+    return results
+
+
+def _target(
+    entry: ConfigEntry, routine: Routine | None, person: Person | None, action: str
+) -> tuple[Person, list[Routine]]:
+    """Return the person and routines one of ``routine`` / ``person`` names."""
+    if (routine is None) == (person is None):
+        msg = f"{action} needs exactly one of routine or person"
+        raise ValueError(msg)
+    if routine is not None:
+        return _person_of(entry, routine), [routine]
+    assert person is not None  # noqa: S101 - narrowed by the check above
+    return person, get_routines(entry, person.person_id)
+
+
+async def async_prebuild(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    routine: Routine | None = None,
+    person: Person | None = None,
+) -> None:
+    """
+    Build and store segments for one routine, or for all of a person's routines.
+
+    Plays nothing. For visual routines the stitched video and audio are stored
+    too, so a plain play needs no stitching (spec §5.3).
+    """
+    person, routines = _target(entry, routine, person, "async_prebuild")
+    keys = list(dict.fromkeys(key for r in routines for key in routine_segment_keys(r)))
+    results = await _async_build_and_store(
+        hass, entry, person, routines, keys, source="prebuild"
+    )
     if keys and all(isinstance(value, Exception) for value in results.values()):
         msg = f"CastStudio could not build any segment for {person.name}"
+        raise HomeAssistantError(msg)
+
+
+# --- refresh ------------------------------------------------------------------
+
+# Seconds a refresh lets the commute sensors update before using their last value.
+REFRESH_SENSOR_TIMEOUT = 5
+
+
+def _refreshing(hass: HomeAssistant) -> set[str]:
+    return hass.data.setdefault(DOMAIN, {}).setdefault(DATA_REFRESHING, set())
+
+
+def is_refreshing(hass: HomeAssistant, person_id: str) -> bool:
+    """Return True while a refresh for the person is waiting or building."""
+    return person_id in _refreshing(hass)
+
+
+def _dynamic_keys(routine: Routine) -> list[str]:
+    return [
+        key
+        for key in routine_segment_keys(routine)
+        if segment_type_of(key) in DYNAMIC_SEGMENT_TYPES
+    ]
+
+
+async def async_refresh(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    routine: Routine | None = None,
+    person: Person | None = None,
+) -> None:
+    """
+    Rebuild only the dynamic segments (weather, commute) of a routine or person.
+
+    With ``person``, every routine of theirs that has one is covered. They are
+    rebuilt even when fresh, so they reflect this moment. A segment
+    that fails keeps its stored copy; the others are still kept.
+    """
+    person, routines = _target(entry, routine, person, "async_refresh")
+    routines = [r for r in routines if _dynamic_keys(r)]
+    keys = list(dict.fromkeys(key for r in routines for key in _dynamic_keys(r)))
+    if not keys:
+        LOGGER.info(
+            "Nothing to refresh for %s: no weather or commute segment", person.name
+        )
+        return
+    started = time.monotonic()
+    _refreshing(hass).add(person.person_id)
+    try:
+        results = await _async_build_and_store(
+            hass,
+            entry,
+            person,
+            routines,
+            keys,
+            source="refresh",
+            sensor_refresh_timeout=REFRESH_SENSOR_TIMEOUT,
+        )
+    finally:
+        _refreshing(hass).discard(person.person_id)
+    LOGGER.info(
+        "Refreshed %s for %s in %.1fs", keys, person.name, time.monotonic() - started
+    )
+    if all(isinstance(results.get(key), Exception) for key in keys):
+        msg = f"CastStudio could not refresh any segment for {person.name}"
         raise HomeAssistantError(msg)
 
 
