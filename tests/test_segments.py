@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import threading
 from datetime import date, datetime, time, timedelta
@@ -762,6 +763,95 @@ async def test_commute_builds_from_person_zone_and_sensor(
     mocks["map"].assert_called_once()
     context = mocks["llm"].call_args.args[1]["context"]
     assert "25 minutes" in context
+
+
+async def test_build_segments_logs_each_build_time_with_source(
+    hass: HomeAssistant, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _set_fake_states(hass)
+    store = SegmentStore(hass, str(tmp_path))
+    with caplog.at_level(logging.INFO), _Patched(_build_patches()):
+        await async_build_segments(
+            hass, store, make_person(), ["weather"], {}, now=at(8), source="refresh"
+        )
+    pattern = re.compile(r"Built segment 'weather' for Sam in \d+\.\ds \(refresh\)")
+    assert any(
+        pattern.search(r.getMessage())
+        for r in caplog.records
+        if r.levelno == logging.INFO
+    )
+
+
+async def test_build_segments_failure_log_includes_elapsed_and_source(
+    hass: HomeAssistant, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _set_fake_states(hass)
+    store = SegmentStore(hass, str(tmp_path))
+
+    def _llm(_hass: Any, step: dict[str, Any], *_a: Any, **_k: Any) -> Any:
+        if step["type"] == "scripture":
+            msg = "scripture sensor exploded"
+            raise RuntimeError(msg)
+        return _llm_content()
+
+    with _Patched(_build_patches(llm=AsyncMock(side_effect=_llm))):
+        await async_build_segments(
+            hass, store, make_person(), ["scripture"], {}, now=at(8)
+        )
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "scripture" in m and "after " in m and "(prebuild)" in m for m in warnings
+    )
+
+
+async def test_build_segments_passes_sensor_refresh_timeout_to_commute_step(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    _set_fake_states(hass)
+    store = SegmentStore(hass, str(tmp_path))
+
+    def _steps(mocks: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {c.args[1]["type"]: c.args[1] for c in mocks["llm"].call_args_list}
+
+    with _Patched(_build_patches()) as mocks:
+        await async_build_segments(
+            hass,
+            store,
+            make_person(),
+            ["commute", "weather"],
+            {},
+            now=at(8),
+            sensor_refresh_timeout=5,
+        )
+        steps = _steps(mocks)
+    assert steps["commute"]["sensor_refresh_timeout"] == 5
+    assert "sensor_refresh_timeout" not in steps["weather"]
+
+    with _Patched(_build_patches()) as mocks:
+        await async_build_segments(
+            hass,
+            SegmentStore(hass, str(tmp_path / "b")),
+            make_person(),
+            ["commute"],
+            {},
+            now=at(8),
+        )
+        steps = _steps(mocks)
+    assert "sensor_refresh_timeout" not in steps["commute"]
+
+
+async def test_build_segments_can_skip_the_all_heard_clip(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    _set_fake_states(hass)
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    with _Patched(_build_patches()):
+        await async_build_segments(
+            hass, store, person, ["weather"], {}, now=at(8), build_all_heard=False
+        )
+    assert store.get_fresh(person, "weather", at(8)) is not None
+    assert store.all_heard_clip(person) is None
 
 
 async def test_failure_log_includes_traceback(

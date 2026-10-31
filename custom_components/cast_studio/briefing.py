@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -59,9 +61,11 @@ from .people import (
 )
 from .play_history import PlayHistory
 from .segments import (
+    DYNAMIC_SEGMENT_TYPES,
     SegmentStore,
     StoredSegment,
     async_build_segments,
+    dynamic_segment_types,
     routine_segment_keys,
     segment_type_of,
     versioned_path,
@@ -73,7 +77,7 @@ from .sensor import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncIterator, Collection, Iterable
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -84,6 +88,7 @@ DATA_STORE = "segment_store"
 DATA_HISTORY = "play_history"
 DATA_LOCKS = "briefing_locks"
 DATA_PLAYS = "briefing_plays"
+DATA_REFRESHING = "briefing_refreshing"
 
 ROUTINE_VIDEO_PREFIX = "routine_"
 ROUTINE_AUDIO_SUFFIX = "-audio"
@@ -99,9 +104,10 @@ def get_lock(hass: HomeAssistant, person_id: str) -> asyncio.Lock:
     """
     Return the engine lock for one person.
 
-    A play waits on it while a pre-build for the same person is running. It
-    is only ever taken at the top of ``async_prebuild`` and ``async_play``,
-    never nested; the segment store's own manifest lock is taken inside it.
+    A play waits on it without limit while a pre-build for the same person
+    is running, and at most ``REFRESH_WAIT_SECONDS`` while a refresh is. It
+    is only ever taken at the top of a build and of ``async_play``, never
+    nested; the segment store's own manifest lock is taken inside it.
     """
     locks = hass.data.setdefault(DOMAIN, {}).setdefault(DATA_LOCKS, {})
     return locks.setdefault(person_id, asyncio.Lock())
@@ -128,8 +134,6 @@ class _CurrentPlay:
 # How long a Cast display may keep reporting "playing" after the briefing's
 # playback task ends (a stall makes it run late) before it is left alone.
 RELEASE_WAIT_SECONDS = 60.0
-# Segment types rebuilt at play time so they reflect that moment (traffic).
-LIVE_SEGMENT_TYPES = frozenset({"commute"})
 _STILL_PLAYING = ("playing", "buffering")
 
 
@@ -283,6 +287,7 @@ def _set_sensor(  # noqa: PLR0913
         state,
         briefing_day=briefing_day(person, now).isoformat(),
         ready_segments=_ready_keys(store, person, routine, now),
+        dynamic_segments=dynamic_segment_types(routine),
     )
 
 
@@ -489,29 +494,26 @@ async def _async_stitch_for_play(  # noqa: PLR0913
 # --- prebuild -----------------------------------------------------------------
 
 
-async def async_prebuild(
+async def _async_build_and_store(  # noqa: PLR0913
     hass: HomeAssistant,
     entry: ConfigEntry,
+    person: Person,
+    routines: list[Routine],
+    keys: list[str],
     *,
-    routine: Routine | None = None,
-    person: Person | None = None,
-) -> None:
+    source: str,
+    sensor_refresh_timeout: float | None = None,
+    build_all_heard: bool = True,
+) -> dict[str, StoredSegment | Exception]:
     """
-    Build and store segments for one routine, or for all of a person's routines.
+    Build and store ``keys`` for ``routines`` under the person's lock.
 
-    Plays nothing. For visual routines the stitched video and audio are stored
-    too, so a plain play needs no stitching (spec §5.3).
+    While a refresh holds the lock the person is marked as refreshing, so a
+    play waits for it at most ``REFRESH_WAIT_SECONDS``.
+
+    Stores the stitched files of the visual ones among ``routines`` and sets
+    their sensors; a routine that is playing keeps showing "playing".
     """
-    if (routine is None) == (person is None):
-        msg = "async_prebuild needs exactly one of routine or person"
-        raise ValueError(msg)
-    if routine is not None:
-        person = _person_of(entry, routine)
-        routines = [routine]
-    else:
-        assert person is not None  # noqa: S101 - narrowed by the check above
-        routines = get_routines(entry, person.person_id)
-    keys = list(dict.fromkeys(key for r in routines for key in routine_segment_keys(r)))
     sensors = {
         r.routine_id: async_get_or_create_briefing_sensor(hass, person, r)
         for r in routines
@@ -524,7 +526,7 @@ async def async_prebuild(
         return [s for s in sensors.values() if s.native_value != "playing"]
 
     try:
-        async with get_lock(hass, person.person_id):
+        async with get_lock(hass, person.person_id), _holding(hass, person, source):
             for sensor in _not_playing():
                 sensor.set_briefing_state("generating")
             now = dt_util.now()
@@ -547,6 +549,9 @@ async def async_prebuild(
                 now=now,
                 visual_keys=visual_keys,
                 all_heard_visual=_person_has_visual_routine(entry, person),
+                source=source,
+                sensor_refresh_timeout=sensor_refresh_timeout,
+                build_all_heard=build_all_heard,
             )
             await _async_store_visual_routines(hass, store, person, routines, now)
     except Exception:
@@ -561,12 +566,187 @@ async def async_prebuild(
         else:
             state = "ready" if _ready_keys(store, person, r, now) else "error"
         _set_sensor(sensor, state, store, person, r, now)
+    return results
+
+
+@asynccontextmanager
+async def _holding(
+    hass: HomeAssistant, person: Person, source: str
+) -> AsyncIterator[None]:
+    """Mark the person as refreshing while a refresh holds their lock."""
+    if source != "refresh":
+        yield
+        return
+    _refreshing(hass).add(person.person_id)
+    try:
+        yield
+    finally:
+        _refreshing(hass).discard(person.person_id)
+
+
+def _target(
+    entry: ConfigEntry, routine: Routine | None, person: Person | None, action: str
+) -> tuple[Person, list[Routine]]:
+    """Return the person and routines one of ``routine`` / ``person`` names."""
+    if (routine is None) == (person is None):
+        msg = f"{action} needs exactly one of routine or person"
+        raise ValueError(msg)
+    if routine is not None:
+        return _person_of(entry, routine), [routine]
+    assert person is not None  # noqa: S101 - narrowed by the check above
+    return person, get_routines(entry, person.person_id)
+
+
+async def async_prebuild(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    routine: Routine | None = None,
+    person: Person | None = None,
+) -> None:
+    """
+    Build and store segments for one routine, or for all of a person's routines.
+
+    Plays nothing. For visual routines the stitched video and audio are stored
+    too, so a plain play needs no stitching (spec §5.3).
+    """
+    person, routines = _target(entry, routine, person, "async_prebuild")
+    keys = list(dict.fromkeys(key for r in routines for key in routine_segment_keys(r)))
+    results = await _async_build_and_store(
+        hass, entry, person, routines, keys, source="prebuild"
+    )
     if keys and all(isinstance(value, Exception) for value in results.values()):
         msg = f"CastStudio could not build any segment for {person.name}"
         raise HomeAssistantError(msg)
 
 
+# --- refresh ------------------------------------------------------------------
+
+# Seconds a refresh lets the commute sensors update before using their last value.
+REFRESH_SENSOR_TIMEOUT = 5
+
+
+def _refreshing(hass: HomeAssistant) -> set[str]:
+    return hass.data.setdefault(DOMAIN, {}).setdefault(DATA_REFRESHING, set())
+
+
+def is_refreshing(hass: HomeAssistant, person_id: str) -> bool:
+    """Return True while a refresh holds the person's lock."""
+    return person_id in _refreshing(hass)
+
+
+def _dynamic_keys(routine: Routine, types: Collection[str]) -> list[str]:
+    return [
+        key for key in routine_segment_keys(routine) if segment_type_of(key) in types
+    ]
+
+
+def _refresh_types(segments: Iterable[str] | None) -> frozenset[str]:
+    """Return the dynamic types to refresh; raise on a type that is not one."""
+    if segments is None:
+        return DYNAMIC_SEGMENT_TYPES
+    for segment in segments:
+        if segment not in DYNAMIC_SEGMENT_TYPES:
+            allowed = ", ".join(sorted(DYNAMIC_SEGMENT_TYPES))
+            msg = (
+                f"segments: '{segment}' is not a dynamic segment type; "
+                f"choose from: {allowed}"
+            )
+            raise HomeAssistantError(msg)
+    return frozenset(segments)
+
+
+async def async_refresh(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    routine: Routine | None = None,
+    person: Person | None = None,
+    segments: Iterable[str] | None = None,
+) -> None:
+    """
+    Rebuild only the dynamic segments (weather, commute) of a routine or person.
+
+    ``segments`` narrows the rebuild to those dynamic types; any other type
+    raises.
+    With ``person``, every routine of theirs that has one is covered. They are
+    rebuilt even when fresh, so they reflect this moment. A segment
+    that fails keeps its stored copy; the others are still kept.
+    """
+    person, routines = _target(entry, routine, person, "async_refresh")
+    types = _refresh_types(segments)
+    routines = [r for r in routines if _dynamic_keys(r, types)]
+    keys = list(dict.fromkeys(key for r in routines for key in _dynamic_keys(r, types)))
+    if not keys:
+        LOGGER.info(
+            "Nothing to refresh for %s: no weather or commute segment", person.name
+        )
+        return
+    started = time.monotonic()
+    results = await _async_build_and_store(
+        hass,
+        entry,
+        person,
+        routines,
+        keys,
+        source="refresh",
+        sensor_refresh_timeout=REFRESH_SENSOR_TIMEOUT,
+        build_all_heard=False,
+    )
+    LOGGER.info(
+        "Refreshed %s for %s in %.1fs", keys, person.name, time.monotonic() - started
+    )
+    if all(isinstance(results.get(key), Exception) for key in keys):
+        msg = f"CastStudio could not refresh any segment for {person.name}"
+        raise HomeAssistantError(msg)
+
+
 # --- play ---------------------------------------------------------------------
+
+# Seconds a play waits for a running refresh before playing stored segments.
+REFRESH_WAIT_SECONDS = 10.0
+
+
+@asynccontextmanager
+async def _async_play_lock(
+    hass: HomeAssistant, person: Person, routine: Routine
+) -> AsyncIterator[bool]:
+    """
+    Hold the person's lock for a play; yield whether it is held.
+
+    While a refresh holds the lock, the play waits at most
+    ``REFRESH_WAIT_SECONDS`` and then goes on without the lock (yielding
+    False), using stored segments. Behind anything else it waits in full.
+    """
+    lock = get_lock(hass, person.person_id)
+    if not is_refreshing(hass, person.person_id):
+        async with lock:
+            yield True
+        return
+    started = time.monotonic()
+    try:
+        async with asyncio.timeout(REFRESH_WAIT_SECONDS):
+            await lock.acquire()
+    except TimeoutError:
+        LOGGER.info(
+            "Play of %s's '%s' stopped waiting for a refresh after %.0fs; "
+            "playing stored segments",
+            person.name,
+            routine.name,
+            REFRESH_WAIT_SECONDS,
+        )
+        yield False
+        return
+    LOGGER.info(
+        "Play of %s's '%s' waited %.1fs for a refresh",
+        person.name,
+        routine.name,
+        time.monotonic() - started,
+    )
+    try:
+        yield True
+    finally:
+        lock.release()
 
 
 def _resolve_target(hass: HomeAssistant, person: Person, target: str | None) -> str:
@@ -614,20 +794,20 @@ async def _async_segments_to_play(  # noqa: PLR0913
     now: datetime,
     *,
     visual: bool,
+    build_dynamic: bool = True,
 ) -> list[StoredSegment]:
     """
     Return fresh segments for ``keys``, building missing ones live.
 
-    ``LIVE_SEGMENT_TYPES`` (the commute) are always rebuilt, falling back to
-    the stored copy if that fails. Keys that still have no fresh segment are
+    Without ``build_dynamic``, missing ``DYNAMIC_SEGMENT_TYPES`` are not built
+    (a refresh is building them). Keys that still have no fresh segment are
     skipped with a warning; raises when none is left to play.
     """
-    # Live segments are rebuilt on every play; a stored copy is the fallback.
     missing = [
         key
         for key in keys
-        if segment_type_of(key) in LIVE_SEGMENT_TYPES
-        or _usable_segment(store, person, key, now, visual=visual) is None
+        if _usable_segment(store, person, key, now, visual=visual) is None
+        and (build_dynamic or segment_type_of(key) not in DYNAMIC_SEGMENT_TYPES)
     ]
     if missing:
         creds = await async_discover_ai_credentials(hass)
@@ -640,6 +820,7 @@ async def _async_segments_to_play(  # noqa: PLR0913
             now=now,
             visual_keys=missing if visual else (),
             all_heard_visual=visual,
+            source="play",
         )
     segments: list[StoredSegment] = []
     for key in keys:
@@ -678,6 +859,7 @@ async def _async_all_heard(
             creds,
             now=now,
             all_heard_visual=visual,
+            source="play",
         )
         clip = store.all_heard_clip(person)
     if clip is None:
@@ -808,7 +990,7 @@ async def async_play(  # noqa: PLR0913
     store = _store(hass, entry)
     history = await async_get_play_history(hass)
     try:
-        async with get_lock(hass, person.person_id):
+        async with _async_play_lock(hass, person, routine) as locked:
             player = _resolve_target(hass, person, target)
             now = dt_util.now()
             # A play-only setup must not keep a folder for every day (spec §8).
@@ -826,7 +1008,14 @@ async def async_play(  # noqa: PLR0913
             if keys:
                 sensor.set_briefing_state("generating")
                 segments = await _async_segments_to_play(
-                    hass, store, person, routine, keys, now, visual=video
+                    hass,
+                    store,
+                    person,
+                    routine,
+                    keys,
+                    now,
+                    visual=video,
+                    build_dynamic=locked,
                 )
                 media = None
                 if _is_visual(routine) and keys == all_keys:

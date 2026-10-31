@@ -13,6 +13,7 @@ from .ai_health import SIGNAL_AI_ACCOUNT_ISSUE, get_ai_account_issue
 from .const import DOMAIN, LOGGER
 from .people import get_people, get_routines, slugify_name
 from .routine_entity import routine_device_info
+from .segments import dynamic_segment_types
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -51,6 +52,7 @@ class CastStudioBriefingSensor(SensorEntity):
         self._state = "idle"
         self._briefing_day: str | None = None
         self._ready_segments: list[str] = []
+        self._dynamic_segments = dynamic_segment_types(routine)
 
     @property
     def native_value(self) -> str:
@@ -59,12 +61,14 @@ class CastStudioBriefingSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the person, routine, briefing day and ready segment keys."""
+        """Return the person, routine, briefing day and segment lists."""
         return {
             "person": self.person_name,
             "routine": self.routine_display_name,
             "briefing_day": self._briefing_day,
             "ready_segments": list(self._ready_segments),
+            # What ``cast_studio.refresh`` would rebuild for this routine.
+            "dynamic_segments": list(self._dynamic_segments),
             "ai_account_issue": get_ai_account_issue(self.hass),
         }
 
@@ -87,6 +91,7 @@ class CastStudioBriefingSensor(SensorEntity):
         *,
         briefing_day: str | None = None,
         ready_segments: list[str] | None = None,
+        dynamic_segments: list[str] | None = None,
     ) -> None:
         """Update the state, and the readiness attributes when given."""
         self._state = state
@@ -94,6 +99,8 @@ class CastStudioBriefingSensor(SensorEntity):
             self._briefing_day = briefing_day
         if ready_segments is not None:
             self._ready_segments = list(ready_segments)
+        if dynamic_segments is not None:
+            self._dynamic_segments = list(dynamic_segments)
         self.async_write_ha_state()
 
     def async_write_ha_state(self) -> None:

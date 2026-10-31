@@ -31,6 +31,7 @@ async def test_setup_component(hass: HomeAssistant) -> None:
     assert DOMAIN in hass.data
     assert set(hass.services.async_services()[DOMAIN]) == {
         "prebuild",
+        "refresh",
         "play",
         "rebuild_announcement",
         "announce",

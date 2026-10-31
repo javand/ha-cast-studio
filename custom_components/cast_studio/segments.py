@@ -26,6 +26,7 @@ import json
 import secrets
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -157,6 +158,15 @@ def segment_key(segment_type: str, *, include_signoff: bool = True) -> str:
 def segment_type_of(key: str) -> str:
     """Return the segment type a storage key was built from."""
     return key.removesuffix(NOSIGNOFF_SUFFIX)
+
+
+# Segment types that change through the day; ``cast_studio.refresh`` rebuilds them.
+DYNAMIC_SEGMENT_TYPES = frozenset({"weather", "commute"})
+
+
+def dynamic_segment_types(routine: Routine) -> list[str]:
+    """Return the routine's dynamic segment types, in routine order."""
+    return [t for t in routine.segments if t in DYNAMIC_SEGMENT_TYPES]
 
 
 def routine_segment_keys(routine: Routine) -> list[str]:
@@ -660,14 +670,20 @@ async def async_build_segments(  # noqa: PLR0913
     now: datetime,
     visual_keys: Collection[str] = (),
     all_heard_visual: bool = False,
+    source: str = "prebuild",
+    sensor_refresh_timeout: float | None = None,
+    build_all_heard: bool = True,
 ) -> dict[str, StoredSegment | Exception]:
     """
     Build and store the person's segments for the briefing day of ``now``.
 
     Each key is built independently: a failure is logged and returned as the
     key's value, and the remaining keys are still built. The all-heard clip
-    is also built when it is missing for the day. Keys in ``visual_keys``
+    is also built when it is missing for the day, unless ``build_all_heard``
+    is False. Keys in ``visual_keys``
     (and the all-heard line when ``all_heard_visual``) get a slide and clip.
+    Every build logs how long it took, labelled with ``source`` (what asked
+    for it). ``sensor_refresh_timeout`` caps the commute's sensor refresh.
     """
     await store.async_load(person, now)
     creds = dict(ai_creds or {})
@@ -679,7 +695,9 @@ async def async_build_segments(  # noqa: PLR0913
         (key, store.day_dir(person, today)) for key in dict.fromkeys(keys)
     ]
     all_heard = store.all_heard_clip(person)
-    if all_heard is None or all_heard.built_day != today or all_heard.degraded:
+    if build_all_heard and (
+        all_heard is None or all_heard.built_day != today or all_heard.degraded
+    ):
         jobs.append((ALL_HEARD_KEY, store.person_dir(person) / ALL_HEARD_DIR))
 
     scratch = Path(
@@ -688,6 +706,7 @@ async def async_build_segments(  # noqa: PLR0913
     results: dict[str, StoredSegment | Exception] = {}
     try:
         for key, target_dir in jobs:
+            started = time.monotonic()
             try:
                 step = (
                     _all_heard_step(person, today, visual=all_heard_visual)
@@ -696,21 +715,36 @@ async def async_build_segments(  # noqa: PLR0913
                         person, key, today, visual=key in visual_keys
                     )
                 )
+                if (
+                    sensor_refresh_timeout is not None
+                    and segment_type_of(key) == "commute"
+                ):
+                    step["sensor_refresh_timeout"] = sensor_refresh_timeout
                 segment, staged = await _async_build_one(
                     hass, person, key, step, creds, scratch, target_dir, now
                 )
                 segment = await store.async_store(person, target_dir, segment, staged)
             except Exception as err:  # noqa: BLE001 - one segment must not stop the rest
                 LOGGER.warning(
-                    "CastStudio could not build segment '%s' for %s: %s",
+                    "CastStudio could not build segment '%s' for %s after %.1fs "
+                    "(%s): %s",
                     key,
                     person.name,
+                    time.monotonic() - started,
+                    source,
                     err,
                     exc_info=err,
                 )
                 if key != ALL_HEARD_KEY:
                     results[key] = err
             else:
+                LOGGER.info(
+                    "Built segment '%s' for %s in %.1fs (%s)",
+                    key,
+                    person.name,
+                    time.monotonic() - started,
+                    source,
+                )
                 if key != ALL_HEARD_KEY:
                     results[key] = segment
     finally:

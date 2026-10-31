@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -3342,6 +3344,24 @@ async def test_extract_commute_data_refreshes_person_sensors_first(
         ["sensor.alex_commute_drive_to_work", "sensor.alex_drive_home_evening"]
     ]
     assert data["return_time"] == 48
+
+
+@pytest.mark.asyncio
+async def test_extract_commute_data_uses_step_sensor_refresh_timeout(
+    hass: HomeAssistant,
+):
+    _set_both_commute_sensors(hass)
+
+    async def _slow_update(_call: ServiceCall) -> None:
+        await asyncio.sleep(5)
+
+    hass.services.async_register("homeassistant", "update_entity", _slow_update)
+    step = {**_standalone_commute_step(), "sensor_refresh_timeout": 0.05}
+    started = time.monotonic()
+    data = await async_extract_commute_data(hass, step)
+
+    assert time.monotonic() - started < 1
+    assert data["drive_time"] == 35  # the last reading is used
 
 
 @pytest.mark.asyncio

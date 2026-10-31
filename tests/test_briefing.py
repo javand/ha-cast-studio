@@ -8,7 +8,7 @@ import logging
 import re
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -73,9 +73,14 @@ class FakeBuilder:
 
     fail: set[str] = field(default_factory=set)
     gate: asyncio.Event | None = None
+    # When set, only calls with this source wait on ``gate``.
+    gate_source: str | None = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
     calls: list[list[str]] = field(default_factory=list)
     visual_calls: list[set[str]] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+    sensor_timeouts: list[float | None] = field(default_factory=list)
+    all_heard_flags: list[bool] = field(default_factory=list)
 
     async def __call__(  # noqa: PLR0913
         self,
@@ -88,19 +93,25 @@ class FakeBuilder:
         now: datetime,
         visual_keys: Iterable[str] = (),
         all_heard_visual: bool = False,
+        source: str = "prebuild",
+        sensor_refresh_timeout: float | None = None,
+        build_all_heard: bool = True,
     ) -> dict[str, StoredSegment | Exception]:
         wanted = list(dict.fromkeys(keys))
         visual = set(visual_keys)
         self.calls.append(wanted)
         self.visual_calls.append(visual)
+        self.sources.append(source)
+        self.sensor_timeouts.append(sensor_refresh_timeout)
+        self.all_heard_flags.append(build_all_heard)
         self.started.set()
-        if self.gate is not None:
+        if self.gate is not None and self.gate_source in (None, source):
             await self.gate.wait()
         await store.async_load(person, now)
         today = briefing_day(person, now)
         jobs = [(key, store.day_dir(person, today)) for key in wanted]
         all_heard = store.all_heard_clip(person)
-        if all_heard is None or all_heard.built_day != today:
+        if build_all_heard and (all_heard is None or all_heard.built_day != today):
             jobs.append((ALL_HEARD_KEY, store.person_dir(person) / ALL_HEARD_DIR))
         scratch = Path(tempfile.mkdtemp(prefix="fake_seg_"))
         results: dict[str, StoredSegment | Exception] = {}
@@ -189,6 +200,21 @@ class Harness:
     async def prebuild(self, name: str) -> None:
         await briefing.async_prebuild(self.hass, self.entry, routine=self.routine(name))
         await self.hass.async_block_till_done()
+
+    async def refresh(self, name: str | None = None, person: str | None = None) -> None:
+        if name is not None:
+            await briefing.async_refresh(
+                self.hass, self.entry, routine=self.routine(name)
+            )
+        else:
+            await briefing.async_refresh(
+                self.hass, self.entry, person=self.person(person or SAM_ID)
+            )
+        await self.hass.async_block_till_done()
+
+    @property
+    def store(self) -> SegmentStore:
+        return self.hass.data[DOMAIN][briefing.DATA_STORE]
 
 
 def dashboard_routine(
@@ -603,6 +629,187 @@ async def test_play_waits_for_inflight_prebuild(sam_quick: Harness) -> None:
     assert h.builder.calls == [QUICK]
     assert len(h.played) == 1
     assert h.ffmpeg.concats == [QUICK]
+
+
+async def _start_gated_refresh(h: Harness, name: str) -> asyncio.Task[None]:
+    h.builder.gate = asyncio.Event()
+    h.builder.gate_source = "refresh"
+    h.builder.started.clear()
+    task = asyncio.create_task(
+        briefing.async_refresh(h.hass, h.entry, routine=h.routine(name))
+    )
+    async with asyncio.timeout(2):
+        await h.builder.started.wait()
+    return task
+
+
+async def _fire_timers_due_within(h: Harness, seconds: float) -> None:
+    """Run the loop timers due within ``seconds`` of now (the clock is frozen)."""
+    # Let pending executor jobs finish so the play is already waiting.
+    await h.hass.async_block_till_done()
+    async_fire_time_changed(h.hass, dt_util.utcnow() + timedelta(seconds=seconds))
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+async def test_play_waits_for_a_running_refresh_and_uses_fresh_copies(
+    sam_full: Harness, freezer: FrozenDateTimeFactory
+) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+    freezer.move_to(at(10))
+    refresh = await _start_gated_refresh(h, "Full")
+    play = asyncio.create_task(briefing.async_play(h.hass, h.entry, h.routine("Full")))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert h.played == []
+
+    h.builder.gate.set()
+    await asyncio.gather(refresh, play)
+    await h.hass.async_block_till_done()
+
+    assert len(h.played) == 1
+    assert h.builder.sources == ["prebuild", "refresh"]
+    weather = h.store.get_fresh(h.person(SAM_ID), "weather", at(10))
+    assert weather.built_at == at(10)
+
+
+@pytest.mark.timeout(10)
+async def test_play_stops_waiting_after_timeout_and_plays_prebuild_copies(
+    sam_full: Harness, freezer: FrozenDateTimeFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+    h.ffmpeg.concats.clear()
+    freezer.move_to(at(10))
+    refresh = await _start_gated_refresh(h, "Full")
+
+    with caplog.at_level(logging.INFO):
+        play = asyncio.create_task(
+            briefing.async_play(h.hass, h.entry, h.routine("Full"))
+        )
+        await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS - 1)
+        assert h.played == []
+        await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS + 1)
+        await play
+
+    assert len(h.played) == 1
+    assert h.ffmpeg.concats[-1] == FULL
+    assert h.builder.sources == ["prebuild", "refresh"]
+    assert "stopped waiting for a refresh" in caplog.text
+
+    h.builder.gate.set()
+    await refresh
+    weather = h.store.get_fresh(h.person(SAM_ID), "weather", at(10))
+    assert weather.built_at == at(10)
+
+
+@pytest.mark.timeout(10)
+async def test_play_after_wait_timeout_skips_unbuilt_dynamic_segments(
+    sam_full: Harness, freezer: FrozenDateTimeFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    h = sam_full
+    refresh = await _start_gated_refresh(h, "Full")
+
+    with caplog.at_level(logging.WARNING):
+        play = asyncio.create_task(
+            briefing.async_play(h.hass, h.entry, h.routine("Full"))
+        )
+        await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS + 1)
+        await play
+
+    play_calls = [
+        keys
+        for keys, src in zip(h.builder.calls, h.builder.sources, strict=True)
+        if src == "play"
+    ]
+    assert all("weather" not in k and "commute" not in k for k in play_calls)
+    assert h.ffmpeg.concats[-1] == ["greeting", "scripture", "closing"]
+    assert "Skipping segment 'weather'" in caplog.text
+
+    h.builder.gate.set()
+    await refresh
+
+
+@pytest.mark.timeout(10)
+async def test_play_still_waits_without_limit_for_a_prebuild(
+    sam_quick: Harness, freezer: FrozenDateTimeFactory
+) -> None:
+    h = sam_quick
+    h.builder.gate = asyncio.Event()
+    prebuild = asyncio.create_task(
+        briefing.async_prebuild(h.hass, h.entry, routine=h.routine("Quick"))
+    )
+    await h.builder.started.wait()
+    play = asyncio.create_task(briefing.async_play(h.hass, h.entry, h.routine("Quick")))
+    await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS * 6)
+    assert h.played == []
+
+    h.builder.gate.set()
+    await asyncio.gather(prebuild, play)
+    await h.hass.async_block_till_done()
+    assert len(h.played) == 1
+
+
+async def test_refresh_does_not_build_the_all_heard_clip(sam_full: Harness) -> None:
+    h = sam_full
+    await h.refresh("Full")
+
+    assert h.builder.all_heard_flags == [False]
+
+
+@pytest.mark.timeout(10)
+async def test_play_wait_stays_capped_across_queued_refreshes(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+    first = await _start_gated_refresh(h, "Full")
+    second = asyncio.create_task(
+        briefing.async_refresh(h.hass, h.entry, routine=h.routine("Full"))
+    )
+    await h.hass.async_block_till_done()
+    # Let the first finish; the second then holds the lock on a new gate.
+    gate = h.builder.gate
+    h.builder.gate = asyncio.Event()
+    h.builder.started.clear()
+    gate.set()
+    await first
+    async with asyncio.timeout(2):
+        await h.builder.started.wait()
+
+    play = asyncio.create_task(briefing.async_play(h.hass, h.entry, h.routine("Full")))
+    await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS + 1)
+    await play
+    assert len(h.played) == 1
+
+    h.builder.gate.set()
+    await second
+
+
+@pytest.mark.timeout(10)
+async def test_play_waits_in_full_for_a_prebuild_with_a_refresh_queued(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    h.builder.gate = asyncio.Event()
+    h.builder.gate_source = "prebuild"
+    prebuild = asyncio.create_task(
+        briefing.async_prebuild(h.hass, h.entry, routine=h.routine("Full"))
+    )
+    await h.builder.started.wait()
+    refresh = asyncio.create_task(
+        briefing.async_refresh(h.hass, h.entry, routine=h.routine("Full"))
+    )
+    play = asyncio.create_task(briefing.async_play(h.hass, h.entry, h.routine("Full")))
+    await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS * 6)
+    assert h.played == []
+
+    h.builder.gate.set()
+    await asyncio.gather(prebuild, refresh, play)
+    await h.hass.async_block_till_done()
+    assert len(h.played) == 1
+    assert h.builder.sources == ["prebuild", "refresh"]
 
 
 async def test_play_continues_when_one_segment_fails(
@@ -1357,31 +1564,305 @@ async def test_play_only_setup_prunes_earlier_briefing_days(
     assert len(h.played) == 2
 
 
-async def test_play_rebuilds_the_commute_live_after_a_prebuild(
+async def test_play_after_prebuild_builds_nothing_including_commute(
     sam_full: Harness,
 ) -> None:
     h = sam_full
     await h.prebuild("Full")
     h.builder.calls.clear()
+    h.ffmpeg.concats.clear()
 
     await h.play("Full")
 
-    assert h.builder.calls == [["commute"]]
-    assert len(h.played) == 1
+    assert h.builder.calls == []
+    assert h.ffmpeg.concats[-1] == FULL
 
 
-async def test_failed_live_commute_falls_back_to_the_prebuilt_one(
+async def test_play_builds_missing_segments_live_with_play_source(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    await h.play("Full")
+
+    assert h.builder.sources == ["play"]
+    assert h.builder.calls == [FULL]
+
+
+def test_dynamic_segment_types_are_weather_and_commute() -> None:
+    assert {"weather", "commute"} == briefing.DYNAMIC_SEGMENT_TYPES
+
+
+# --- refresh ------------------------------------------------------------------
+
+
+@pytest.fixture
+async def sam_two_visual(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> Harness:
+    return await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            person_subentry(SAM_ID, "Sam", media_player=DISPLAY),
+            routine_subentry("r_sam_morning", SAM_ID, "Morning", QUICK),
+            routine_subentry("r_sam_night", SAM_ID, "Night", ["weather", "closing"]),
+        ],
+    )
+
+
+async def test_refresh_routine_rebuilds_only_its_dynamic_segments(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+    h.builder.calls.clear()
+    h.builder.sources.clear()
+    h.builder.sensor_timeouts.clear()
+
+    await h.refresh("Full")
+
+    assert h.builder.calls == [["weather", "commute"]]
+    assert h.builder.sources == ["refresh"]
+    assert h.builder.sensor_timeouts == [5]
+
+
+async def test_refresh_person_covers_all_routines_with_dynamic_segments(
+    sam_quick_and_full: Harness,
+) -> None:
+    h = sam_quick_and_full
+    await h.refresh(person=SAM_ID)
+
+    assert len(h.builder.calls) == 1
+    assert set(h.builder.calls[0]) == {"weather", "commute"}
+
+
+async def test_refresh_person_without_dynamic_segments_builds_nothing(  # noqa: PLR0913
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            _sam(),
+            routine_subentry(
+                "r_sam_calm",
+                SAM_ID,
+                "Calm",
+                ["greeting", "scripture"],
+                output_format="audio",
+            ),
+        ],
+    )
+    with caplog.at_level(logging.INFO):
+        await h.refresh(person=SAM_ID)
+
+    assert h.builder.calls == []
+    assert "Nothing to refresh for Sam" in caplog.text
+
+
+async def test_refresh_keeps_successful_segment_when_other_fails(
+    sam_full: Harness, freezer: FrozenDateTimeFactory
+) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+    freezer.move_to(at(10))
+    h.builder.fail = {"commute"}
+
+    await h.refresh("Full")
+
+    sam = h.person(SAM_ID)
+    assert h.store.get_fresh(sam, "weather", at(10)).built_at == at(10)
+    assert h.store.get_fresh(sam, "commute", at(10)).built_at == at(8)
+
+
+async def test_refresh_all_failed_raises_and_keeps_prebuild_copies(
     sam_full: Harness,
 ) -> None:
     h = sam_full
     await h.prebuild("Full")
     h.ffmpeg.concats.clear()
-    h.builder.fail = {"commute"}
+    h.builder.fail = {"weather", "commute"}
+
+    with pytest.raises(HomeAssistantError, match="could not refresh"):
+        await h.refresh("Full")
+    assert h.hass.states.get("sensor.cast_studio_sam_full").state == "ready"
 
     await h.play("Full")
+    assert h.ffmpeg.concats[-1] == FULL
 
-    assert "commute" in h.ffmpeg.concats[-1]
-    assert len(h.played) == 1
+
+async def test_second_refresh_rebuilds_fresh_dynamic_segments(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    await h.refresh("Full")
+    await h.refresh("Full")
+
+    assert h.builder.calls == [["weather", "commute"], ["weather", "commute"]]
+
+
+async def test_routine_refresh_restitches_its_visual_routine(
+    sam_two_visual: Harness, freezer: FrozenDateTimeFactory
+) -> None:
+    h = sam_two_visual
+    await briefing.async_prebuild(h.hass, h.entry, person=h.person(SAM_ID))
+    freezer.move_to(at(8, 30))
+    await h.refresh("Morning")
+    h.ffmpeg.concats.clear()
+
+    await h.play("Morning")
+
+    assert h.ffmpeg.concats == []
+    assert _media_id(h.played[0]).endswith("routine_morning.mp4")
+
+
+async def test_routine_refresh_makes_other_visual_routine_restitch(
+    sam_two_visual: Harness, freezer: FrozenDateTimeFactory
+) -> None:
+    h = sam_two_visual
+    await briefing.async_prebuild(h.hass, h.entry, person=h.person(SAM_ID))
+    freezer.move_to(at(8, 30))
+    await h.refresh("Morning")
+    h.ffmpeg.concats.clear()
+
+    await h.play("Night")
+
+    assert h.ffmpeg.concats == [["weather", "closing"]]
+
+
+async def test_refresh_during_playback_keeps_streamed_files(
+    prebuilt_alex_office_day: Harness,
+    freezer: FrozenDateTimeFactory,
+    tmp_path: Path,
+) -> None:
+    h = prebuilt_alex_office_day
+    day = tmp_path / "people" / ALEX_ID / "2026-10-20"
+    alex = h.person(ALEX_ID)
+    await h.play("Quick")
+    streamed_video = _url_name(h.played[0])
+    old_clip = Path(h.store.get_fresh(alex, "weather", at(8)).clip_path).name
+
+    freezer.move_to(at(8, 15))
+    await briefing.async_refresh(h.hass, h.entry, routine=h.routine("Quick"))
+
+    assert (day / streamed_video).is_file()
+    assert (day / old_clip).is_file()
+    assert _sidecar_video(tmp_path) != streamed_video
+    assert (
+        Path(h.store.get_fresh(alex, "weather", at(8, 15)).clip_path).name != old_clip
+    )
+
+
+async def test_refresh_does_not_flip_a_playing_routine(sam_full: Harness) -> None:
+    h = sam_full
+    sensor = briefing.async_get_or_create_briefing_sensor(
+        h.hass, h.person(SAM_ID), h.routine("Full")
+    )
+    sensor.set_briefing_state("playing")
+    states: list[str] = []
+    original = sensor.set_briefing_state
+
+    def _spy(state: str, **kwargs: Any) -> None:
+        states.append(state)
+        original(state, **kwargs)
+
+    with patch.object(sensor, "set_briefing_state", side_effect=_spy):
+        await h.refresh("Full")
+
+    assert "generating" not in states
+    assert h.hass.states.get("sensor.cast_studio_sam_full").state == "playing"
+
+
+async def test_is_refreshing_is_true_only_while_refresh_runs(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    h.builder.gate = asyncio.Event()
+    task = asyncio.create_task(h.refresh("Full"))
+    async with asyncio.timeout(2):
+        await asyncio.wait(
+            [task, asyncio.ensure_future(h.builder.started.wait())],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    assert not task.done(), task.exception()
+    assert briefing.is_refreshing(h.hass, SAM_ID)
+
+    h.builder.gate.set()
+    await task
+    assert not briefing.is_refreshing(h.hass, SAM_ID)
+
+    h.builder.fail = {"weather", "commute"}
+    with pytest.raises(HomeAssistantError):
+        await h.refresh("Full")
+    assert not briefing.is_refreshing(h.hass, SAM_ID)
+
+
+async def test_refresh_segments_limits_the_rebuild_to_chosen_types(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    await briefing.async_refresh(
+        h.hass, h.entry, routine=h.routine("Full"), segments=["weather"]
+    )
+
+    assert h.builder.calls == [["weather"]]
+
+
+async def test_refresh_segments_rejects_a_non_dynamic_type(sam_full: Harness) -> None:
+    h = sam_full
+    with pytest.raises(
+        HomeAssistantError,
+        match=r"segments: 'agenda' is not a dynamic segment type; "
+        r"choose from: commute, weather",
+    ):
+        await briefing.async_refresh(
+            h.hass, h.entry, routine=h.routine("Full"), segments=["weather", "agenda"]
+        )
+    assert h.builder.calls == []
+
+
+async def test_refresh_segments_not_in_the_routine_refreshes_nothing(
+    sam_quick: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    h = sam_quick
+    with caplog.at_level(logging.INFO):
+        await briefing.async_refresh(
+            h.hass, h.entry, routine=h.routine("Quick"), segments=["commute"]
+        )
+
+    assert h.builder.calls == []
+    assert "Nothing to refresh for Sam" in caplog.text
+
+
+async def test_routine_sensor_lists_its_dynamic_segments(sam_full: Harness) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+
+    state = h.hass.states.get("sensor.cast_studio_sam_full")
+    assert state.attributes["dynamic_segments"] == ["weather", "commute"]
+
+
+async def test_refresh_requires_exactly_one_target(sam_quick: Harness) -> None:
+    h = sam_quick
+    with pytest.raises(ValueError, match="exactly one"):
+        await briefing.async_refresh(h.hass, h.entry)
+    with pytest.raises(ValueError, match="exactly one"):
+        await briefing.async_refresh(
+            h.hass, h.entry, routine=h.routine("Quick"), person=h.person(SAM_ID)
+        )
 
 
 # --- pausable playback (announcements) ---------------------------------------
