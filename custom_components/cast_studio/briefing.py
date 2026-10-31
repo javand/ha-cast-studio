@@ -61,9 +61,11 @@ from .people import (
 )
 from .play_history import PlayHistory
 from .segments import (
+    DYNAMIC_SEGMENT_TYPES,
     SegmentStore,
     StoredSegment,
     async_build_segments,
+    dynamic_segment_types,
     routine_segment_keys,
     segment_type_of,
     versioned_path,
@@ -75,7 +77,7 @@ from .sensor import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Collection, Iterable
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -132,8 +134,6 @@ class _CurrentPlay:
 # How long a Cast display may keep reporting "playing" after the briefing's
 # playback task ends (a stall makes it run late) before it is left alone.
 RELEASE_WAIT_SECONDS = 60.0
-# Segment types that change through the day; ``async_refresh`` rebuilds them.
-DYNAMIC_SEGMENT_TYPES = frozenset({"weather", "commute"})
 _STILL_PLAYING = ("playing", "buffering")
 
 
@@ -287,6 +287,7 @@ def _set_sensor(  # noqa: PLR0913
         state,
         briefing_day=briefing_day(person, now).isoformat(),
         ready_segments=_ready_keys(store, person, routine, now),
+        dynamic_segments=dynamic_segment_types(routine),
     )
 
 
@@ -634,12 +635,25 @@ def is_refreshing(hass: HomeAssistant, person_id: str) -> bool:
     return person_id in _refreshing(hass)
 
 
-def _dynamic_keys(routine: Routine) -> list[str]:
+def _dynamic_keys(routine: Routine, types: Collection[str]) -> list[str]:
     return [
-        key
-        for key in routine_segment_keys(routine)
-        if segment_type_of(key) in DYNAMIC_SEGMENT_TYPES
+        key for key in routine_segment_keys(routine) if segment_type_of(key) in types
     ]
+
+
+def _refresh_types(segments: Iterable[str] | None) -> frozenset[str]:
+    """Return the dynamic types to refresh; raise on a type that is not one."""
+    if segments is None:
+        return DYNAMIC_SEGMENT_TYPES
+    for segment in segments:
+        if segment not in DYNAMIC_SEGMENT_TYPES:
+            allowed = ", ".join(sorted(DYNAMIC_SEGMENT_TYPES))
+            msg = (
+                f"segments: '{segment}' is not a dynamic segment type; "
+                f"choose from: {allowed}"
+            )
+            raise HomeAssistantError(msg)
+    return frozenset(segments)
 
 
 async def async_refresh(
@@ -648,17 +662,21 @@ async def async_refresh(
     *,
     routine: Routine | None = None,
     person: Person | None = None,
+    segments: Iterable[str] | None = None,
 ) -> None:
     """
     Rebuild only the dynamic segments (weather, commute) of a routine or person.
 
+    ``segments`` narrows the rebuild to those dynamic types; any other type
+    raises.
     With ``person``, every routine of theirs that has one is covered. They are
     rebuilt even when fresh, so they reflect this moment. A segment
     that fails keeps its stored copy; the others are still kept.
     """
     person, routines = _target(entry, routine, person, "async_refresh")
-    routines = [r for r in routines if _dynamic_keys(r)]
-    keys = list(dict.fromkeys(key for r in routines for key in _dynamic_keys(r)))
+    types = _refresh_types(segments)
+    routines = [r for r in routines if _dynamic_keys(r, types)]
+    keys = list(dict.fromkeys(key for r in routines for key in _dynamic_keys(r, types)))
     if not keys:
         LOGGER.info(
             "Nothing to refresh for %s: no weather or commute segment", person.name

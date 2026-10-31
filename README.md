@@ -146,6 +146,16 @@ Rebuilds only the **dynamic segments**, weather and commute, so they reflect thi
 | :--- | :--- | :--- |
 | `person` | no | At least one of `person` or `routine` is required. Alone: refreshes every routine of that person that has a weather or commute segment. With `routine`: picks whose routine is meant. |
 | `routine` | no | Routine whose weather and commute to refresh. At least one of `person` or `routine` is required. |
+| `segments` | no | Only these dynamic segment types are refreshed, for example `[weather]`. Without it, every dynamic type is refreshed. A type that is not dynamic is rejected with an error that lists the allowed ones. |
+
+**Dynamic segment types** are the ones that change through the day:
+
+| Type | Why it is dynamic |
+| :--- | :--- |
+| `weather` | Current conditions, temperature and the chance of rain change through the morning. |
+| `commute` | Travel times change with traffic. |
+
+Each routine's status sensor shows which of its own segments are dynamic in its `dynamic_segments` attribute (for example `[weather, commute]`), so you can see what a refresh of that routine rebuilds.
 
 Stored segments belong to the person, not to one routine, so a refresh for one routine also gives the person's other routines the fresh weather and commute. Nothing refreshes on its own schedule: a routine played later in the day (for example a night routine) needs its own `refresh` (or a routine-scoped `prebuild`) at that time. The person's **max age** setting (`max_age_minutes`) is the safety net: a segment older than that is rebuilt when the routine plays.
 

@@ -132,6 +132,12 @@ async def test_refresh_action_resolves_routine_and_person(
             DOMAIN, "refresh", {"person": "Sam"}, blocking=True
         )
         assert refresh.await_args.kwargs["person"].name == "Sam"
+        assert refresh.await_args.kwargs["segments"] is None
+
+        await hass.services.async_call(
+            DOMAIN, "refresh", {"person": "Sam", "segments": "weather"}, blocking=True
+        )
+        assert refresh.await_args.kwargs["segments"] == ["weather"]
 
         with pytest.raises(vol.Invalid):
             await hass.services.async_call(DOMAIN, "refresh", {}, blocking=True)
@@ -152,6 +158,7 @@ async def test_routine_sensor_entity_id_is_person_and_routine_slug(
     assert state.attributes["routine"] == "Quick"
     assert state.attributes["briefing_day"]
     assert state.attributes["ready_segments"] == []
+    assert state.attributes["dynamic_segments"] == ["weather"]
 
 
 async def test_play_action_target_must_be_a_media_player(

@@ -160,6 +160,15 @@ def segment_type_of(key: str) -> str:
     return key.removesuffix(NOSIGNOFF_SUFFIX)
 
 
+# Segment types that change through the day; ``cast_studio.refresh`` rebuilds them.
+DYNAMIC_SEGMENT_TYPES = frozenset({"weather", "commute"})
+
+
+def dynamic_segment_types(routine: Routine) -> list[str]:
+    """Return the routine's dynamic segment types, in routine order."""
+    return [t for t in routine.segments if t in DYNAMIC_SEGMENT_TYPES]
+
+
 def routine_segment_keys(routine: Routine) -> list[str]:
     """
     Return the routine's segment keys in order.

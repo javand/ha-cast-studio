@@ -35,6 +35,14 @@ refresh:
       example: Quick
       selector:
         text:
+    segments:
+      name: Segments
+      description: "Optional. Only these dynamic segment types are refreshed, for example weather. Allowed: commute, weather. Without it, every dynamic type is refreshed. A routine's status sensor lists its dynamic segments in the dynamic_segments attribute."
+      required: false
+      example: weather
+      selector:
+        text:
+          multiple: true
 
 play:
   name: Play Briefing

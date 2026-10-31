@@ -381,6 +381,10 @@
         "routine": {
           "name": "Routine",
           "description": "Routine whose weather and commute segments to refresh. Give a person or a routine, or both."
+        },
+        "segments": {
+          "name": "Segments",
+          "description": "Optional. Only these dynamic segment types are refreshed, for example weather. Allowed: commute, weather. Without it, every dynamic type is refreshed. A routine's status sensor lists its dynamic segments in the dynamic_segments attribute."
         }
       }
     },

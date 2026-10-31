@@ -1810,6 +1810,51 @@ async def test_is_refreshing_is_true_only_while_refresh_runs(
     assert not briefing.is_refreshing(h.hass, SAM_ID)
 
 
+async def test_refresh_segments_limits_the_rebuild_to_chosen_types(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    await briefing.async_refresh(
+        h.hass, h.entry, routine=h.routine("Full"), segments=["weather"]
+    )
+
+    assert h.builder.calls == [["weather"]]
+
+
+async def test_refresh_segments_rejects_a_non_dynamic_type(sam_full: Harness) -> None:
+    h = sam_full
+    with pytest.raises(
+        HomeAssistantError,
+        match=r"segments: 'agenda' is not a dynamic segment type; "
+        r"choose from: commute, weather",
+    ):
+        await briefing.async_refresh(
+            h.hass, h.entry, routine=h.routine("Full"), segments=["weather", "agenda"]
+        )
+    assert h.builder.calls == []
+
+
+async def test_refresh_segments_not_in_the_routine_refreshes_nothing(
+    sam_quick: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    h = sam_quick
+    with caplog.at_level(logging.INFO):
+        await briefing.async_refresh(
+            h.hass, h.entry, routine=h.routine("Quick"), segments=["commute"]
+        )
+
+    assert h.builder.calls == []
+    assert "Nothing to refresh for Sam" in caplog.text
+
+
+async def test_routine_sensor_lists_its_dynamic_segments(sam_full: Harness) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+
+    state = h.hass.states.get("sensor.cast_studio_sam_full")
+    assert state.attributes["dynamic_segments"] == ["weather", "commute"]
+
+
 async def test_refresh_requires_exactly_one_target(sam_quick: Harness) -> None:
     h = sam_quick
     with pytest.raises(ValueError, match="exactly one"):
