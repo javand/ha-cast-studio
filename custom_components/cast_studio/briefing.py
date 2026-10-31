@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -74,7 +75,7 @@ from .sensor import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncIterator, Iterable
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -101,9 +102,10 @@ def get_lock(hass: HomeAssistant, person_id: str) -> asyncio.Lock:
     """
     Return the engine lock for one person.
 
-    A play waits on it while a pre-build for the same person is running. It
-    is only ever taken at the top of ``async_prebuild`` and ``async_play``,
-    never nested; the segment store's own manifest lock is taken inside it.
+    A play waits on it without limit while a pre-build for the same person
+    is running, and at most ``REFRESH_WAIT_SECONDS`` while a refresh is. It
+    is only ever taken at the top of a build and of ``async_play``, never
+    nested; the segment store's own manifest lock is taken inside it.
     """
     locks = hass.data.setdefault(DOMAIN, {}).setdefault(DATA_LOCKS, {})
     return locks.setdefault(person_id, asyncio.Lock())
@@ -666,6 +668,50 @@ async def async_refresh(
 
 # --- play ---------------------------------------------------------------------
 
+# Seconds a play waits for a running refresh before playing stored segments.
+REFRESH_WAIT_SECONDS = 10.0
+
+
+@asynccontextmanager
+async def _async_play_lock(
+    hass: HomeAssistant, person: Person, routine: Routine
+) -> AsyncIterator[bool]:
+    """
+    Hold the person's lock for a play; yield whether it is held.
+
+    While a refresh runs, the play waits at most ``REFRESH_WAIT_SECONDS`` and
+    then goes on without the lock (yielding False), using stored segments.
+    """
+    lock = get_lock(hass, person.person_id)
+    if not is_refreshing(hass, person.person_id):
+        async with lock:
+            yield True
+        return
+    started = time.monotonic()
+    try:
+        async with asyncio.timeout(REFRESH_WAIT_SECONDS):
+            await lock.acquire()
+    except TimeoutError:
+        LOGGER.info(
+            "Play of %s's '%s' stopped waiting for a refresh after %.0fs; "
+            "playing stored segments",
+            person.name,
+            routine.name,
+            REFRESH_WAIT_SECONDS,
+        )
+        yield False
+        return
+    LOGGER.info(
+        "Play of %s's '%s' waited %.1fs for a refresh",
+        person.name,
+        routine.name,
+        time.monotonic() - started,
+    )
+    try:
+        yield True
+    finally:
+        lock.release()
+
 
 def _resolve_target(hass: HomeAssistant, person: Person, target: str | None) -> str:
     player = target or person.media_player
@@ -908,7 +954,7 @@ async def async_play(  # noqa: PLR0913
     store = _store(hass, entry)
     history = await async_get_play_history(hass)
     try:
-        async with get_lock(hass, person.person_id):
+        async with _async_play_lock(hass, person, routine) as locked:
             player = _resolve_target(hass, person, target)
             now = dt_util.now()
             # A play-only setup must not keep a folder for every day (spec §8).
@@ -926,7 +972,14 @@ async def async_play(  # noqa: PLR0913
             if keys:
                 sensor.set_briefing_state("generating")
                 segments = await _async_segments_to_play(
-                    hass, store, person, routine, keys, now, visual=video
+                    hass,
+                    store,
+                    person,
+                    routine,
+                    keys,
+                    now,
+                    visual=video,
+                    build_dynamic=locked,
                 )
                 media = None
                 if _is_visual(routine) and keys == all_keys:

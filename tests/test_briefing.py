@@ -8,7 +8,7 @@ import logging
 import re
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -73,6 +73,8 @@ class FakeBuilder:
 
     fail: set[str] = field(default_factory=set)
     gate: asyncio.Event | None = None
+    # When set, only calls with this source wait on ``gate``.
+    gate_source: str | None = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
     calls: list[list[str]] = field(default_factory=list)
     visual_calls: list[set[str]] = field(default_factory=list)
@@ -100,7 +102,7 @@ class FakeBuilder:
         self.sources.append(source)
         self.sensor_timeouts.append(sensor_refresh_timeout)
         self.started.set()
-        if self.gate is not None:
+        if self.gate is not None and self.gate_source in (None, source):
             await self.gate.wait()
         await store.async_load(person, now)
         today = briefing_day(person, now)
@@ -624,6 +626,126 @@ async def test_play_waits_for_inflight_prebuild(sam_quick: Harness) -> None:
     assert h.builder.calls == [QUICK]
     assert len(h.played) == 1
     assert h.ffmpeg.concats == [QUICK]
+
+
+async def _start_gated_refresh(h: Harness, name: str) -> asyncio.Task[None]:
+    h.builder.gate = asyncio.Event()
+    h.builder.gate_source = "refresh"
+    h.builder.started.clear()
+    task = asyncio.create_task(
+        briefing.async_refresh(h.hass, h.entry, routine=h.routine(name))
+    )
+    async with asyncio.timeout(2):
+        await h.builder.started.wait()
+    return task
+
+
+async def _fire_timers_due_within(h: Harness, seconds: float) -> None:
+    """Run the loop timers due within ``seconds`` of now (the clock is frozen)."""
+    # Let pending executor jobs finish so the play is already waiting.
+    await h.hass.async_block_till_done()
+    async_fire_time_changed(h.hass, dt_util.utcnow() + timedelta(seconds=seconds))
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+async def test_play_waits_for_a_running_refresh_and_uses_fresh_copies(
+    sam_full: Harness, freezer: FrozenDateTimeFactory
+) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+    freezer.move_to(at(10))
+    refresh = await _start_gated_refresh(h, "Full")
+    play = asyncio.create_task(briefing.async_play(h.hass, h.entry, h.routine("Full")))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert h.played == []
+
+    h.builder.gate.set()
+    await asyncio.gather(refresh, play)
+    await h.hass.async_block_till_done()
+
+    assert len(h.played) == 1
+    assert h.builder.sources == ["prebuild", "refresh"]
+    weather = h.store.get_fresh(h.person(SAM_ID), "weather", at(10))
+    assert weather.built_at == at(10)
+
+
+@pytest.mark.timeout(10)
+async def test_play_stops_waiting_after_timeout_and_plays_prebuild_copies(
+    sam_full: Harness, freezer: FrozenDateTimeFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+    h.ffmpeg.concats.clear()
+    freezer.move_to(at(10))
+    refresh = await _start_gated_refresh(h, "Full")
+
+    with caplog.at_level(logging.INFO):
+        play = asyncio.create_task(
+            briefing.async_play(h.hass, h.entry, h.routine("Full"))
+        )
+        await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS - 1)
+        assert h.played == []
+        await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS + 1)
+        await play
+
+    assert len(h.played) == 1
+    assert h.ffmpeg.concats[-1] == FULL
+    assert h.builder.sources == ["prebuild", "refresh"]
+    assert "stopped waiting for a refresh" in caplog.text
+
+    h.builder.gate.set()
+    await refresh
+    weather = h.store.get_fresh(h.person(SAM_ID), "weather", at(10))
+    assert weather.built_at == at(10)
+
+
+@pytest.mark.timeout(10)
+async def test_play_after_wait_timeout_skips_unbuilt_dynamic_segments(
+    sam_full: Harness, freezer: FrozenDateTimeFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    h = sam_full
+    refresh = await _start_gated_refresh(h, "Full")
+
+    with caplog.at_level(logging.WARNING):
+        play = asyncio.create_task(
+            briefing.async_play(h.hass, h.entry, h.routine("Full"))
+        )
+        await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS + 1)
+        await play
+
+    play_calls = [
+        keys
+        for keys, src in zip(h.builder.calls, h.builder.sources, strict=True)
+        if src == "play"
+    ]
+    assert all("weather" not in k and "commute" not in k for k in play_calls)
+    assert h.ffmpeg.concats[-1] == ["greeting", "scripture", "closing"]
+    assert "Skipping segment 'weather'" in caplog.text
+
+    h.builder.gate.set()
+    await refresh
+
+
+@pytest.mark.timeout(10)
+async def test_play_still_waits_without_limit_for_a_prebuild(
+    sam_quick: Harness, freezer: FrozenDateTimeFactory
+) -> None:
+    h = sam_quick
+    h.builder.gate = asyncio.Event()
+    prebuild = asyncio.create_task(
+        briefing.async_prebuild(h.hass, h.entry, routine=h.routine("Quick"))
+    )
+    await h.builder.started.wait()
+    play = asyncio.create_task(briefing.async_play(h.hass, h.entry, h.routine("Quick")))
+    await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS * 6)
+    assert h.played == []
+
+    h.builder.gate.set()
+    await asyncio.gather(prebuild, play)
+    await h.hass.async_block_till_done()
+    assert len(h.played) == 1
 
 
 async def test_play_continues_when_one_segment_fails(
