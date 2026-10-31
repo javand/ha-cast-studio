@@ -663,13 +663,15 @@ async def async_build_segments(  # noqa: PLR0913
     all_heard_visual: bool = False,
     source: str = "prebuild",
     sensor_refresh_timeout: float | None = None,
+    build_all_heard: bool = True,
 ) -> dict[str, StoredSegment | Exception]:
     """
     Build and store the person's segments for the briefing day of ``now``.
 
     Each key is built independently: a failure is logged and returned as the
     key's value, and the remaining keys are still built. The all-heard clip
-    is also built when it is missing for the day. Keys in ``visual_keys``
+    is also built when it is missing for the day, unless ``build_all_heard``
+    is False. Keys in ``visual_keys``
     (and the all-heard line when ``all_heard_visual``) get a slide and clip.
     Every build logs how long it took, labelled with ``source`` (what asked
     for it). ``sensor_refresh_timeout`` caps the commute's sensor refresh.
@@ -684,7 +686,9 @@ async def async_build_segments(  # noqa: PLR0913
         (key, store.day_dir(person, today)) for key in dict.fromkeys(keys)
     ]
     all_heard = store.all_heard_clip(person)
-    if all_heard is None or all_heard.built_day != today or all_heard.degraded:
+    if build_all_heard and (
+        all_heard is None or all_heard.built_day != today or all_heard.degraded
+    ):
         jobs.append((ALL_HEARD_KEY, store.person_dir(person) / ALL_HEARD_DIR))
 
     scratch = Path(

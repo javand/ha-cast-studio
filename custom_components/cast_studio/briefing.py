@@ -502,9 +502,13 @@ async def _async_build_and_store(  # noqa: PLR0913
     *,
     source: str,
     sensor_refresh_timeout: float | None = None,
+    build_all_heard: bool = True,
 ) -> dict[str, StoredSegment | Exception]:
     """
     Build and store ``keys`` for ``routines`` under the person's lock.
+
+    While a refresh holds the lock the person is marked as refreshing, so a
+    play waits for it at most ``REFRESH_WAIT_SECONDS``.
 
     Stores the stitched files of the visual ones among ``routines`` and sets
     their sensors; a routine that is playing keeps showing "playing".
@@ -521,7 +525,7 @@ async def _async_build_and_store(  # noqa: PLR0913
         return [s for s in sensors.values() if s.native_value != "playing"]
 
     try:
-        async with get_lock(hass, person.person_id):
+        async with get_lock(hass, person.person_id), _holding(hass, person, source):
             for sensor in _not_playing():
                 sensor.set_briefing_state("generating")
             now = dt_util.now()
@@ -546,6 +550,7 @@ async def _async_build_and_store(  # noqa: PLR0913
                 all_heard_visual=_person_has_visual_routine(entry, person),
                 source=source,
                 sensor_refresh_timeout=sensor_refresh_timeout,
+                build_all_heard=build_all_heard,
             )
             await _async_store_visual_routines(hass, store, person, routines, now)
     except Exception:
@@ -561,6 +566,21 @@ async def _async_build_and_store(  # noqa: PLR0913
             state = "ready" if _ready_keys(store, person, r, now) else "error"
         _set_sensor(sensor, state, store, person, r, now)
     return results
+
+
+@asynccontextmanager
+async def _holding(
+    hass: HomeAssistant, person: Person, source: str
+) -> AsyncIterator[None]:
+    """Mark the person as refreshing while a refresh holds their lock."""
+    if source != "refresh":
+        yield
+        return
+    _refreshing(hass).add(person.person_id)
+    try:
+        yield
+    finally:
+        _refreshing(hass).discard(person.person_id)
 
 
 def _target(
@@ -610,7 +630,7 @@ def _refreshing(hass: HomeAssistant) -> set[str]:
 
 
 def is_refreshing(hass: HomeAssistant, person_id: str) -> bool:
-    """Return True while a refresh for the person is waiting or building."""
+    """Return True while a refresh holds the person's lock."""
     return person_id in _refreshing(hass)
 
 
@@ -645,19 +665,16 @@ async def async_refresh(
         )
         return
     started = time.monotonic()
-    _refreshing(hass).add(person.person_id)
-    try:
-        results = await _async_build_and_store(
-            hass,
-            entry,
-            person,
-            routines,
-            keys,
-            source="refresh",
-            sensor_refresh_timeout=REFRESH_SENSOR_TIMEOUT,
-        )
-    finally:
-        _refreshing(hass).discard(person.person_id)
+    results = await _async_build_and_store(
+        hass,
+        entry,
+        person,
+        routines,
+        keys,
+        source="refresh",
+        sensor_refresh_timeout=REFRESH_SENSOR_TIMEOUT,
+        build_all_heard=False,
+    )
     LOGGER.info(
         "Refreshed %s for %s in %.1fs", keys, person.name, time.monotonic() - started
     )
@@ -679,8 +696,9 @@ async def _async_play_lock(
     """
     Hold the person's lock for a play; yield whether it is held.
 
-    While a refresh runs, the play waits at most ``REFRESH_WAIT_SECONDS`` and
-    then goes on without the lock (yielding False), using stored segments.
+    While a refresh holds the lock, the play waits at most
+    ``REFRESH_WAIT_SECONDS`` and then goes on without the lock (yielding
+    False), using stored segments. Behind anything else it waits in full.
     """
     lock = get_lock(hass, person.person_id)
     if not is_refreshing(hass, person.person_id):

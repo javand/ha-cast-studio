@@ -840,6 +840,20 @@ async def test_build_segments_passes_sensor_refresh_timeout_to_commute_step(
     assert "sensor_refresh_timeout" not in steps["commute"]
 
 
+async def test_build_segments_can_skip_the_all_heard_clip(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    _set_fake_states(hass)
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    with _Patched(_build_patches()):
+        await async_build_segments(
+            hass, store, person, ["weather"], {}, now=at(8), build_all_heard=False
+        )
+    assert store.get_fresh(person, "weather", at(8)) is not None
+    assert store.all_heard_clip(person) is None
+
+
 async def test_failure_log_includes_traceback(
     hass: HomeAssistant, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

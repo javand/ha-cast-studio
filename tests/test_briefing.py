@@ -80,6 +80,7 @@ class FakeBuilder:
     visual_calls: list[set[str]] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     sensor_timeouts: list[float | None] = field(default_factory=list)
+    all_heard_flags: list[bool] = field(default_factory=list)
 
     async def __call__(  # noqa: PLR0913
         self,
@@ -94,6 +95,7 @@ class FakeBuilder:
         all_heard_visual: bool = False,
         source: str = "prebuild",
         sensor_refresh_timeout: float | None = None,
+        build_all_heard: bool = True,
     ) -> dict[str, StoredSegment | Exception]:
         wanted = list(dict.fromkeys(keys))
         visual = set(visual_keys)
@@ -101,6 +103,7 @@ class FakeBuilder:
         self.visual_calls.append(visual)
         self.sources.append(source)
         self.sensor_timeouts.append(sensor_refresh_timeout)
+        self.all_heard_flags.append(build_all_heard)
         self.started.set()
         if self.gate is not None and self.gate_source in (None, source):
             await self.gate.wait()
@@ -108,7 +111,7 @@ class FakeBuilder:
         today = briefing_day(person, now)
         jobs = [(key, store.day_dir(person, today)) for key in wanted]
         all_heard = store.all_heard_clip(person)
-        if all_heard is None or all_heard.built_day != today:
+        if build_all_heard and (all_heard is None or all_heard.built_day != today):
             jobs.append((ALL_HEARD_KEY, store.person_dir(person) / ALL_HEARD_DIR))
         scratch = Path(tempfile.mkdtemp(prefix="fake_seg_"))
         results: dict[str, StoredSegment | Exception] = {}
@@ -746,6 +749,67 @@ async def test_play_still_waits_without_limit_for_a_prebuild(
     await asyncio.gather(prebuild, play)
     await h.hass.async_block_till_done()
     assert len(h.played) == 1
+
+
+async def test_refresh_does_not_build_the_all_heard_clip(sam_full: Harness) -> None:
+    h = sam_full
+    await h.refresh("Full")
+
+    assert h.builder.all_heard_flags == [False]
+
+
+@pytest.mark.timeout(10)
+async def test_play_wait_stays_capped_across_queued_refreshes(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    await h.prebuild("Full")
+    first = await _start_gated_refresh(h, "Full")
+    second = asyncio.create_task(
+        briefing.async_refresh(h.hass, h.entry, routine=h.routine("Full"))
+    )
+    await h.hass.async_block_till_done()
+    # Let the first finish; the second then holds the lock on a new gate.
+    gate = h.builder.gate
+    h.builder.gate = asyncio.Event()
+    h.builder.started.clear()
+    gate.set()
+    await first
+    async with asyncio.timeout(2):
+        await h.builder.started.wait()
+
+    play = asyncio.create_task(briefing.async_play(h.hass, h.entry, h.routine("Full")))
+    await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS + 1)
+    await play
+    assert len(h.played) == 1
+
+    h.builder.gate.set()
+    await second
+
+
+@pytest.mark.timeout(10)
+async def test_play_waits_in_full_for_a_prebuild_with_a_refresh_queued(
+    sam_full: Harness,
+) -> None:
+    h = sam_full
+    h.builder.gate = asyncio.Event()
+    h.builder.gate_source = "prebuild"
+    prebuild = asyncio.create_task(
+        briefing.async_prebuild(h.hass, h.entry, routine=h.routine("Full"))
+    )
+    await h.builder.started.wait()
+    refresh = asyncio.create_task(
+        briefing.async_refresh(h.hass, h.entry, routine=h.routine("Full"))
+    )
+    play = asyncio.create_task(briefing.async_play(h.hass, h.entry, h.routine("Full")))
+    await _fire_timers_due_within(h, briefing.REFRESH_WAIT_SECONDS * 6)
+    assert h.played == []
+
+    h.builder.gate.set()
+    await asyncio.gather(prebuild, refresh, play)
+    await h.hass.async_block_till_done()
+    assert len(h.played) == 1
+    assert h.builder.sources == ["prebuild", "refresh"]
 
 
 async def test_play_continues_when_one_segment_fails(
