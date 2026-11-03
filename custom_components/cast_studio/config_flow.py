@@ -56,17 +56,16 @@ from .people import (
     PERSON_COMMUTE_TRANSIT_RETURN_SENSOR,
     PERSON_COMMUTE_TRANSIT_SENSOR,
     PERSON_CORE_KEYS,
-    PERSON_HOST_PERSONAS,
     PERSON_MAX_AGE_MINUTES,
     PERSON_MEDIA_PLAYER,
     PERSON_NAME,
     PERSON_PHONETIC_NAME,
     PERSON_PRONUNCIATIONS,
-    PERSON_READER_PERSONAS,
     PERSON_RESET_TIME,
     PERSON_SETTINGS_KEYS,
     PERSON_TODOS,
     PERSON_TRANSPORTATION_MODE,
+    PERSON_VOICE,
     ROUTINE_DASHBOARD,
     ROUTINE_DASHBOARD_DISPLAY,
     ROUTINE_DASHBOARD_PATH,
@@ -86,16 +85,13 @@ from .people import (
     is_valid_name,
     person_calendars,
     person_todos,
+    person_voice,
     slugify_name,
 )
 from .personas import (
-    DEFAULT_HOST_PERSONA,
-    DEFAULT_READER_PERSONA,
+    DEFAULT_VOICE_PERSONA,
     PERSONAS,
-    ROLE_HOST,
-    ROLE_READER,
     get_persona,
-    personas_for_role,
 )
 
 ADVANCED_SECTION = "advanced"
@@ -255,8 +251,8 @@ def _entity_selector(domain: str | None = None) -> selector.EntitySelector:
     return selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
 
 
-def _persona_selector(role: str | None) -> selector.SelectSelector:
-    """Pick one or more of the built-in personas suited to a role (any if None)."""
+def _persona_selector() -> selector.SelectSelector:
+    """Pick one or more of the built-in personas."""
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=[
@@ -264,7 +260,7 @@ def _persona_selector(role: str | None) -> selector.SelectSelector:
                     value=persona.persona_id,
                     label=f"{persona.name}: {persona.summary}",
                 )
-                for persona in (PERSONAS if role is None else personas_for_role(role))
+                for persona in PERSONAS
             ],
             multiple=True,
             mode=selector.SelectSelectorMode.DROPDOWN,
@@ -298,8 +294,7 @@ def _person_settings_selectors() -> dict[str, selector.Selector]:
         PERSON_COMMUTE_TRANSIT_SENSOR: _entity_selector("sensor"),
         PERSON_COMMUTE_DRIVE_RETURN_SENSOR: _entity_selector("sensor"),
         PERSON_COMMUTE_TRANSIT_RETURN_SENSOR: _entity_selector("sensor"),
-        PERSON_HOST_PERSONAS: _persona_selector(ROLE_HOST),
-        PERSON_READER_PERSONAS: _persona_selector(ROLE_READER),
+        PERSON_VOICE: _persona_selector(),
         "conversation_agent": selector.ConversationAgentSelector(),
         "greeting_title": _text_selector(),
         "greeting_subtitle": _text_selector(),
@@ -337,15 +332,9 @@ def _person_schema(current: dict[str, Any], default_mode: str) -> vol.Schema:
             else None
         ),
         # A persona dropped from the catalog would fail the picker's validation.
-        # With none picked, show the default persona who speaks the role.
-        **{
-            key: [pid for pid in current.get(key) or () if get_persona(pid)]
-            or [default]
-            for key, default in (
-                (PERSON_HOST_PERSONAS, DEFAULT_HOST_PERSONA),
-                (PERSON_READER_PERSONAS, DEFAULT_READER_PERSONA),
-            )
-        },
+        # With none picked, show the persona who speaks: the default voice.
+        PERSON_VOICE: [pid for pid in person_voice(current) if get_persona(pid)]
+        or [DEFAULT_VOICE_PERSONA],
     }
     settings_fields: dict[Any, Any] = {
         vol.Optional(key, description=_suggested(current.get(key))): sel
@@ -825,7 +814,7 @@ def _announcement_schema(current: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 ANN_PERSONAS,
                 default=list(current.get(ANN_PERSONAS) or [DEFAULT_PERSONA]),
-            ): _persona_selector(None),
+            ): _persona_selector(),
             vol.Optional(
                 ANN_REBUILD_TIME,
                 default=current.get(ANN_REBUILD_TIME, DEFAULT_REBUILD_TIME),

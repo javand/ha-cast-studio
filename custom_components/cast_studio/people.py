@@ -77,9 +77,10 @@ PERSON_LEGACY_CALENDAR = "calendar_entity"
 PERSON_TODOS = "todo_entities"
 PERSON_LEGACY_TODO = "todo_entity"
 
-# Built-in personas picked for each role; several means one at random per day.
-PERSON_HOST_PERSONAS = "host_personas"
-PERSON_READER_PERSONAS = "reader_personas"
+# Personas who speak the person's segments; several means one at random per day.
+PERSON_VOICE = "voice_personas"
+# Saved before the single voice replaced the host and reader pickers.
+PERSON_LEGACY_HOST_PERSONAS = "host_personas"
 
 # Per-person segment settings (§5.2), shown in the person form's advanced section.
 PERSON_SETTINGS_KEYS: tuple[str, ...] = (
@@ -91,8 +92,7 @@ PERSON_SETTINGS_KEYS: tuple[str, ...] = (
     PERSON_COMMUTE_TRANSIT_SENSOR,
     PERSON_COMMUTE_DRIVE_RETURN_SENSOR,
     PERSON_COMMUTE_TRANSIT_RETURN_SENSOR,
-    PERSON_HOST_PERSONAS,
-    PERSON_READER_PERSONAS,
+    PERSON_VOICE,
     "conversation_agent",
     "greeting_title",
     "greeting_subtitle",
@@ -379,3 +379,9 @@ def person_calendars(settings: Mapping[str, Any]) -> list[str]:
 def person_todos(settings: Mapping[str, Any]) -> list[str]:
     """Return a person's agenda to-do lists, reading the older single-list key."""
     return _entity_list(settings, PERSON_TODOS, PERSON_LEGACY_TODO)
+
+
+def person_voice(settings: Mapping[str, Any]) -> list[str]:
+    """Return the persona ids of a person's voice, reading the older host key."""
+    ids = settings.get(PERSON_VOICE) or settings.get(PERSON_LEGACY_HOST_PERSONAS)
+    return [str(pid) for pid in ids or () if pid]

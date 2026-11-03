@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_HOST_VOICE, DEFAULT_SCRIPTURE_VOICE, LOGGER
+from .const import LOGGER
 from .ffmpeg_runner import async_run_ffmpeg, build_slide_clip_command
 from .generator import (
     DEFAULT_SLIDE_PAD_SECONDS,
@@ -51,15 +51,14 @@ from .people import (
     PERSON_COMMUTE_DRIVE_SENSOR,
     PERSON_COMMUTE_TRANSIT_RETURN_SENSOR,
     PERSON_COMMUTE_TRANSIT_SENSOR,
-    PERSON_HOST_PERSONAS,
-    PERSON_READER_PERSONAS,
     SEGMENT_TYPES,
     briefing_day,
     is_content_fresh,
     person_calendars,
     person_todos,
+    person_voice,
 )
-from .personas import ROLE_HOST, ROLE_READER, pick_persona
+from .personas import DEFAULT_VOICE_PERSONA, PERSONAS, Persona, pick_persona
 from .slide_renderer import CANVAS_HEIGHT, CANVAS_WIDTH
 from .tts_client import track_voice_fallback
 
@@ -81,8 +80,6 @@ MANIFEST_FILE = "manifest.json"
 # An all-heard clip superseded this long ago can no longer be playing.
 ALL_HEARD_KEEP_SUPERSEDED = timedelta(hours=1)
 
-DEFAULT_HOST_PERSONALITY = "news_anchor"
-DEFAULT_SCRIPTURE_PERSONALITY = "life_coach"
 
 # One fixed encode for every segment so the concat demuxer can ``-c copy``.
 # Audio is MP3; clips reuse the slide clip
@@ -184,35 +181,23 @@ def routine_segment_keys(routine: Routine) -> list[str]:
     ]
 
 
-# Each role's settings: persona picks, then the voice and style without one.
-_ROLE_SETTINGS: dict[str, tuple[str, str, str]] = {
-    ROLE_HOST: (PERSON_HOST_PERSONAS, DEFAULT_HOST_VOICE, DEFAULT_HOST_PERSONALITY),
-    ROLE_READER: (
-        PERSON_READER_PERSONAS,
-        DEFAULT_SCRIPTURE_VOICE,
-        DEFAULT_SCRIPTURE_PERSONALITY,
-    ),
-}
+_DEFAULT_PERSONA = next(p for p in PERSONAS if p.persona_id == DEFAULT_VOICE_PERSONA)
 
 
-def _role_voice(person: Person, role: str, day: date) -> dict[str, Any]:
-    """
-    Return the step keys for whoever speaks a role on ``day``.
+def persona_voice(persona: Persona) -> dict[str, Any]:
+    """Return the step keys that make ``persona`` write and speak a segment."""
+    return {
+        "voice": persona.gemini_voice,
+        "voice_personality": persona.character,
+        "voice_profile": persona.delivery,
+        "openai_voice": persona.openai_voice,
+    }
 
-    A picked persona wins; with none, the role's default voice and style are
-    used. Typed voice and personality fields saved before personas replaced
-    them are ignored.
-    """
-    personas_key, voice, personality = _ROLE_SETTINGS[role]
-    picks = person.settings.get(personas_key)
-    if persona := pick_persona(picks, role, person.person_id, day):
-        return {
-            "voice": persona.gemini_voice,
-            "voice_personality": persona.character,
-            "voice_profile": persona.delivery,
-            "openai_voice": persona.openai_voice,
-        }
-    return {"voice": voice, "voice_personality": personality}
+
+def person_default_persona(person: Person, day: date) -> Persona:
+    """Return who speaks the person's segments on ``day`` without a voice change."""
+    picked = pick_persona(person_voice(person.settings), person.person_id, day)
+    return picked or _DEFAULT_PERSONA
 
 
 def build_segment_step(
@@ -237,8 +222,6 @@ def build_segment_step(
     settings = person.settings
     if day is None:
         day = briefing_day(person, dt_util.now())
-    host = _role_voice(person, ROLE_HOST, day)
-    reader = _role_voice(person, ROLE_READER, day)
     scripture_entity = settings.get("scripture_entity") or ""
 
     step: dict[str, Any] = {
@@ -246,7 +229,7 @@ def build_segment_step(
         "type": segment_type,
         "visual": visual,
         "standalone_segment": True,
-        **(reader if segment_type in ("scripture", "daily_encouragement") else host),
+        **persona_voice(person_default_persona(person, day)),
     }
     if settings.get("conversation_agent"):
         step["conversation_agent"] = settings["conversation_agent"]

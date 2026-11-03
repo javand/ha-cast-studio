@@ -35,6 +35,7 @@ from custom_components.cast_studio.people import (
     is_content_fresh,
     person_calendars,
     person_todos,
+    person_voice,
     slugify_name,
 )
 
@@ -432,3 +433,20 @@ def test_routine_output_format_parsed_with_default() -> None:
     night, quick = get_routines(entry)
     assert night.output_format == "audio"
     assert quick.output_format == "visual"
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        ({"voice_personas": ["theo"]}, ["theo"]),
+        ({"host_personas": ["elena"]}, ["elena"]),
+        ({"voice_personas": ["theo"], "host_personas": ["elena"]}, ["theo"]),
+        ({"reader_personas": ["sage"]}, []),
+        ({}, []),
+    ],
+)
+def test_person_voice_reads_new_and_legacy_keys(
+    settings: dict[str, object], expected: list[str]
+) -> None:
+    """The voice list wins; a host persona saved before it still counts."""
+    assert person_voice(settings) == expected

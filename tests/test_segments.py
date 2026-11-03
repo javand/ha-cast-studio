@@ -186,8 +186,9 @@ def test_build_segment_step_uses_person_settings_and_name_rule() -> None:
 
     scripture = steps["scripture"]
     assert scripture["entity_id"] == "sensor.daily_text"
-    assert scripture["voice"] == "Enceladus"
-    assert scripture["voice_personality"] == "life_coach"
+    # One voice for everything: the daily text has no separate reader.
+    assert scripture["voice"] == "Pulcherrima"
+    assert scripture["voice_personality"] == "news_anchor"
 
     assert steps["daily_encouragement"]["include_signoff"] is True
     assert steps["daily_encouragement_nosignoff"]["include_signoff"] is False
@@ -993,55 +994,34 @@ def _with_settings(**settings: Any) -> Person:
     return make_person(settings=dict(settings))
 
 
-def test_no_personas_keeps_todays_step() -> None:
-    """With no persona picked, the default voices and styles are unchanged."""
-    person = _with_settings()
-    greeting = build_segment_step(person, "greeting", PERSONA_DAY)
-    scripture = build_segment_step(person, "scripture", PERSONA_DAY)
-    assert (greeting["voice"], greeting["voice_personality"]) == (
-        "Pulcherrima",
-        "news_anchor",
-    )
-    assert (scripture["voice"], scripture["voice_personality"]) == (
-        "Enceladus",
-        "life_coach",
-    )
-    assert "voice_profile" not in greeting
-    assert "openai_voice" not in scripture
+def test_no_voice_means_news_anchor() -> None:
+    """With no voice picked, every segment is the News Anchor persona."""
+    anchor = get_persona("default_host")
+    for key in ("greeting", "scripture"):
+        step = build_segment_step(_with_settings(), key, PERSONA_DAY)
+        assert step["voice"] == "Pulcherrima"
+        assert step["voice_personality"] == anchor.character
+        assert step["voice_profile"] == anchor.delivery
 
 
-def test_host_persona_applies_to_host_segments() -> None:
-    """A host persona speaks the host segments and leaves the reading alone."""
-    person = _with_settings(host_personas=["arthur"])
-    arthur = get_persona("arthur")
-    for key in ("greeting", "weather", "closing"):
-        step = build_segment_step(person, key, PERSONA_DAY)
-        assert step["voice"] == "Iapetus"
-        assert step["voice_personality"] == arthur.character
-        assert step["voice_profile"] == arthur.delivery
-        assert step["openai_voice"] == "fable"
-    scripture = build_segment_step(person, "scripture", PERSONA_DAY)
-    assert scripture["voice"] == "Enceladus"
-    assert "voice_profile" not in scripture
+def test_every_segment_uses_the_person_voice() -> None:
+    """One voice for everything: the daily text gets no special reader."""
+    person = _with_settings(voice_personas=["theo"])
+    for key in ("greeting", "weather", "scripture", "daily_encouragement", "closing"):
+        assert build_segment_step(person, key, PERSONA_DAY)["voice"] == "Puck"
 
 
-def test_reader_persona_applies_to_reading_segments() -> None:
-    """A reader persona reads the daily text and the encouragement."""
-    person = _with_settings(reader_personas=["malenfant"])
-    for key in ("scripture", "daily_encouragement"):
-        assert build_segment_step(person, key, PERSONA_DAY)["voice"] == "Charon"
-    assert build_segment_step(person, "greeting", PERSONA_DAY)["voice"] == (
-        "Pulcherrima"
-    )
+def test_legacy_host_persona_becomes_the_voice() -> None:
+    """A host persona saved before the single voice is the person's voice."""
+    person = _with_settings(host_personas=["elena"], reader_personas=["sage"])
+    for key in ("weather", "scripture"):
+        assert build_segment_step(person, key, PERSONA_DAY)["voice"] == "Kore"
 
 
-def test_unknown_persona_falls_back_to_default_host() -> None:
-    """A persona no longer in the catalog leaves the default host in charge."""
-    person = _with_settings(host_personas=["gone_persona"], host_voice="Zephyr")
-    step = build_segment_step(person, "greeting", PERSONA_DAY)
-    assert step["voice"] == "Pulcherrima"
-    assert step["voice_personality"] == "news_anchor"
-    assert "voice_profile" not in step
+def test_unknown_voice_ids_fall_back_to_news_anchor() -> None:
+    """A persona no longer in the catalog leaves the News Anchor in charge."""
+    person = _with_settings(voice_personas=["gone_persona"])
+    assert build_segment_step(person, "weather", PERSONA_DAY)["voice"] == "Pulcherrima"
 
 
 def test_greeting_image_saved_as_text_is_still_used() -> None:
@@ -1053,16 +1033,16 @@ def test_greeting_image_saved_as_text_is_still_used() -> None:
 
 
 def test_random_pick_is_stable_for_the_day() -> None:
-    """Every host segment on a day gets the same randomly picked persona."""
-    person = _with_settings(host_personas=["arthur", "theo", "ray"])
+    """Every segment on a day gets the same randomly picked persona."""
+    person = _with_settings(voice_personas=["arthur", "theo", "ray"])
     voices = {
         build_segment_step(person, key, PERSONA_DAY)["voice"]
-        for key in ("greeting", "weather", "agenda", "closing")
+        for key in ("greeting", "weather", "scripture", "closing")
     }
     assert len(voices) == 1
 
 
-def test_all_heard_uses_host_persona() -> None:
-    """The that's-everything clip is spoken by the host persona."""
-    person = _with_settings(host_personas=["arthur"])
+def test_all_heard_uses_the_person_voice() -> None:
+    """The that's-everything clip is spoken in the person's voice."""
+    person = _with_settings(voice_personas=["arthur"])
     assert _all_heard_step(person, PERSONA_DAY)["voice"] == "Iapetus"
