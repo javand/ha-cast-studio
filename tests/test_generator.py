@@ -2412,6 +2412,88 @@ def test_daily_encouragement_prompt_requires_exact_signoff() -> None:
 
 
 @pytest.mark.asyncio
+async def test_picked_greeting_image_is_resolved_to_a_file(tmp_path: Path) -> None:
+    """A greeting image picked from media is used instead of an AI image."""
+    from homeassistant.components.media_source import PlayMedia
+
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    picked = tmp_path / "sam.jpg"
+    picked.write_bytes(b"jpg")
+    media_id = "media-source://media_source/local/sam.jpg"
+    with (
+        patch(
+            "custom_components.cast_studio.generator.media_source.async_resolve_media",
+            new=AsyncMock(
+                return_value=PlayMedia(
+                    "/media/local/sam.jpg", "image/jpeg", path=picked
+                )
+            ),
+        ) as mock_resolve,
+        patch(
+            "custom_components.cast_studio.generator.async_generate_ai_image",
+            new=AsyncMock(),
+        ) as mock_gen,
+    ):
+        card: dict[str, Any] = {}
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {"name": "greeting", "image_media_id": media_id},
+            "greeting",
+            card,
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+        )
+
+    assert mock_resolve.await_args.args[1] == media_id
+    assert card["image_path"] == str(picked)
+    assert card["image_type"] == "static"
+    mock_gen.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_picked_greeting_image_falls_back_to_ai(tmp_path: Path) -> None:
+    """A picked image that no longer resolves leaves the daily AI image."""
+    from homeassistant.components.media_source import Unresolvable
+
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    def _gen(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.media_source.async_resolve_media",
+            new=AsyncMock(side_effect=Unresolvable("gone")),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_generate_ai_image",
+            new=AsyncMock(side_effect=_gen),
+        ) as mock_gen,
+    ):
+        card: dict[str, Any] = {}
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {
+                "name": "greeting",
+                "image_media_id": "media-source://media_source/local/gone.jpg",
+            },
+            "greeting",
+            card,
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+        )
+
+    assert card["image_type"] == "dynamic"
+    mock_gen.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_greeting_image_regenerated_on_every_run(tmp_path: Path) -> None:
     """Greeting never reuses a previous image: each compile calls Imagen again."""
     from custom_components.cast_studio.generator import (

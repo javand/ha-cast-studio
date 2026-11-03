@@ -82,13 +82,13 @@ Use **Add person** on the CastStudio entry. Fields:
 | Daily reset time | When the person's briefing day starts (default 03:00). Anything built or played before it counts as the previous day. |
 | Maximum content age (minutes) | Stored content older than this is rebuilt before it plays. `0` (default) turns the age check off. |
 
-The **Advanced** section holds the entities and voices used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; host and scripture voices and personalities; conversation agent; greeting title, subtitle and image; and the person's **Pronunciations** list.
+The **Advanced** section holds the entities and voices used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; host and reader personas; a backup conversation agent; the greeting title, subtitle and image; and the person's **Pronunciations** list. Each field says what it does and what leaving it empty means. **Greeting image** is an image picker: choose a picture from your media or upload one, and it replaces the daily AI-generated greeting background.
 
 **Daily text** lists JW Library daily text sensors and text helpers; use a text helper to feed in any other source. **Fun fact** and **National Day** need no entity: the AI writes them from today's date.
 
 **Calendars** takes any number of calendars, for example a personal calendar and a shared Family calendar. The agenda merges their events into one timeline, and the narration calls them all "your calendar". **To-do lists** works the same way, for example your own list plus a Chores list. A person saved with a single calendar or to-do list keeps it.
 
-**Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. In **Advanced**, pick **Host personas** for the greeting, weather, agenda, commute, fun fact and closing, and **Reader personas** for the daily text and daily encouragement. Each picker lists only the personas suited to that role. Pick one to always hear it, or several to get one at random each briefing day; every part of that day's briefing keeps the same speaker. Leave a picker empty to keep the host or scripture voice and personality fields, exactly as before.
+**Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. In **Advanced**, pick **Host personas** for the greeting, weather, agenda, commute, fun fact and closing, and **Reader personas** for the daily text and daily encouragement. Each picker lists only the personas suited to that role. Pick one to always hear it, or several to get one at random each briefing day; every part of that day's briefing keeps the same speaker. Leave a picker empty for the default voice: Pulcherrima with a news-anchor style for the host, and Enceladus with a life-coach style for the reader.
 
 | Persona | Roles | Character |
 | :--- | :--- | :--- |

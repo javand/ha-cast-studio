@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
+from homeassistant.components import media_source
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
@@ -1746,6 +1748,19 @@ def _detect_step_weather_condition(
     return None
 
 
+async def _async_resolve_media_image(hass: HomeAssistant, media_id: str) -> str | None:
+    """Return the file behind an image picked from media, or None if it is gone."""
+    try:
+        played = await media_source.async_resolve_media(hass, media_id, None)
+    except HomeAssistantError as err:
+        LOGGER.warning("Picked image %s could not be found: %s", media_id, err)
+        return None
+    if played.path is None or not played.path.is_file():
+        LOGGER.warning("Picked image %s has no file to show", media_id)
+        return None
+    return str(played.path)
+
+
 async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
     hass: HomeAssistant,
     step_to_process: dict[str, Any],
@@ -1756,6 +1771,17 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
     narration: str = "",
 ) -> None:
     """Resolve dynamic and AI-generated visual background assets for a visual slide."""
+    media_id = step_to_process.get("image_media_id")
+    if (
+        media_id
+        and not card_data.get("image_path")
+        and (picked := await _async_resolve_media_image(hass, media_id))
+    ):
+        card_data["image_path"] = picked
+        card_data.update(image_type="static", dynamic_image=False)
+        card_data.setdefault("layout", "photo")
+        return
+
     is_dynamic = is_step_image_dynamic(step_to_process, step_name)
 
     if card_data.get("image_path"):

@@ -9,7 +9,8 @@
   ],
   "config_flow": true,
   "dependencies": [
-    "ffmpeg"
+    "ffmpeg",
+    "media_source"
   ],
   "documentation": "https://github.com/javand/ha-cast-studio",
   "integration_type": "service",

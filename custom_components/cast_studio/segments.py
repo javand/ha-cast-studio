@@ -184,19 +184,11 @@ def routine_segment_keys(routine: Routine) -> list[str]:
     ]
 
 
-# Each role's settings: persona picks, typed voice and style, and defaults.
-_ROLE_SETTINGS: dict[str, tuple[str, str, str, str, str]] = {
-    ROLE_HOST: (
-        PERSON_HOST_PERSONAS,
-        "host_voice",
-        "host_personality",
-        DEFAULT_HOST_VOICE,
-        DEFAULT_HOST_PERSONALITY,
-    ),
+# Each role's settings: persona picks, then the voice and style without one.
+_ROLE_SETTINGS: dict[str, tuple[str, str, str]] = {
+    ROLE_HOST: (PERSON_HOST_PERSONAS, DEFAULT_HOST_VOICE, DEFAULT_HOST_PERSONALITY),
     ROLE_READER: (
         PERSON_READER_PERSONAS,
-        "scripture_voice",
-        "scripture_personality",
         DEFAULT_SCRIPTURE_VOICE,
         DEFAULT_SCRIPTURE_PERSONALITY,
     ),
@@ -207,22 +199,20 @@ def _role_voice(person: Person, role: str, day: date) -> dict[str, Any]:
     """
     Return the step keys for whoever speaks a role on ``day``.
 
-    A picked persona wins; with none, the typed voice and style (or the
-    defaults) are used exactly as before personas existed.
+    A picked persona wins; with none, the role's default voice and style are
+    used. Typed voice and personality fields saved before personas replaced
+    them are ignored.
     """
-    personas_key, voice_key, personality_key, voice, personality = _ROLE_SETTINGS[role]
-    settings = person.settings
-    if persona := pick_persona(settings.get(personas_key), role, person.person_id, day):
+    personas_key, voice, personality = _ROLE_SETTINGS[role]
+    picks = person.settings.get(personas_key)
+    if persona := pick_persona(picks, role, person.person_id, day):
         return {
             "voice": persona.gemini_voice,
             "voice_personality": persona.character,
             "voice_profile": persona.delivery,
             "openai_voice": persona.openai_voice,
         }
-    return {
-        "voice": settings.get(voice_key) or voice,
-        "voice_personality": settings.get(personality_key) or personality,
-    }
+    return {"voice": voice, "voice_personality": personality}
 
 
 def build_segment_step(
@@ -268,8 +258,13 @@ def build_segment_step(
             subtitle=settings.get("greeting_subtitle") or "Good Morning",
             context=f"A cheerful, energizing morning greeting for {person.name}.",
         )
-        if settings.get("greeting_image"):
-            step["image_path"] = settings["greeting_image"]
+        image = settings.get("greeting_image")
+        if isinstance(image, dict) and image.get("media_content_id"):
+            # Resolved to a file at build time; see the generator.
+            step["image_media_id"] = image["media_content_id"]
+        elif isinstance(image, str) and image:
+            # Typed as a path before the image picker existed.
+            step["image_path"] = image
     elif segment_type == "weather":
         step["entity_id"] = settings.get("weather_entity") or ""
     elif segment_type == "agenda":

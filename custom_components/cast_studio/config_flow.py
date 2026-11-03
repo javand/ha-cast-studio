@@ -295,14 +295,12 @@ def _person_settings_selectors() -> dict[str, selector.Selector]:
         PERSON_COMMUTE_TRANSIT_RETURN_SENSOR: _entity_selector("sensor"),
         PERSON_HOST_PERSONAS: _persona_selector(ROLE_HOST),
         PERSON_READER_PERSONAS: _persona_selector(ROLE_READER),
-        "host_voice": _text_selector(),
-        "scripture_voice": _text_selector(),
-        "host_personality": _text_selector(multiline=True),
-        "scripture_personality": _text_selector(multiline=True),
         "conversation_agent": selector.ConversationAgentSelector(),
         "greeting_title": _text_selector(),
         "greeting_subtitle": _text_selector(),
-        "greeting_image": _text_selector(),
+        "greeting_image": selector.MediaSelector(
+            selector.MediaSelectorConfig(accept=["image/*"])
+        ),
         PERSON_PRONUNCIATIONS: selector.ObjectSelector(
             selector.ObjectSelectorConfig(
                 multiple=True,
@@ -327,6 +325,12 @@ def _person_schema(current: dict[str, Any], default_mode: str) -> vol.Schema:
         **current,
         PERSON_CALENDARS: person_calendars(current) or None,
         PERSON_TODOS: person_todos(current) or None,
+        # A path typed before the image picker would fail the picker's validation.
+        "greeting_image": (
+            current.get("greeting_image")
+            if isinstance(current.get("greeting_image"), dict)
+            else None
+        ),
         # A persona dropped from the catalog would fail the picker's validation.
         **{
             key: [pid for pid in current.get(key) or () if get_persona(pid)] or None

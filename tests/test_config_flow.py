@@ -414,8 +414,11 @@ async def test_add_person_flattens_advanced_section(
             "max_age_minutes": 45,
             "advanced": {
                 "weather_entity": "weather.home",
-                "host_voice": "Puck",
                 "greeting_title": "Morning, Alex",
+                "greeting_image": {
+                    "media_content_id": "media-source://image_upload/abc123",
+                    "media_content_type": "image/png",
+                },
             },
         },
     )
@@ -430,8 +433,11 @@ async def test_add_person_flattens_advanced_section(
     assert alex.max_age_minutes == 45
     assert alex.settings == {
         "weather_entity": "weather.home",
-        "host_voice": "Puck",
         "greeting_title": "Morning, Alex",
+        "greeting_image": {
+            "media_content_id": "media-source://image_upload/abc123",
+            "media_content_type": "image/png",
+        },
     }
 
 
@@ -1161,6 +1167,52 @@ def _advanced_selectors(schema: vol.Schema) -> dict[str, Any]:
 
 def _option_values(sel: Any) -> set[str]:
     return {option["value"] for option in sel.config["options"]}
+
+
+@pytest.mark.asyncio
+async def test_person_form_drops_typed_voice_fields(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """Personas replaced the typed voice and personality fields."""
+    result = await _start_subentry(hass, config_entry, "person")
+    selectors = _advanced_selectors(result["data_schema"])
+    for key in (
+        "host_voice",
+        "scripture_voice",
+        "host_personality",
+        "scripture_personality",
+    ):
+        assert key not in selectors
+
+
+@pytest.mark.asyncio
+async def test_person_form_greeting_image_is_an_image_picker(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """The greeting image is picked from media or uploaded, not typed."""
+    result = await _start_subentry(hass, config_entry, "person")
+    sel = _advanced_selectors(result["data_schema"])["greeting_image"]
+    assert sel.config["accept"] == ["image/*"]
+
+
+def test_person_settings_fields_have_help_text() -> None:
+    """Every advanced field that can look blank says what it does."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for step in ("user", "reconfigure"):
+            advanced = data["config_subentries"]["person"]["step"][step]["sections"][
+                "advanced"
+            ]
+            for key in (
+                "conversation_agent",
+                "greeting_title",
+                "greeting_subtitle",
+                "greeting_image",
+            ):
+                assert advanced["data_description"][key], (path.name, step, key)
+            for key in ("host_personas", "reader_personas"):
+                assert "below" not in advanced["data_description"][key]
 
 
 @pytest.mark.asyncio

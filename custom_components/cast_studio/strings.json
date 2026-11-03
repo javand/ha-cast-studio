@@ -69,10 +69,6 @@
                 "commute_transit_return_sensor": "Evening transit-home sensor",
                 "host_personas": "Host personas",
                 "reader_personas": "Reader personas",
-                "host_voice": "Host voice",
-                "scripture_voice": "Scripture voice",
-                "host_personality": "Host personality",
-                "scripture_personality": "Scripture personality",
                 "conversation_agent": "Conversation agent",
                 "greeting_title": "Greeting title",
                 "greeting_subtitle": "Greeting subtitle",
@@ -86,8 +82,12 @@
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
                 "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
-                "host_personas": "Who hosts the briefing: greeting, weather, agenda, commute and closing. Pick several to get a different one each day. Leave empty to use the host voice and personality below.",
-                "reader_personas": "Who reads the daily text and daily encouragement. Pick several to get a different one each day. Leave empty to use the scripture voice and personality below."
+                "host_personas": "Who hosts the briefing: greeting, weather, agenda, commute and closing. Pick several to get a different one each day. Leave empty for the default host voice.",
+                "reader_personas": "Who reads the daily text and daily encouragement. Pick several to get a different one each day. Leave empty for the default reader voice.",
+                "conversation_agent": "Backup writer for the briefing, used only when Gemini isn't set up or a Gemini request fails. Leave empty for Home Assistant's default agent.",
+                "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
+                "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",
+                "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day."
               }
             }
           }
@@ -126,10 +126,6 @@
                 "commute_transit_return_sensor": "Evening transit-home sensor",
                 "host_personas": "Host personas",
                 "reader_personas": "Reader personas",
-                "host_voice": "Host voice",
-                "scripture_voice": "Scripture voice",
-                "host_personality": "Host personality",
-                "scripture_personality": "Scripture personality",
                 "conversation_agent": "Conversation agent",
                 "greeting_title": "Greeting title",
                 "greeting_subtitle": "Greeting subtitle",
@@ -143,8 +139,12 @@
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
                 "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
-                "host_personas": "Who hosts the briefing: greeting, weather, agenda, commute and closing. Pick several to get a different one each day. Leave empty to use the host voice and personality below.",
-                "reader_personas": "Who reads the daily text and daily encouragement. Pick several to get a different one each day. Leave empty to use the scripture voice and personality below."
+                "host_personas": "Who hosts the briefing: greeting, weather, agenda, commute and closing. Pick several to get a different one each day. Leave empty for the default host voice.",
+                "reader_personas": "Who reads the daily text and daily encouragement. Pick several to get a different one each day. Leave empty for the default reader voice.",
+                "conversation_agent": "Backup writer for the briefing, used only when Gemini isn't set up or a Gemini request fails. Leave empty for Home Assistant's default agent.",
+                "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
+                "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",
+                "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day."
               }
             }
           }

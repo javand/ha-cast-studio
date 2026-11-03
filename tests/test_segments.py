@@ -50,13 +50,17 @@ SAM_SETTINGS = {
     "scripture_entity": "sensor.daily_text",
     "commute_drive_sensor": "sensor.sam_commute_drive",
     "commute_transit_sensor": "sensor.sam_commute_transit",
+    # Removed from the form; a person saved before keeps them, unused.
     "host_voice": "VoiceA",
     "scripture_voice": "VoiceB",
     "host_personality": "calm_host",
     "scripture_personality": "warm_reader",
     "greeting_title": "Morning, Sam",
     "greeting_subtitle": "Rise and shine",
-    "greeting_image": "sam_avatar.png",
+    "greeting_image": {
+        "media_content_id": "media-source://media_source/local/sam.jpg",
+        "media_content_type": "image/jpeg",
+    },
 }
 
 
@@ -153,13 +157,15 @@ def test_build_segment_step_uses_person_settings_and_name_rule() -> None:
     assert greeting["is_first_step"] is True
     assert greeting["title"] == "Morning, Sam"
     assert greeting["subtitle"] == "Rise and shine"
-    assert greeting["image_path"] == "sam_avatar.png"
+    assert greeting["image_media_id"] == "media-source://media_source/local/sam.jpg"
+    assert "image_path" not in greeting
 
     weather = steps["weather"]
     assert weather["entity_id"] == person.settings["weather_entity"]
     assert "is_first_step" not in weather
-    assert weather["voice"] == "VoiceA"
-    assert weather["voice_personality"] == "calm_host"
+    # Old typed voice fields are ignored: no persona means the default host.
+    assert weather["voice"] == "Pulcherrima"
+    assert weather["voice_personality"] == "news_anchor"
 
     for key, step in steps.items():
         assert step["standalone_segment"] is True, key
@@ -180,8 +186,8 @@ def test_build_segment_step_uses_person_settings_and_name_rule() -> None:
 
     scripture = steps["scripture"]
     assert scripture["entity_id"] == "sensor.daily_text"
-    assert scripture["voice"] == "VoiceB"
-    assert scripture["voice_personality"] == "warm_reader"
+    assert scripture["voice"] == "Enceladus"
+    assert scripture["voice_personality"] == "life_coach"
 
     assert steps["daily_encouragement"]["include_signoff"] is True
     assert steps["daily_encouragement_nosignoff"]["include_signoff"] is False
@@ -1029,22 +1035,21 @@ def test_reader_persona_applies_to_reading_segments() -> None:
     )
 
 
-def test_persona_overrides_advanced_fields() -> None:
-    """A picked persona wins over a typed host voice and personality."""
-    person = _with_settings(
-        host_voice="Zephyr", host_personality="cheerful", host_personas=["theo"]
-    )
-    step = build_segment_step(person, "greeting", PERSONA_DAY)
-    assert step["voice"] == "Puck"
-    assert step["voice_personality"] == get_persona("theo").character
-
-
-def test_unknown_persona_falls_back_to_today() -> None:
-    """A persona no longer in the catalog leaves the typed settings in charge."""
+def test_unknown_persona_falls_back_to_default_host() -> None:
+    """A persona no longer in the catalog leaves the default host in charge."""
     person = _with_settings(host_personas=["gone_persona"], host_voice="Zephyr")
     step = build_segment_step(person, "greeting", PERSONA_DAY)
-    assert step["voice"] == "Zephyr"
+    assert step["voice"] == "Pulcherrima"
+    assert step["voice_personality"] == "news_anchor"
     assert "voice_profile" not in step
+
+
+def test_greeting_image_saved_as_text_is_still_used() -> None:
+    """A greeting image typed before the picker existed keeps working."""
+    person = _with_settings(greeting_image="/local/sam.jpg")
+    step = build_segment_step(person, "greeting", PERSONA_DAY)
+    assert step["image_path"] == "/local/sam.jpg"
+    assert "image_media_id" not in step
 
 
 def test_random_pick_is_stable_for_the_day() -> None:

@@ -196,7 +196,7 @@ def test_get_people_parses_fields_and_settings() -> None:
                 reset_time="04:30:00",
                 max_age_minutes=90.0,
                 weather_entity="weather.home",
-                host_voice="Puck",
+                greeting_title="Morning, Sam",
             )
         ]
     )
@@ -212,7 +212,7 @@ def test_get_people_parses_fields_and_settings() -> None:
         transportation_mode="transit",
         reset_time=time(4, 30),
         max_age_minutes=90,
-        settings={"weather_entity": "weather.home", "host_voice": "Puck"},
+        settings={"weather_entity": "weather.home", "greeting_title": "Morning, Sam"},
     )
     assert isinstance(sam.max_age_minutes, int)
 
