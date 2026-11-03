@@ -80,7 +80,7 @@ from .sensor import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Collection, Iterable
+    from collections.abc import AsyncIterator, Callable, Collection, Iterable
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -846,9 +846,13 @@ async def _async_segments_to_play(  # noqa: PLR0913
     *,
     visual: bool,
     build_dynamic: bool = True,
+    on_build: Callable[[], None] | None = None,
 ) -> list[StoredSegment]:
     """
     Return fresh segments for ``keys``, building missing ones live.
+
+    ``on_build`` is called just before a build starts, so a play shows
+    "generating" only while it really builds.
 
     Without ``build_dynamic``, missing ``DYNAMIC_SEGMENT_TYPES`` are not built
     (a refresh is building them). Keys that still have no fresh segment are
@@ -861,6 +865,8 @@ async def _async_segments_to_play(  # noqa: PLR0913
         and (build_dynamic or segment_type_of(key) not in DYNAMIC_SEGMENT_TYPES)
     ]
     if missing:
+        if on_build is not None:
+            on_build()
         creds = await async_discover_ai_credentials(hass)
         await async_build_segments(
             hass,
@@ -891,16 +897,19 @@ async def _async_segments_to_play(  # noqa: PLR0913
     return segments
 
 
-async def _async_all_heard(
+async def _async_all_heard(  # noqa: PLR0913
     hass: HomeAssistant,
     store: SegmentStore,
     person: Person,
     now: datetime,
     *,
     visual: bool,
+    on_build: Callable[[], None] | None = None,
 ) -> _Media:
     clip = store.all_heard_clip(person)
     if clip is None or clip.built_day != briefing_day(person, now):
+        if on_build is not None:
+            on_build()
         creds = await async_discover_ai_credentials(hass)
         await async_build_segments(
             hass,
@@ -1055,9 +1064,11 @@ async def async_play(  # noqa: PLR0913
                 heard = history.played(person, routine, now)
                 keys = [key for key in all_keys if segment_type_of(key) not in heard]
 
+            def _generating() -> None:
+                sensor.set_briefing_state("generating")
+
             segments: list[StoredSegment] = []
             if keys:
-                sensor.set_briefing_state("generating")
                 segments = await _async_segments_to_play(
                     hass,
                     store,
@@ -1067,6 +1078,7 @@ async def async_play(  # noqa: PLR0913
                     now,
                     visual=video,
                     build_dynamic=locked,
+                    on_build=_generating,
                 )
                 media = None
                 if _is_visual(routine) and keys == all_keys:
@@ -1078,7 +1090,9 @@ async def async_play(  # noqa: PLR0913
                         hass, store, person, routine, segments, now, visual=video
                     )
             else:
-                media = await _async_all_heard(hass, store, person, now, visual=video)
+                media = await _async_all_heard(
+                    hass, store, person, now, visual=video, on_build=_generating
+                )
 
             metadata: dict[str, Any] = {
                 ("video_path" if media.is_video else "audio_path"): media.path,

@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
@@ -1442,6 +1442,38 @@ async def test_switch_audio_to_visual_rebuilds_segments_with_clips(
     assert _media_id(h.played[0]).endswith("play_quick.mp4")
     state = hass.states.get("sensor.cast_studio_alex_quick")
     assert state.attributes["ready_segments"] == QUICK
+
+
+def _record_states(h: Harness, entity_id: str) -> list[str]:
+    states: list[str] = []
+
+    @callback
+    def _changed(event: Any) -> None:
+        if event.data["entity_id"] == entity_id and event.data["new_state"]:
+            states.append(event.data["new_state"].state)
+
+    h.hass.bus.async_listen("state_changed", _changed)
+    return states
+
+
+async def test_play_of_a_built_routine_skips_generating(sam_quick: Harness) -> None:
+    h = sam_quick
+    await h.prebuild("Quick")
+    states = _record_states(h, "sensor.cast_studio_sam_quick")
+
+    await h.play("Quick")
+
+    assert "generating" not in states
+    assert "playing" in states
+
+
+async def test_play_shows_generating_while_it_builds(sam_quick: Harness) -> None:
+    h = sam_quick
+    states = _record_states(h, "sensor.cast_studio_sam_quick")
+
+    await h.play("Quick")
+
+    assert states.index("generating") < states.index("playing")
 
 
 async def test_prebuild_does_not_flip_a_playing_routine(sam_quick: Harness) -> None:
