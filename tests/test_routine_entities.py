@@ -28,6 +28,7 @@ BRIEFING = "custom_components.cast_studio.briefing"
 PLAY = "button.cast_studio_play_sam_quick"
 REBUILD = "button.cast_studio_rebuild_sam_quick"
 REGENERATE = "button.cast_studio_regenerate_and_play_sam_quick"
+REFRESH = "button.cast_studio_refresh_sam_quick"
 PLAY_ON = "select.cast_studio_play_on_sam_quick"
 SENSOR = "sensor.cast_studio_sam_quick"
 
@@ -84,7 +85,7 @@ def test_each_control_is_on_the_routines_own_device(
     entities = er.async_get(hass)
     devices = {
         entities.async_get(entity_id).device_id
-        for entity_id in (PLAY, REBUILD, REGENERATE, PLAY_ON, SENSOR)
+        for entity_id in (PLAY, REBUILD, REGENERATE, REFRESH, PLAY_ON, SENSOR)
     }
     assert len(devices) == 1
     device = dr.async_get(hass).async_get(devices.pop())
@@ -95,7 +96,7 @@ async def test_all_controls_belong_to_the_routines_subentry(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
     entities = er.async_get(hass)
-    for entity_id in (PLAY, REBUILD, REGENERATE, PLAY_ON, SENSOR):
+    for entity_id in (PLAY, REBUILD, REGENERATE, REFRESH, PLAY_ON, SENSOR):
         assert entities.async_get(entity_id).config_subentry_id == ROUTINE_ID
     device = dr.async_get(hass).async_get(entities.async_get(PLAY).device_id)
     assert device.config_entries_subentries[entry.entry_id] == {ROUTINE_ID}
@@ -129,7 +130,7 @@ async def test_controls_survive_a_sensor_registered_before_the_device(
     await hass.async_block_till_done()
 
     entities = er.async_get(hass)
-    for entity_id in (PLAY, REBUILD, REGENERATE, PLAY_ON, SENSOR):
+    for entity_id in (PLAY, REBUILD, REGENERATE, REFRESH, PLAY_ON, SENSOR):
         assert entities.async_get(entity_id) is not None, entity_id
 
 
@@ -341,3 +342,37 @@ async def test_play_on_lists_only_players_a_routine_uses(
 
     options = hass.states.get(PLAY_ON).attributes["options"]
     assert options == sorted([GUEST, SPEAKER, squeezebox])
+
+
+async def test_refresh_rebuilds_weather_and_commute_without_playing(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    with (
+        patch(f"{BRIEFING}.async_play", new=AsyncMock()) as play,
+        patch(f"{BRIEFING}.async_refresh", new=AsyncMock()) as refresh,
+    ):
+        await _press(hass, REFRESH)
+
+    play.assert_not_awaited()
+    refresh.assert_awaited_once()
+    assert refresh.await_args.kwargs["routine"].routine_id == ROUTINE_ID
+
+
+async def test_refresh_says_when_a_routine_has_nothing_to_refresh(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    routine = entry.subentries[ROUTINE_ID]
+    hass.config_entries.async_update_subentry(
+        entry, routine, data={**routine.data, "segments": ["greeting"]}
+    )
+    await hass.async_block_till_done()
+    with pytest.raises(HomeAssistantError, match="no weather or commute"):
+        await _press(hass, REFRESH)
+
+
+def test_rebuild_and_play_is_named_like_rebuild(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Renamed from Regenerate and play; the entity id stays for automations."""
+    assert hass.states.get(REGENERATE).name == "Quick (Sam) Rebuild and play"
+    assert hass.states.get(REFRESH).name == "Quick (Sam) Refresh"

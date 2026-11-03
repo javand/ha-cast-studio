@@ -20,6 +20,7 @@ from .people import (
     get_routines,
     slugify_name,
 )
+from .segments import dynamic_segment_types
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -146,6 +147,19 @@ async def async_rebuild_routine(hass: HomeAssistant, routine_id: str) -> None:
     entry = _loaded_entry(hass)
     _, routine = current_routine(hass, routine_id)
     await briefing.async_prebuild(hass, entry, routine=routine)
+
+
+async def async_refresh_routine(hass: HomeAssistant, routine_id: str) -> None:
+    """Rebuild the routine's weather and commute now, playing nothing."""
+    entry = _loaded_entry(hass)
+    _, routine = current_routine(hass, routine_id)
+    if not dynamic_segment_types(routine):
+        msg = (
+            f"'{routine.name}' has no weather or commute segment to refresh; "
+            "use Rebuild to build everything again"
+        )
+        raise HomeAssistantError(msg)
+    await briefing.async_refresh(hass, entry, routine=routine)
 
 
 async def async_play_routine(
