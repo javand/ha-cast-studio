@@ -193,7 +193,7 @@
             "segments": "Segments play in the order you pick them.",
             "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
-            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device.",
+            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device. When the routine plays on a different screen (Play on), the dashboard shows on that screen instead.",
             "person_id": "Who this routine is for. It uses their voice, entities and output device."
           },
           "sections": {
@@ -224,7 +224,7 @@
             "segments": "Segments play in the order you pick them.",
             "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
-            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device.",
+            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device. When the routine plays on a different screen (Play on), the dashboard shows on that screen instead.",
             "person_id": "Who this routine is for. It uses their voice, entities and output device."
           },
           "sections": {

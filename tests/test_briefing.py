@@ -915,6 +915,42 @@ async def test_post_briefing_dashboard_runs_after_playback(
     ]
 
 
+async def test_dashboard_follows_a_display_picked_for_the_play(
+    sam_visual_with_dashboard: Harness,
+) -> None:
+    """Played on another screen: the dashboard shows where you are watching."""
+    h = sam_visual_with_dashboard
+    other = "media_player.kitchen_display"
+    h.hass.states.async_set(other, "playing", {"app_name": "Default Media Receiver"})
+    await h.play("Quick", target=other)
+
+    assert h.played[0]["entity_id"] == other
+    assert [d["entity_id"] for d in h.dashboards] == [other]
+
+
+async def test_dashboard_stays_on_its_display_when_played_on_a_speaker(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    routine = dashboard_routine("r_sam_quick", SAM_ID, "Quick", QUICK)
+    routine["data"]["dashboard_display"] = DISPLAY
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [person_subentry(SAM_ID, "Sam", media_player=DISPLAY), routine],
+    )
+    hass.states.async_set(SPEAKER, "playing", {"app_name": "Spotify"})
+    await h.play("Quick", target=SPEAKER)
+
+    assert h.played[0]["entity_id"] == SPEAKER
+    assert [d["entity_id"] for d in h.dashboards] == [DISPLAY]
+
+
 async def test_dashboard_skipped_for_non_cast_target(
     sam_audio_with_dashboard: Harness, caplog: pytest.LogCaptureFixture
 ) -> None:

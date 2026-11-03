@@ -803,12 +803,20 @@ def _resolve_target(hass: HomeAssistant, person: Person, target: str | None) -> 
 
 
 def _dashboard_actions(
-    hass: HomeAssistant, person: Person, routine: Routine
+    hass: HomeAssistant, person: Person, routine: Routine, player: str
 ) -> list[dict[str, Any]]:
-    """Return the post-briefing dashboard action, if one applies (spec §5.3a)."""
+    """
+    Return the post-briefing dashboard action, if one applies (spec §5.3a).
+
+    Played on a screen other than the person's output device (Play on, or a
+    play target), the dashboard follows it: that is where someone is watching.
+    """
     if not routine.dashboard_path:
         return []
-    display = routine.dashboard_display or person.media_player
+    if player != person.media_player and has_screen(hass, player):
+        display = player
+    else:
+        display = routine.dashboard_display or person.media_player
     if not display or not is_cast_player(hass, display):
         LOGGER.warning(
             "Skipping post-briefing dashboard for %s's '%s': %s is not a Cast display",
@@ -1077,7 +1085,7 @@ async def async_play(  # noqa: PLR0913
             if volume is not None:
                 metadata["volume_level"] = volume
             release_player: str | None = None
-            if actions := _dashboard_actions(hass, person, routine):
+            if actions := _dashboard_actions(hass, person, routine, player):
                 metadata["post_routine_actions"] = actions
             elif is_cast_player(hass, player):
                 # No dashboard to show: leave the cast screen when done.
