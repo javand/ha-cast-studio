@@ -66,7 +66,7 @@
           "sections": {
             "advanced": {
               "name": "Advanced",
-              "description": "Entities, a backup writer and greeting details used to build this person's segments.",
+              "description": "Entities and greeting details used to build this person's segments. Fallback AI picks the Home Assistant assistant that writes this person's briefing if Gemini isn't set up or a Gemini request fails; leave it empty for Home Assistant's default assistant.",
               "data": {
                 "weather_entity": "Weather entity",
                 "calendar_entities": "Calendars",
@@ -76,7 +76,7 @@
                 "commute_transit_sensor": "Commute transit-time sensor",
                 "commute_drive_return_sensor": "Evening drive-home sensor",
                 "commute_transit_return_sensor": "Evening transit-home sensor",
-                "conversation_agent": "Conversation agent",
+                "conversation_agent": "Fallback AI (conversation agent)",
                 "greeting_title": "Greeting title",
                 "greeting_subtitle": "Greeting subtitle",
                 "greeting_image": "Greeting image",
@@ -89,7 +89,7 @@
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
                 "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
-                "conversation_agent": "Backup writer for the briefing, used only when Gemini isn't set up or a Gemini request fails. Leave empty for Home Assistant's default agent.",
+                "conversation_agent": "Writes the briefing's words if Gemini isn't set up or a Gemini request fails. Leave empty to use Home Assistant's default assistant.",
                 "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
                 "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",
                 "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day.",
@@ -126,7 +126,7 @@
           "sections": {
             "advanced": {
               "name": "Advanced",
-              "description": "Entities, a backup writer and greeting details used to build this person's segments.",
+              "description": "Entities and greeting details used to build this person's segments. Fallback AI picks the Home Assistant assistant that writes this person's briefing if Gemini isn't set up or a Gemini request fails; leave it empty for Home Assistant's default assistant.",
               "data": {
                 "weather_entity": "Weather entity",
                 "calendar_entities": "Calendars",
@@ -136,7 +136,7 @@
                 "commute_transit_sensor": "Commute transit-time sensor",
                 "commute_drive_return_sensor": "Evening drive-home sensor",
                 "commute_transit_return_sensor": "Evening transit-home sensor",
-                "conversation_agent": "Conversation agent",
+                "conversation_agent": "Fallback AI (conversation agent)",
                 "greeting_title": "Greeting title",
                 "greeting_subtitle": "Greeting subtitle",
                 "greeting_image": "Greeting image",
@@ -149,7 +149,7 @@
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
                 "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
-                "conversation_agent": "Backup writer for the briefing, used only when Gemini isn't set up or a Gemini request fails. Leave empty for Home Assistant's default agent.",
+                "conversation_agent": "Writes the briefing's words if Gemini isn't set up or a Gemini request fails. Leave empty to use Home Assistant's default assistant.",
                 "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
                 "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",
                 "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day.",

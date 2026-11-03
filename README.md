@@ -82,7 +82,7 @@ Use **Add person** on the CastStudio entry. Fields:
 | Daily reset time | When the person's briefing day starts (default 03:00). Anything built or played before it counts as the previous day. |
 | Maximum content age (minutes) | Stored content older than this is rebuilt before it plays. `0` (default) turns the age check off. |
 
-The **Advanced** section holds the entities used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; a backup conversation agent; the greeting title, subtitle and image; and the person's **Pronunciations** list. Each field says what it does and what leaving it empty means. **Greeting image** is an image picker: choose a picture from your media or upload one, and it replaces the daily AI-generated greeting background.
+The **Advanced** section holds the entities used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; **Fallback AI** (the Home Assistant assistant that writes the briefing if Gemini isn't set up or fails); the greeting title, subtitle and image; and the person's **Pronunciations** list. Each field says what it does and what leaving it empty means. **Greeting image** is an image picker: choose a picture from your media or upload one, and it replaces the daily AI-generated greeting background.
 
 **Daily text** lists JW Library daily text sensors and text helpers; use a text helper to feed in any other source. **Fun fact** and **National Day** need no entity: the AI writes them from today's date.
 

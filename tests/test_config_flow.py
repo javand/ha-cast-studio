@@ -1691,3 +1691,20 @@ def test_every_form_field_has_help_text() -> None:
         assert missing == []
         person = data["config_subentries"]["person"]["step"]["user"]
         assert "voice" not in person["sections"]["advanced"]["description"].lower()
+
+
+def test_fallback_ai_is_named_and_explained_in_the_section() -> None:
+    """The agent picker shows no help text, so its label and section explain it."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for step in ("user", "reconfigure"):
+            advanced = data["config_subentries"]["person"]["step"][step]["sections"][
+                "advanced"
+            ]
+            assert advanced["data"]["conversation_agent"] == (
+                "Fallback AI (conversation agent)"
+            )
+            assert "Fallback AI" in advanced["description"]
+            assert "Gemini" in advanced["description"]
+            assert "backup writer" not in advanced["description"]
