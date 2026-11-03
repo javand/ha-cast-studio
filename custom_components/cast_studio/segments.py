@@ -69,7 +69,7 @@ from .slide_renderer import CANVAS_HEIGHT, CANVAS_WIDTH
 from .tts_client import track_voice_fallback
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterable
+    from collections.abc import Collection, Iterable, Iterator
 
     from homeassistant.core import HomeAssistant
 
@@ -504,6 +504,52 @@ def _remove_superseded_all_heard(directory: Path, now: datetime) -> list[str]:
     return removed
 
 
+def _json_strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _json_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _json_strings(item)
+
+
+def _remove_superseded_day_files(directory: Path, now: datetime) -> list[str]:
+    """
+    Delete files in a day folder that no manifest or routine file points to.
+
+    Every rebuild writes new versioned files and leaves the old ones for any
+    play still streaming them. Only once nothing was superseded within
+    ``ALL_HEARD_KEEP_SUPERSEDED`` (the newest ``*.json`` is that old) can no
+    play still be running from an old file; files written within that time are
+    kept too.
+    """
+    cutoff = (now - ALL_HEARD_KEEP_SUPERSEDED).timestamp()
+    records = list(directory.glob("*.json"))
+    if any(record.stat().st_mtime > cutoff for record in records):
+        return []
+    keep: set[str] = set()
+    for record in records:
+        try:
+            payload = json.loads(record.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # Unreadable: can't tell what it points to, so delete nothing.
+            return []
+        keep.update(Path(value).name for value in _json_strings(payload))
+    removed: list[str] = []
+    for child in directory.iterdir():
+        if (
+            child.is_file()
+            and child.suffix != ".json"
+            and child.name not in keep
+            and child.stat().st_mtime <= cutoff
+        ):
+            child.unlink(missing_ok=True)
+            removed.append(str(child))
+    return removed
+
+
 class SegmentStore:
     """Stored segments for every person, by briefing day."""
 
@@ -577,6 +623,11 @@ class SegmentStore:
         if await async_run_in_executor(self._hass, all_heard_dir.is_dir):
             removed += await async_run_in_executor(
                 self._hass, _remove_superseded_all_heard, all_heard_dir, now
+            )
+        day_dir = self.day_dir(person, today)
+        if await async_run_in_executor(self._hass, day_dir.is_dir):
+            removed += await async_run_in_executor(
+                self._hass, _remove_superseded_day_files, day_dir, now
             )
         if removed:
             LOGGER.debug("Pruned stale segment folders: %s", removed)

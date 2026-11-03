@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 from datetime import date, datetime, time, timedelta
@@ -32,6 +33,7 @@ from custom_components.cast_studio.segments import (
     SegmentStore,
     StoredSegment,
     _all_heard_step,
+    _remove_superseded_day_files,
     async_build_segments,
     build_segment_step,
     persona_of,
@@ -1108,3 +1110,63 @@ def test_all_heard_uses_the_person_voice() -> None:
     """The that's-everything clip is spoken in the person's voice."""
     person = _with_settings(voice_personas=["arthur"])
     assert _all_heard_step(person, PERSONA_DAY)["voice"] == "Iapetus"
+
+
+# --- Superseded files within the day ------------------------------------------
+
+
+def _day_with_superseded_files(tmp_path: Path, json_age: timedelta) -> Path:
+    day = tmp_path / "2026-11-03"
+    day.mkdir()
+    (day / "manifest.json").write_text(
+        json.dumps({"segments": {"weather--theo": {"audio": "weather--theo.new.mp3"}}})
+    )
+    (day / "routine_x.json").write_text(json.dumps({"video": "routine_x.new.mp4"}))
+    names = [
+        "weather--theo.new.mp3",
+        "routine_x.new.mp4",
+        "weather--theo.old.mp3",
+        "routine_x.old.mp4",
+        "play_x.old.mp3",
+    ]
+    for name in names:
+        (day / name).write_bytes(b"x")
+    old = (PRUNE_NOW - timedelta(hours=2)).timestamp()
+    for name in names:
+        os.utime(day / name, (old, old))
+    json_time = (PRUNE_NOW - json_age).timestamp()
+    for name in ("manifest.json", "routine_x.json"):
+        os.utime(day / name, (json_time, json_time))
+    return day
+
+
+PRUNE_NOW = datetime(2026, 11, 3, 12, 0, tzinfo=dt_util.UTC)
+
+
+def test_superseded_day_files_removed_after_grace(tmp_path: Path) -> None:
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(hours=2))
+    removed = _remove_superseded_day_files(day, PRUNE_NOW)
+    assert sorted(Path(p).name for p in removed) == [
+        "play_x.old.mp3",
+        "routine_x.old.mp4",
+        "weather--theo.old.mp3",
+    ]
+    assert (day / "weather--theo.new.mp3").exists()
+    assert (day / "routine_x.new.mp4").exists()
+    assert (day / "manifest.json").exists()
+    assert (day / "routine_x.json").exists()
+
+
+def test_superseded_day_files_kept_within_grace(tmp_path: Path) -> None:
+    # A commit ten minutes ago may have superseded a file a play still streams.
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(minutes=10))
+    assert _remove_superseded_day_files(day, PRUNE_NOW) == []
+    assert (day / "weather--theo.old.mp3").exists()
+
+
+def test_recent_unreferenced_file_kept(tmp_path: Path) -> None:
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(hours=2))
+    fresh = (PRUNE_NOW - timedelta(minutes=5)).timestamp()
+    os.utime(day / "play_x.old.mp3", (fresh, fresh))
+    removed = _remove_superseded_day_files(day, PRUNE_NOW)
+    assert "play_x.old.mp3" not in {Path(p).name for p in removed}
