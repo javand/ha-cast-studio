@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import time, timedelta
 from types import MappingProxyType
@@ -15,7 +16,6 @@ from homeassistant.util import slugify
 from .const import DEFAULT_TRANSPORTATION_MODE, DOMAIN, LOGGER
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from datetime import date, datetime
 
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
@@ -110,6 +110,8 @@ ROUTINE_DASHBOARD = "dashboard"
 ROUTINE_DASHBOARD_VIEW = "dashboard_view"
 ROUTINE_DASHBOARD_DISPLAY = "dashboard_display"
 ROUTINE_OUTPUT_FORMAT = "output_format"
+# Segments this routine voices with other personas: [{segment, personas}].
+ROUTINE_VOICE_CHANGES = "voice_changes"
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,8 @@ class Routine:
     dashboard_view: str | None
     dashboard_display: str | None
     output_format: Literal["audio", "visual"] = DEFAULT_OUTPUT_FORMAT
+    # (segment type, persona ids): who voices that segment in this routine.
+    voice_changes: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 def slugify_name(value: str) -> str:
@@ -212,17 +216,41 @@ def _person_from_subentry(subentry: ConfigSubentry) -> Person:
     )
 
 
+def _voice_changes(
+    rows: Any, segments: tuple[str, ...]
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """
+    Return a routine's voice changes in segment order.
+
+    Rows for segments not in the routine or naming no persona are dropped; a
+    later row for the same segment replaces an earlier one.
+    """
+    changes: dict[str, tuple[str, ...]] = {}
+    for row in rows or ():
+        if not isinstance(row, Mapping):
+            continue
+        segment = row.get("segment")
+        personas = tuple(str(pid) for pid in row.get("personas") or () if pid)
+        if segment in segments and personas:
+            changes[segment] = personas
+    return tuple(
+        (seg, changes[seg]) for seg in dict.fromkeys(segments) if seg in changes
+    )
+
+
 def _routine_from_subentry(subentry: ConfigSubentry) -> Routine:
     data = subentry.data
+    segments = tuple(data.get(ROUTINE_SEGMENTS) or ())
     return Routine(
         routine_id=subentry.subentry_id,
         person_id=data[ROUTINE_PERSON_ID],
         name=data.get(ROUTINE_NAME) or subentry.title,
-        segments=tuple(data.get(ROUTINE_SEGMENTS) or ()),
+        segments=segments,
         dashboard_path=data.get(ROUTINE_DASHBOARD_PATH) or None,
         dashboard_view=data.get(ROUTINE_DASHBOARD_VIEW) or None,
         dashboard_display=data.get(ROUTINE_DASHBOARD_DISPLAY) or None,
         output_format=data.get(ROUTINE_OUTPUT_FORMAT) or DEFAULT_OUTPUT_FORMAT,
+        voice_changes=_voice_changes(data.get(ROUTINE_VOICE_CHANGES), segments),
     )
 
 

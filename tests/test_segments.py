@@ -34,9 +34,11 @@ from custom_components.cast_studio.segments import (
     _all_heard_step,
     async_build_segments,
     build_segment_step,
+    persona_of,
     routine_segment_keys,
     segment_key,
     segment_type_of,
+    unvoiced_key,
 )
 from custom_components.cast_studio.tts_client import _mark_voice_fallback
 
@@ -81,7 +83,10 @@ def make_person(**overrides: Any) -> Person:
     return Person(**values)
 
 
-def make_routine(segments: tuple[str, ...]) -> Routine:
+def make_routine(
+    segments: tuple[str, ...],
+    voice_changes: tuple[tuple[str, tuple[str, ...]], ...] = (),
+) -> Routine:
     return Routine(
         routine_id="r_sam_full",
         person_id="person_sam",
@@ -90,6 +95,7 @@ def make_routine(segments: tuple[str, ...]) -> Routine:
         dashboard_path=None,
         dashboard_view=None,
         dashboard_display=None,
+        voice_changes=voice_changes,
     )
 
 
@@ -119,17 +125,73 @@ def test_segment_type_of_maps_keys_back_to_types() -> None:
 
 
 def test_routine_segment_keys_drops_signoff_when_closing_present() -> None:
+    person = make_person()
     with_closing = make_routine(("scripture", "daily_encouragement", "closing"))
-    assert routine_segment_keys(with_closing) == [
+    assert routine_segment_keys(person, with_closing, PERSONA_DAY) == [
         "scripture",
         "daily_encouragement_nosignoff",
         "closing",
     ]
     without_closing = make_routine(("scripture", "daily_encouragement"))
-    assert routine_segment_keys(without_closing) == [
+    assert routine_segment_keys(person, without_closing, PERSONA_DAY) == [
         "scripture",
         "daily_encouragement",
     ]
+
+
+def _theo() -> Person:
+    return make_person(settings={**SAM_SETTINGS, "voice_personas": ["theo"]})
+
+
+def test_keys_stay_plain_in_the_person_voice() -> None:
+    routine = make_routine(("weather", "scripture"))
+    assert routine_segment_keys(_theo(), routine, PERSONA_DAY) == [
+        "weather",
+        "scripture",
+    ]
+
+
+def test_voice_change_only_changes_its_segment() -> None:
+    routine = make_routine(("weather", "scripture"), (("scripture", ("malenfant",)),))
+    assert routine_segment_keys(_theo(), routine, PERSONA_DAY) == [
+        "weather",
+        "scripture--malenfant",
+    ]
+
+
+def test_change_equal_to_person_voice_shares_the_key() -> None:
+    """The same personas in any order land on the person's own build."""
+    person = make_person(settings={**SAM_SETTINGS, "voice_personas": ["theo", "ray"]})
+    plain = make_routine(("weather",))
+    changed = make_routine(("weather",), (("weather", ("ray", "theo")),))
+    assert routine_segment_keys(person, changed, PERSONA_DAY) == (
+        routine_segment_keys(person, plain, PERSONA_DAY)
+    )
+
+
+def test_unknown_change_persona_falls_back_to_person_voice() -> None:
+    routine = make_routine(("weather",), (("weather", ("gone_persona",)),))
+    assert routine_segment_keys(_theo(), routine, PERSONA_DAY) == ["weather"]
+
+
+def test_voiced_keys_map_back_to_types_and_personas() -> None:
+    key = "daily_encouragement_nosignoff--nana_rose"
+    assert segment_type_of(key) == "daily_encouragement"
+    assert unvoiced_key(key) == "daily_encouragement_nosignoff"
+    assert persona_of(key) == "nana_rose"
+    assert persona_of("weather") is None
+
+
+def test_build_step_uses_the_key_persona() -> None:
+    person = _theo()
+    step = build_segment_step(person, "scripture--malenfant", PERSONA_DAY)
+    assert (step["voice"], step["type"]) == ("Charon", "scripture")
+    assert build_segment_step(person, "weather--gone", PERSONA_DAY)["voice"] == "Puck"
+    assert build_segment_step(person, "closing", PERSONA_DAY)["voice"] == "Puck"
+    nosignoff = build_segment_step(
+        person, "daily_encouragement_nosignoff--sage", PERSONA_DAY
+    )
+    assert nosignoff["include_signoff"] is False
 
 
 # --- step construction ------------------------------------------------------

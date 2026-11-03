@@ -532,8 +532,9 @@ async def test_resolve_step_visual_assets_ai_image_generation_and_fallback(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persona_id", [None, "theo"])
 async def test_async_compile_single_step_verbatim_scripture_bypasses_llm(
-    tmp_path: Path,
+    tmp_path: Path, persona_id: str | None
 ) -> None:
     """Verify scripture step produces verbatim narration from daily text sensors and bypasses LLM."""
     from types import SimpleNamespace
@@ -559,6 +560,12 @@ async def test_async_compile_single_step_verbatim_scripture_bypasses_llm(
         "type": "scripture",
         "entity_id": "sensor.jw_library_daily_text_today",
     }
+    if persona_id:
+        # Any persona, including a routine's voice change, reads it word for word.
+        from custom_components.cast_studio.personas import get_persona
+        from custom_components.cast_studio.segments import persona_voice
+
+        step.update(persona_voice(get_persona(persona_id)))
     recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
     ai_creds = {"platform": "conversation_agent"}
 

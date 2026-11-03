@@ -68,6 +68,7 @@ from .segments import (
     dynamic_segment_types,
     routine_segment_keys,
     segment_type_of,
+    unvoiced_key,
     versioned_path,
 )
 from .sensor import (
@@ -264,12 +265,17 @@ def _person_has_visual_routine(entry: ConfigEntry, person: Person) -> bool:
     return any(_is_visual(r) for r in get_routines(entry, person.person_id))
 
 
+def _keys(person: Person, routine: Routine, now: datetime) -> list[str]:
+    """Return the routine's segment keys for the person's briefing day at ``now``."""
+    return routine_segment_keys(person, routine, briefing_day(person, now))
+
+
 def _ready_keys(
     store: SegmentStore, person: Person, routine: Routine, now: datetime
 ) -> list[str]:
     return [
         key
-        for key in routine_segment_keys(routine)
+        for key in _keys(person, routine, now)
         if _usable_segment(store, person, key, now, visual=_is_visual(routine))
         is not None
     ]
@@ -286,7 +292,9 @@ def _set_sensor(  # noqa: PLR0913
     sensor.set_briefing_state(
         state,
         briefing_day=briefing_day(person, now).isoformat(),
-        ready_segments=_ready_keys(store, person, routine, now),
+        ready_segments=[
+            unvoiced_key(key) for key in _ready_keys(store, person, routine, now)
+        ],
         dynamic_segments=dynamic_segment_types(routine),
     )
 
@@ -395,7 +403,7 @@ async def _async_store_routine_media(  # noqa: PLR0913
     """Stitch a visual routine's fresh clips or audio into its pre-built file."""
     segments = [
         segment
-        for key in routine_segment_keys(routine)
+        for key in _keys(person, routine, now)
         if (segment := _usable_segment(store, person, key, now, visual=True))
         is not None
     ]
@@ -538,7 +546,7 @@ async def _async_build_and_store(  # noqa: PLR0913
                 key
                 for r in get_routines(entry, person.person_id)
                 if _is_visual(r)
-                for key in routine_segment_keys(r)
+                for key in _keys(person, r, now)
             } & set(keys)
             results = await async_build_segments(
                 hass,
@@ -611,7 +619,8 @@ async def async_prebuild(
     too, so a plain play needs no stitching (spec §5.3).
     """
     person, routines = _target(entry, routine, person, "async_prebuild")
-    keys = list(dict.fromkeys(key for r in routines for key in routine_segment_keys(r)))
+    now = dt_util.now()
+    keys = list(dict.fromkeys(key for r in routines for key in _keys(person, r, now)))
     results = await _async_build_and_store(
         hass, entry, person, routines, keys, source="prebuild"
     )
@@ -635,10 +644,10 @@ def is_refreshing(hass: HomeAssistant, person_id: str) -> bool:
     return person_id in _refreshing(hass)
 
 
-def _dynamic_keys(routine: Routine, types: Collection[str]) -> list[str]:
-    return [
-        key for key in routine_segment_keys(routine) if segment_type_of(key) in types
-    ]
+def _dynamic_keys(
+    person: Person, routine: Routine, types: Collection[str], now: datetime
+) -> list[str]:
+    return [key for key in _keys(person, routine, now) if segment_type_of(key) in types]
 
 
 def _refresh_types(segments: Iterable[str] | None) -> frozenset[str]:
@@ -675,8 +684,13 @@ async def async_refresh(
     """
     person, routines = _target(entry, routine, person, "async_refresh")
     types = _refresh_types(segments)
-    routines = [r for r in routines if _dynamic_keys(r, types)]
-    keys = list(dict.fromkeys(key for r in routines for key in _dynamic_keys(r, types)))
+    now = dt_util.now()
+    routines = [r for r in routines if _dynamic_keys(person, r, types, now)]
+    keys = list(
+        dict.fromkeys(
+            key for r in routines for key in _dynamic_keys(person, r, types, now)
+        )
+    )
     if not keys:
         LOGGER.info(
             "Nothing to refresh for %s: no weather or commute segment", person.name
@@ -998,7 +1012,7 @@ async def async_play(  # noqa: PLR0913
             await store.async_load(person, now)
             # Video only for a visual routine on a device with a screen.
             video = _is_visual(routine) and has_screen(hass, player)
-            all_keys = routine_segment_keys(routine)
+            all_keys = _keys(person, routine, now)
             keys = all_keys
             if skip_played:
                 heard = history.played(person, routine, now)

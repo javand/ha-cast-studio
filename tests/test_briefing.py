@@ -1250,6 +1250,67 @@ async def test_all_heard_on_speaker_plays_mp3(
     assert _media_id(h.played[0]).endswith(f"{ALL_HEARD_DIR}/{ALL_HEARD_KEY}.mp3")
 
 
+@pytest.fixture
+async def sam_with_voice_change(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> Harness:
+    return await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            _sam(),
+            routine_subentry("r_sam_full", SAM_ID, "Full", FULL, output_format="audio"),
+            routine_subentry(
+                "r_sam_night",
+                SAM_ID,
+                "Night",
+                ["weather", "closing"],
+                output_format="audio",
+                voice_changes=[{"segment": "weather", "personas": ["arthur"]}],
+            ),
+        ],
+    )
+
+
+async def test_prebuild_builds_each_voice_once(sam_with_voice_change: Harness) -> None:
+    """Shared segments are built once; a voice change adds only its variant."""
+    h = sam_with_voice_change
+    await briefing.async_prebuild(h.hass, h.entry, person=h.person(SAM_ID))
+    assert h.builder.calls == [[*FULL, "weather--arthur"]]
+
+
+async def test_ready_segments_name_segment_types_not_voices(
+    sam_with_voice_change: Harness,
+) -> None:
+    h = sam_with_voice_change
+    await briefing.async_prebuild(h.hass, h.entry, person=h.person(SAM_ID))
+    state = h.hass.states.get("sensor.cast_studio_sam_night")
+    assert state.attributes["ready_segments"] == ["weather", "closing"]
+
+
+async def test_refresh_rebuilds_every_voice_of_a_dynamic_segment(
+    sam_with_voice_change: Harness,
+) -> None:
+    h = sam_with_voice_change
+    await h.refresh(person=SAM_ID)
+    assert len(h.builder.calls) == 1
+    assert set(h.builder.calls[0]) == {"weather", "commute", "weather--arthur"}
+
+
+async def test_play_with_voice_change_plays_its_variant(
+    sam_with_voice_change: Harness,
+) -> None:
+    h = sam_with_voice_change
+    await h.play("Night")
+    assert h.builder.calls == [["weather--arthur", "closing"]]
+
+
 async def test_prebuild_person_builds_union_of_routines(
     sam_quick_and_full: Harness,
 ) -> None:

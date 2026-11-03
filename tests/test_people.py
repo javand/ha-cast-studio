@@ -450,3 +450,36 @@ def test_person_voice_reads_new_and_legacy_keys(
 ) -> None:
     """The voice list wins; a host persona saved before it still counts."""
     assert person_voice(settings) == expected
+
+
+def test_routine_voice_changes_parsed_and_cleaned() -> None:
+    """Rows for segments not in the routine or without personas are dropped."""
+    entry = make_entry(
+        [
+            person_subentry(SAM_ID, "Sam"),
+            routine_subentry(
+                "r1",
+                SAM_ID,
+                "Quick",
+                ["weather", "scripture"],
+                voice_changes=[
+                    {"segment": "scripture", "personas": ["sage"]},
+                    {"segment": "scripture", "personas": ["malenfant"]},
+                    {"segment": "agenda", "personas": ["theo"]},
+                    {"segment": "weather", "personas": []},
+                ],
+            ),
+        ]
+    )
+    (routine,) = get_routines(entry)
+    assert routine.voice_changes == (("scripture", ("malenfant",)),)
+
+
+def test_routine_without_voice_changes_has_none() -> None:
+    entry = make_entry(
+        [
+            person_subentry(SAM_ID, "Sam"),
+            routine_subentry("r1", SAM_ID, "Q", ["weather"]),
+        ]
+    )
+    assert get_routines(entry)[0].voice_changes == ()

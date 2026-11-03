@@ -58,7 +58,13 @@ from .people import (
     person_todos,
     person_voice,
 )
-from .personas import DEFAULT_VOICE_PERSONA, PERSONAS, Persona, pick_persona
+from .personas import (
+    DEFAULT_VOICE_PERSONA,
+    PERSONAS,
+    Persona,
+    get_persona,
+    pick_persona,
+)
 from .slide_renderer import CANVAS_HEIGHT, CANVAS_WIDTH
 from .tts_client import track_voice_fallback
 
@@ -153,9 +159,29 @@ def segment_key(segment_type: str, *, include_signoff: bool = True) -> str:
     return segment_type
 
 
+# A key voiced by someone other than the person's voice: ``<key>--<persona id>``.
+PERSONA_SEPARATOR = "--"
+
+
+def voiced_key(key: str, persona_id: str) -> str:
+    """Return the storage key for ``key`` voiced by ``persona_id``."""
+    return f"{key}{PERSONA_SEPARATOR}{persona_id}"
+
+
+def persona_of(key: str) -> str | None:
+    """Return the persona a storage key is voiced by, or None for the person's."""
+    _, sep, persona_id = key.partition(PERSONA_SEPARATOR)
+    return persona_id if sep else None
+
+
+def unvoiced_key(key: str) -> str:
+    """Return a storage key without its persona."""
+    return key.partition(PERSONA_SEPARATOR)[0]
+
+
 def segment_type_of(key: str) -> str:
     """Return the segment type a storage key was built from."""
-    return key.removesuffix(NOSIGNOFF_SUFFIX)
+    return unvoiced_key(key).removesuffix(NOSIGNOFF_SUFFIX)
 
 
 # Segment types that change through the day; ``cast_studio.refresh`` rebuilds them.
@@ -167,18 +193,24 @@ def dynamic_segment_types(routine: Routine) -> list[str]:
     return [t for t in routine.segments if t in DYNAMIC_SEGMENT_TYPES]
 
 
-def routine_segment_keys(routine: Routine) -> list[str]:
+def routine_segment_keys(person: Person, routine: Routine, day: date) -> list[str]:
     """
-    Return the routine's segment keys in order.
+    Return the routine's segment keys in order for the briefing day ``day``.
 
     With a ``closing`` segment, the encouragement is built without its own
-    sign-off so the name is never said twice (spec §5.2).
+    sign-off so the name is never said twice (spec §5.2). A segment the
+    routine voices with someone other than the person's voice that day gets a
+    voiced key, so it is built and stored apart; any other routine asking for
+    the same segment and persona shares it.
     """
     include_signoff = "closing" not in routine.segments
-    return [
-        segment_key(segment_type, include_signoff=include_signoff)
-        for segment_type in routine.segments
-    ]
+    default = person_default_persona(person, day)
+    keys: list[str] = []
+    for segment_type in routine.segments:
+        key = segment_key(segment_type, include_signoff=include_signoff)
+        persona = segment_persona(person, routine, segment_type, day)
+        keys.append(key if persona == default else voiced_key(key, persona.persona_id))
+    return keys
 
 
 _DEFAULT_PERSONA = next(p for p in PERSONAS if p.persona_id == DEFAULT_VOICE_PERSONA)
@@ -200,6 +232,23 @@ def person_default_persona(person: Person, day: date) -> Persona:
     return picked or _DEFAULT_PERSONA
 
 
+def segment_persona(
+    person: Person, routine: Routine | None, segment_type: str, day: date
+) -> Persona:
+    """Return who voices a routine's segment on ``day``."""
+    changes = dict(routine.voice_changes) if routine else {}
+    picked = pick_persona(changes.get(segment_type), person.person_id, day)
+    return picked or person_default_persona(person, day)
+
+
+def _key_persona(person: Person, key: str, day: date) -> Persona:
+    """Return who voices a stored key: its own persona, else the person's."""
+    persona_id = persona_of(key)
+    return (persona_id and get_persona(persona_id)) or person_default_persona(
+        person, day
+    )
+
+
 def build_segment_step(
     person: Person,
     segment_key: str,
@@ -211,8 +260,9 @@ def build_segment_step(
     Return the generator step for one of the person's segments.
 
     ``day`` is the briefing day the segment is built for; it decides which of
-    the person's personas speaks when they picked several. ``visual`` builds
-    a slide and clip as well as the audio.
+    the person's personas speaks when they picked several. A voiced key names
+    its persona instead; an unknown one falls back to the person's voice.
+    ``visual`` builds a slide and clip as well as the audio.
     """
     segment_type = segment_type_of(segment_key)
     if segment_type not in SEGMENT_TYPES:
@@ -229,7 +279,7 @@ def build_segment_step(
         "type": segment_type,
         "visual": visual,
         "standalone_segment": True,
-        **persona_voice(person_default_persona(person, day)),
+        **persona_voice(_key_persona(person, segment_key, day)),
     }
     if settings.get("conversation_agent"):
         step["conversation_agent"] = settings["conversation_agent"]
@@ -287,7 +337,7 @@ def build_segment_step(
         step.update(
             title="Today's Takeaway",
             subtitle="Daily Encouragement",
-            include_signoff=not segment_key.endswith(NOSIGNOFF_SUFFIX),
+            include_signoff=not unvoiced_key(segment_key).endswith(NOSIGNOFF_SUFFIX),
         )
         if scripture_entity:
             step["entity_id"] = scripture_entity
