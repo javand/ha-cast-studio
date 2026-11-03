@@ -32,11 +32,19 @@ PLAY_ON = "select.cast_studio_play_on_sam_quick"
 SENSOR = "sensor.cast_studio_sam_quick"
 
 
+def _cast_player(hass: HomeAssistant, entity_id: str, state: str = "idle") -> None:
+    """Register ``entity_id`` as a Google Cast media player."""
+    er.async_get(hass).async_get_or_create(
+        "media_player", "cast", entity_id, suggested_object_id=entity_id.split(".")[1]
+    )
+    hass.states.async_set(entity_id, state)
+
+
 @pytest.fixture
 async def entry(hass: HomeAssistant, tmp_path: Path) -> MockConfigEntry:
     """A loaded entry: Sam, whose output device is a speaker, with Quick."""
     for player in (SPEAKER, GUEST):
-        hass.states.async_set(player, "idle")
+        _cast_player(hass, player)
     entry = MockConfigEntry(
         domain=DOMAIN,
         version=2,
@@ -312,3 +320,24 @@ async def test_startup_writes_each_entity_once_with_its_real_value(
     assert set(seen[PLAY_ON]) == {SPEAKER}
     assert seen[SENSOR][0] == "ready"
     assert set(seen[SENSOR]) == {"ready"}
+
+
+async def test_play_on_lists_only_players_a_routine_uses(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Cast players and configured players; no app players, nothing unavailable."""
+    squeezebox = "media_player.bedroom_squeezebox"
+    hass.states.async_set(squeezebox, "idle")
+    hass.states.async_set("media_player.plex_apple_tv", "idle")
+    hass.states.async_set("media_player.onkyo_receiver", "on")
+    _cast_player(hass, "media_player.attic_speaker", "unavailable")
+    person = next(s for s in entry.subentries.values() if s.subentry_type == "person")
+    routine = entry.subentries[ROUTINE_ID]
+    hass.config_entries.async_update_subentry(
+        entry, routine, data={**routine.data, "dashboard_display": squeezebox}
+    )
+    await hass.async_block_till_done()
+    assert person.data["media_player"] == SPEAKER
+
+    options = hass.states.get(PLAY_ON).attributes["options"]
+    assert options == sorted([GUEST, SPEAKER, squeezebox])

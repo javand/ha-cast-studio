@@ -131,7 +131,7 @@ Each routine also has a device page, named like its row in the CastStudio list, 
 | **Play** | `button.cast_studio_play_<person>_<routine>` | Plays the routine on the player shown in **Play on**. |
 | **Rebuild** | `button.cast_studio_rebuild_<person>_<routine>` | Builds the routine's segments again and plays nothing. |
 | **Regenerate and play** | `button.cast_studio_regenerate_and_play_<person>_<routine>` | Rebuilds, then plays, in one press. |
-| **Play on** | `select.cast_studio_play_on_<person>_<routine>` | The player the two play buttons use. It starts at the person's output device; pick another to test on it. The choice lasts until the output device changes or Home Assistant restarts. |
+| **Play on** | `select.cast_studio_play_on_<person>_<routine>` | The player the two play buttons use. It starts at the person's output device; pick another to test on it. It lists Google Cast speakers and displays plus any player a person or routine already uses (a Squeezebox output device, say); other players, such as Plex apps or receiver zones, and unavailable players are left out. The choice lasts until the output device changes or Home Assistant restarts. |
 
 A failed press shows the reason as an error message. To set a volume, use the `volume` field of `cast_studio.play`.
 

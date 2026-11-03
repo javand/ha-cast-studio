@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 
@@ -57,11 +59,14 @@ class RoutineEntity(Entity):
         self._attr_device_info = routine_device_info(person, routine)
 
 
-def current_routine(hass: HomeAssistant, routine_id: str) -> tuple[Person, Routine]:
-    """Return the routine's current settings and its person, or raise."""
-    # While the entry is still setting up, its entities are being added: they
-    # must show their real value straight away, not a placeholder.
-    entry = get_loaded_entry(hass) or next(
+def active_entry(hass: HomeAssistant) -> ConfigEntry | None:
+    """
+    Return the loaded CastStudio entry, or the one still setting up.
+
+    While the entry sets up, its entities are being added: they must show
+    their real value straight away, not a placeholder.
+    """
+    return get_loaded_entry(hass) or next(
         (
             entry
             for entry in hass.config_entries.async_entries(DOMAIN)
@@ -69,6 +74,41 @@ def current_routine(hass: HomeAssistant, routine_id: str) -> tuple[Person, Routi
         ),
         None,
     )
+
+
+def play_on_options(hass: HomeAssistant, current: str | None) -> list[str]:
+    """
+    List the players a Play on choice offers.
+
+    Every Google Cast player, plus any player a person or routine already
+    uses (a Squeezebox output device, say), leaving out unavailable ones.
+    App players (Plex, receivers' extra zones and so on) aren't offered.
+    ``current`` is always listed, so the choice never disappears.
+    """
+    players = {
+        entity.entity_id
+        for entity in er.async_get(hass).entities.values()
+        if entity.domain == "media_player" and entity.platform == "cast"
+    }
+    if (entry := active_entry(hass)) is not None:
+        players.update(p.media_player for p in get_people(entry) if p.media_player)
+        players.update(
+            r.dashboard_display for r in get_routines(entry) if r.dashboard_display
+        )
+    options = {
+        player
+        for player in players
+        if (state := hass.states.get(player)) is not None
+        and state.state != STATE_UNAVAILABLE
+    }
+    if current is not None:
+        options.add(current)
+    return sorted(options)
+
+
+def current_routine(hass: HomeAssistant, routine_id: str) -> tuple[Person, Routine]:
+    """Return the routine's current settings and its person, or raise."""
+    entry = active_entry(hass)
     if entry is not None:
         people = {person.person_id: person for person in get_people(entry)}
         for routine in get_routines(entry):

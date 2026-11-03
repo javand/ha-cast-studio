@@ -20,6 +20,7 @@ from .routine_entity import (
     RoutineEntity,
     async_setup_routine_platform,
     current_routine,
+    play_on_options,
     play_target,
     set_play_target,
 )
@@ -57,11 +58,8 @@ class CastStudioAnnouncementPlayOnSelect(AnnouncementEntity, SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        """Return every media player, plus the current one if it is gone."""
-        players = set(self.hass.states.async_entity_ids("media_player"))
-        if (current := self.current_option) is not None:
-            players.add(current)
-        return sorted(players)
+        """Return the players a routine plays on, plus the current one."""
+        return play_on_options(self.hass, self.current_option)
 
     async def async_select_option(self, option: str) -> None:
         """Play on ``option`` from now on, until the default changes."""
@@ -105,11 +103,8 @@ class CastStudioRoutinePlayOnSelect(RoutineEntity, SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        """Return every media player, plus the current one if it is gone."""
-        players = set(self.hass.states.async_entity_ids("media_player"))
-        if (current := self.current_option) is not None:
-            players.add(current)
-        return sorted(players)
+        """Return the players a routine plays on, plus the current one."""
+        return play_on_options(self.hass, self.current_option)
 
     async def async_select_option(self, option: str) -> None:
         """Play on ``option`` from now on, until the output device changes."""
