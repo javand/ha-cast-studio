@@ -56,7 +56,7 @@ Instead of a plain text-to-speech readout, each person in the house gets their o
 - **Multiple Calendars and To-do Lists:** The agenda merges any number of calendars (personal, Family, work) into one timeline, then moves on to the tasks from any number of to-do lists. The narration says "your calendar" and "your to-do list" and never reads out a calendar's or list's name.
 - **Daily Encouragement:** With a daily text it gives 2 practical takeaways in plain language; with none, a short general good-day remark. It is drawn locally as a frosted card on a dawn gradient.
 - **Selective Dynamic AI Backgrounds:** AI images are generated only for `greeting`, `fun_fact` (illustrating the fact), `national_day` (the day's observance) and `closing` (themed to the weekday and season). Other slides use bundled artwork or local renderers, and a failed image falls back to bundled art.
-- **Dual-Voice TTS & Style Conditioning:** Separate host and scripture voices (e.g. `Pulcherrima` and `Enceladus`) and delivery personalities (e.g. `news_anchor`, `life_coach`, `calm_reassuring`) per person.
+- **Personas & Voice Changes:** One voice per person (or a daily rotation), with any segment of a routine voiced by a different persona.
 - **Strict Identity Contract:** Slides show the real name ("Alex"); the phonetic spelling ("Al-ex") and each person's pronunciation list only change what is spoken.
 - **Display Wake-Up & Audio Safety:** Turns the target display on, unmutes it and sets the volume before playback, so a briefing is never silent.
 - **Dashboard Hand-Off or Release:** A routine can show a Lovelace dashboard on the display when it finishes; without one, the Cast display is turned off and returns to its home screen.
@@ -82,43 +82,32 @@ Use **Add person** on the CastStudio entry. Fields:
 | Daily reset time | When the person's briefing day starts (default 03:00). Anything built or played before it counts as the previous day. |
 | Maximum content age (minutes) | Stored content older than this is rebuilt before it plays. `0` (default) turns the age check off. |
 
-The **Advanced** section holds the entities and voices used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; host and reader personas; a backup conversation agent; the greeting title, subtitle and image; and the person's **Pronunciations** list. Each field says what it does and what leaving it empty means. **Greeting image** is an image picker: choose a picture from your media or upload one, and it replaces the daily AI-generated greeting background.
+The **Advanced** section holds the entities and voices used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; the person's voice; a backup conversation agent; the greeting title, subtitle and image; and the person's **Pronunciations** list. Each field says what it does and what leaving it empty means. **Greeting image** is an image picker: choose a picture from your media or upload one, and it replaces the daily AI-generated greeting background.
 
 **Daily text** lists JW Library daily text sensors and text helpers; use a text helper to feed in any other source. **Fun fact** and **National Day** need no entity: the AI writes them from today's date.
 
 **Calendars** takes any number of calendars, for example a personal calendar and a shared Family calendar. The agenda merges their events into one timeline, and the narration calls them all "your calendar". **To-do lists** works the same way, for example your own list plus a Chores list. A person saved with a single calendar or to-do list keeps it.
 
-**Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. In **Advanced**, pick **Host personas** for the greeting, weather, agenda, commute, fun fact and closing, and **Reader personas** for the daily text and daily encouragement. Each picker lists only the personas suited to that role. Pick one to always hear it, or several to get one at random each briefing day; every part of that day's briefing keeps the same speaker. The **host** is the briefing's presenter and speaks the greeting, weather, national day, fun fact, agenda, commute and closing. The **reader** reads only the daily text and daily encouragement, in a slower, reflective style, so that part of the briefing sounds different from the rest. Each dropdown option shows the persona's name and a one-line summary. A persona that can do both jobs appears in both lists. With nothing picked, the form shows **Default Host** and **Default Reader**, the personas used when a picker is empty.
+**Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. Any persona can speak any segment. Each dropdown option shows the persona's name and a one-line summary.
 
-| Persona | Host | Reader | Style | Voice |
-|---|:-:|:-:|---|---|
-| Default Host | ✓ |  | Clear, polished news anchor | Pulcherrima |
-| Default Reader |  | ✓ | Calm, encouraging life coach | Enceladus |
-| Elena | ✓ | ✓ | Warm Saint Lucian friend, calm and unhurried | Kore |
-| Malenfant |  | ✓ | Deep-voiced pastoral mentor, slow and earnest | Charon |
-| Della | ✓ | ✓ | Joyful Southern auntie, soothing and homey | Kore |
-| Cole | ✓ |  | Smooth, classy Brooklyn gentleman with dry wit | Charon |
-| Arthur | ✓ |  | Polite British butler with a bone-dry wit | Iapetus |
-| Theo | ✓ |  | Upbeat morning-radio host, bright and playful | Puck |
-| Nana Rose | ✓ | ✓ | Gentle, patient grandmother | Sulafat |
-| Sage |  | ✓ | Calm meditation guide, slow and spacious | Achernar |
-| Ray | ✓ |  | Brisk news and traffic anchor, facts first | Alnilam |
-| Pip | ✓ |  | Playful, kind guide for children | Leda |
+**Voice.** In the person's **Advanced** section, **Voice** picks who speaks every segment of that person's routines. Pick one to always hear it, or several to get a different one each briefing day; every segment that day keeps the same speaker. With nothing picked, the form shows **News Anchor**, the voice used when the picker is empty.
 
-| Persona | Roles | Character |
-| :--- | :--- | :--- |
-| Default Host | Host | The original clear, friendly news-anchor host |
-| Default Reader | Reader | The original calm, warm life-coach reader |
-| Elena | Host, Reader | Warm, grounded young Saint Lucian woman |
-| Malenfant | Reader | Mature, pastoral mentor |
-| Della | Host, Reader | Joyful, soothing Southern auntie |
-| Cole | Host | Cultured, composed Brooklyn gentleman |
-| Arthur | Host | Crisp British butler with a dry wit |
-| Theo | Host | Upbeat morning-radio host |
-| Nana Rose | Host, Reader | Gentle, unhurried grandmother |
-| Sage | Reader | Calm meditation guide |
-| Ray | Host | No-nonsense news and traffic anchor |
-| Pip | Host | Playful, kid-friendly guide |
+**Voice changes.** A routine can give individual segments a different voice. In the routine's **Advanced** section, add a row to **Voice changes**, pick one of the routine's segments and one or more personas (several rotate daily, like the person's voice). Segments not listed use the person's voice. A segment voiced by a different persona is written in that persona's character, so it is built separately from the person-voice copy other routines share. The daily text is always read word for word; a persona only changes how it sounds. When editing a routine, the segment list shows the segments the routine had when the form opened: add a segment, save, then edit again to give it a voice change. Removing a segment from a routine drops its voice change.
+
+| Persona | Style | Voice |
+|---|---|---|
+| News Anchor | Polished, clear and steady on air | Pulcherrima |
+| Life Coach | Calm, warm and encouraging | Enceladus |
+| Elena | Warm Saint Lucian friend, calm and unhurried | Kore |
+| Malenfant | Deep-voiced pastoral mentor, slow and earnest | Charon |
+| Della | Joyful Southern auntie, soothing and homey | Kore |
+| Cole | Smooth, classy Brooklyn gentleman with dry wit | Charon |
+| Arthur | Polite British butler with a bone-dry wit | Iapetus |
+| Theo | Upbeat morning-radio host, bright and playful | Puck |
+| Nana Rose | Gentle, patient grandmother | Sulafat |
+| Sage | Calm meditation guide, slow and spacious | Achernar |
+| Ray | Brisk news and traffic anchor, facts first | Alnilam |
+| Pip | Playful, kind guide for children | Leda |
 
 A persona change takes effect on the next pre-build or briefing day.
 
