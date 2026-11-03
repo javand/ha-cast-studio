@@ -65,6 +65,7 @@ from .people import (
     PERSON_READER_PERSONAS,
     PERSON_RESET_TIME,
     PERSON_SETTINGS_KEYS,
+    PERSON_TODOS,
     PERSON_TRANSPORTATION_MODE,
     ROUTINE_DASHBOARD,
     ROUTINE_DASHBOARD_DISPLAY,
@@ -84,6 +85,7 @@ from .people import (
     get_routines,
     is_valid_name,
     person_calendars,
+    person_todos,
     slugify_name,
 )
 from .personas import (
@@ -272,7 +274,9 @@ def _person_settings_selectors() -> dict[str, selector.Selector]:
         PERSON_CALENDARS: selector.EntitySelector(
             selector.EntitySelectorConfig(domain="calendar", multiple=True)
         ),
-        "todo_entity": _entity_selector("todo"),
+        PERSON_TODOS: selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="todo", multiple=True)
+        ),
         # The daily text comes from JW Library; a text helper lets any other
         # source (an automation, a REST sensor copied in) feed it.
         "scripture_entity": selector.EntitySelector(
@@ -322,6 +326,7 @@ def _person_schema(current: dict[str, Any], default_mode: str) -> vol.Schema:
     current = {
         **current,
         PERSON_CALENDARS: person_calendars(current) or None,
+        PERSON_TODOS: person_todos(current) or None,
         # A persona dropped from the catalog would fail the picker's validation.
         **{
             key: [pid for pid in current.get(key) or () if get_persona(pid)] or None

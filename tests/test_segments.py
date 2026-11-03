@@ -175,7 +175,8 @@ def test_build_segment_step_uses_person_settings_and_name_rule() -> None:
 
     agenda = steps["agenda"]
     assert agenda["calendar_entities"] == ["calendar.sam"]
-    assert agenda["todo_entity"] == "todo.sam"
+    assert agenda["todo_entities"] == ["todo.sam"]
+    assert agenda["entity_ids"] == ["calendar.sam", "todo.sam"]
 
     scripture = steps["scripture"]
     assert scripture["entity_id"] == "sensor.daily_text"

@@ -34,6 +34,7 @@ from custom_components.cast_studio.people import (
     get_routines,
     is_content_fresh,
     person_calendars,
+    person_todos,
     slugify_name,
 )
 
@@ -392,6 +393,30 @@ def test_person_calendars_reads_list_and_legacy_single_key(
 ) -> None:
     """The list wins; a person saved before multi-calendar keeps their one."""
     assert person_calendars(settings) == expected
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        (
+            {"todo_entities": ["todo.sam", "todo.chores"]},
+            ["todo.sam", "todo.chores"],
+        ),
+        ({"todo_entity": "todo.sam"}, ["todo.sam"]),
+        ({"todo_entities": [], "todo_entity": "todo.sam"}, ["todo.sam"]),
+        (
+            {"todo_entities": ["todo.chores"], "todo_entity": "todo.sam"},
+            ["todo.chores"],
+        ),
+        ({"todo_entities": "todo.sam"}, ["todo.sam"]),
+        ({}, []),
+    ],
+)
+def test_person_todos_reads_list_and_legacy_single_key(
+    settings: dict[str, object], expected: list[str]
+) -> None:
+    """The list wins; a person saved before multi-list keeps their one."""
+    assert person_todos(settings) == expected
 
 
 def test_routine_output_format_parsed_with_default() -> None:

@@ -1235,6 +1235,41 @@ async def test_agenda_names_each_calendar_and_merges_events_by_time() -> None:
     assert titles == ["Grandma visiting", "School drop-off", "Dentist"]
 
 
+async def test_agenda_context_names_each_todo_list() -> None:
+    """Tasks from several to-do lists all reach the card, each list named."""
+    items = {
+        "todo.sam": [{"summary": "Call the bank"}],
+        "todo.chores": [{"summary": "Take out trash"}, {"summary": "Mow lawn"}],
+    }
+
+    async def _mock_call(
+        domain: str, service: str, data: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        eid = data["entity_id"]
+        return {eid: {"items": items[eid]}} if domain == "todo" else {}
+
+    names = {"todo.sam": "Sam's list", "todo.chores": "Chores"}
+    mock_hass = MagicMock()
+    mock_hass.services.async_call = AsyncMock(side_effect=_mock_call)
+    mock_hass.states.get.side_effect = lambda eid: MagicMock(
+        state="1", attributes={"friendly_name": names[eid]}
+    )
+
+    step = {"name": "agenda", "todo_entities": list(items)}
+    context = await async_extract_entity_context(mock_hass, step)
+
+    assert "To-do 'Sam's list' (todo.sam): 1 tasks pending: Call the bank" in context
+    assert (
+        "To-do 'Chores' (todo.chores): 2 tasks pending: Take out trash, Mow lawn"
+        in context
+    )
+    assert step["card"]["agenda_data"]["todo_items"] == [
+        "Call the bank",
+        "Take out trash",
+        "Mow lawn",
+    ]
+
+
 async def test_async_extract_weather_data_includes_temperature_unit() -> None:
     """Verify async_extract_weather_data returns temperature_unit."""
     mock_hass = MagicMock()
@@ -3453,6 +3488,46 @@ async def test_closing_image_prompt_follows_the_day(tmp_path: Path) -> None:
     assert "weekend" in prompts[0]
     assert "spring" in prompts[0]
     assert "no text" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_national_day_image_prompt_pins_todays_date(tmp_path: Path) -> None:
+    """Any date the image model paints on a sign must be today's."""
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    prompts: list[str] = []
+
+    async def _fake_image(_hass: Any, prompt: str, path: str, **_kwargs: Any) -> str:
+        prompts.append(prompt)
+        Path(path).write_bytes(b"png")
+        return path
+
+    nov_3 = datetime(2026, 11, 3, 6, 0, tzinfo=dt_util.UTC)
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_generate_ai_image",
+            new=_fake_image,
+        ),
+        patch(
+            "custom_components.cast_studio.generator.dt_util.now",
+            return_value=nov_3,
+        ),
+    ):
+        card: dict = {"subtitle": "National Sandwich Day"}
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {"type": "national_day"},
+            "national_day",
+            card,
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+        )
+
+    assert "National Sandwich Day" in prompts[0]
+    assert "November 3" in prompts[0]
+    assert "no other dates" in prompts[0]
 
 
 def test_closing_subtitle_names_the_day() -> None:

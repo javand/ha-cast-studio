@@ -240,8 +240,8 @@ def _format_calendar_service_response(
     return f"{label}: {'; '.join(event_strs)}"
 
 
-def _calendar_name(hass: HomeAssistant, eid: str) -> str | None:
-    """Return a calendar's friendly name, if Home Assistant knows it."""
+def _entity_name(hass: HomeAssistant, eid: str) -> str | None:
+    """Return an entity's friendly name, if Home Assistant knows it."""
     states = getattr(hass, "states", None)
     state = states.get(eid) if states is not None else None
     name = state.attributes.get("friendly_name") if state is not None else None
@@ -260,8 +260,16 @@ def _event_start_key(start: Any) -> str:
     return str(start) if start else "~"
 
 
-def _format_todo_service_response(eid: str, items: list[Any]) -> str:
-    """Format todo.get_items response list into context string."""
+def _format_todo_service_response(
+    eid: str, items: list[Any], name: str | None = None
+) -> str:
+    """
+    Format todo.get_items response list into context string.
+
+    The list's name leads the line so a briefing drawing on several lists
+    can say which one each task is on.
+    """
+    label = f"To-do '{name}' ({eid})" if name else f"To-do ({eid})"
     summaries = [
         str(item.get("summary")).strip()
         for item in items
@@ -270,8 +278,8 @@ def _format_todo_service_response(eid: str, items: list[Any]) -> str:
         and str(item.get("summary")).strip()
     ]
     if summaries:
-        return f"To-do ({eid}): {len(summaries)} tasks pending: {', '.join(summaries)}"
-    return f"To-do ({eid}): 0 tasks pending"
+        return f"{label}: {len(summaries)} tasks pending: {', '.join(summaries)}"
+    return f"{label}: 0 tasks pending"
 
 
 ISO_DATE_LENGTH = 10
@@ -1510,7 +1518,7 @@ async def async_extract_entity_context(  # noqa: C901, PLR0912, PLR0915
                     events = res[eid].get("events")
                     if isinstance(events, list):
                         service_overrides[eid] = _format_calendar_service_response(
-                            eid, events, _calendar_name(hass, eid)
+                            eid, events, _entity_name(hass, eid)
                         )
                         for ev in events:
                             if not isinstance(ev, dict):
@@ -1548,7 +1556,7 @@ async def async_extract_entity_context(  # noqa: C901, PLR0912, PLR0915
                     items = res[eid].get("items")
                     if isinstance(items, list):
                         service_overrides[eid] = _format_todo_service_response(
-                            eid, items
+                            eid, items, _entity_name(hass, eid)
                         )
                         for item in items:
                             if isinstance(item, dict):
@@ -1793,10 +1801,13 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
             or step_to_process.get("context")
             or "National Day celebration"
         )
+        today = dt_util.now()
         dynamic_prompt = (
             f"A vibrant, festive cinematic photograph celebrating {topic}, "
             "holiday atmosphere, joyful, detailed, beautiful natural lighting, "
-            "16:9 widescreen aspect ratio"
+            "16:9 widescreen aspect ratio. "
+            f"Today is {today:%B} {today.day}: any date shown on a sign or "
+            "banner must read exactly that, with no other dates or numbers"
         )
     elif step_key in ("fun_fact", "trivia") or name_key in ("fun_fact", "trivia"):
         fallback_asset = "fun_fact.jpg"

@@ -41,8 +41,13 @@ STEP_PROMPT_GUIDELINES: dict[str, str] = {
     ),
     "national_day": (
         "4. NATIONAL DAY NARRATION: Announce today's official National Day holiday "
-        "observance for the current date. Mention 1-2 interesting traditions "
-        "or reasons for the celebration in an engaging tone.\n"
+        "observance for the current date. Several national days often share a "
+        "date: pick exactly one, choosing the most fun and widely recognized "
+        "(a lighthearted food, animal or hobby day people actually celebrate) "
+        "over obscure, solemn, medical-awareness or brand-sponsored ones. When "
+        "the context lists today's national days, choose only from that list. "
+        "Mention 1-2 interesting traditions or reasons for the celebration in "
+        "an engaging tone.\n"
         "   - In 'visual_card', set 'title': 'National Day', "
         "'subtitle': '<Holiday Name>', and 1-2 festive bullet points.\n"
     ),
@@ -70,6 +75,8 @@ STEP_PROMPT_GUIDELINES: dict[str, str] = {
         "   - When the context lists more than one calendar, say which calendar "
         "an event is on (e.g. 'On the Family calendar, ...'). The day is clear "
         "only when every calendar has no events.\n"
+        "   - When the context lists more than one to-do list, say which list "
+        "a task is on (e.g. 'On your Chores list, ...').\n"
         "   - In 'visual_card', return a unified 2-column agenda layout:\n"
         "     'title': 'Today\\'s Agenda',\n"
         "     'subtitle': '<X Events • Y Tasks Pending>',\n"
