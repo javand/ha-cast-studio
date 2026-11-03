@@ -291,3 +291,38 @@ Expected: the new tests fail (no `advanced` section on the routine form).
 - [ ] **Step 2: Full check.** `python -m pytest tests -q && ruff check custom_components tests && ruff format --check custom_components tests`, all pass. Commit `docs: one voice per person, voice changes per routine`.
 - [ ] **Step 3: Deploy** with `rsync -rt --inplace --exclude __pycache__ custom_components/cast_studio/ /Volumes/config/custom_components/cast_studio/`, restart HA, wait until `__pycache__/segments*.pyc` is newer than `segments.py`.
 - [ ] **Step 4: Verify.** Press `button.cast_studio_rebuild_javan_morning_display`; the day's `manifest.json` gains keys ending `--default_host` with `degraded: false`, and `routine_morning_display.json`'s segment map matches them. Ask the owner to check the person form (one **Voice** picker) and a routine's **Advanced → Voice changes**.
+
+---
+
+### Task 5: Delete superseded files within the day
+
+Added during execution at the owner's request ("make sure we overwrite and cleanup when it makes sense").
+
+**Files:**
+- Modify: `custom_components/cast_studio/segments.py` (new `_remove_superseded_day_files`, called from `SegmentStore.async_prune`)
+- Test: `tests/test_segments.py`
+
+**Interfaces:**
+- Produces: `_remove_superseded_day_files(directory: Path, now: datetime) -> list[str]`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_superseded_day_files_removed_after_grace(tmp_path):
+    # day dir with manifest.json pointing at weather--theo.new.mp3, routine_x.json pointing at
+    # routine_x.new.mp4, plus weather--theo.old.mp3, routine_x.old.mp4, play_x.old.mp3,
+    # all files (and the JSONs) with mtime now - 2h
+    removed = _remove_superseded_day_files(day, now)
+    assert sorted(Path(p).name for p in removed) == ["play_x.old.mp3", "routine_x.old.mp4", "weather--theo.old.mp3"]
+    assert (day / "weather--theo.new.mp3").exists() and (day / "routine_x.new.mp4").exists()
+
+def test_superseded_day_files_kept_within_grace(tmp_path):
+    # same layout, but manifest.json mtime is now - 10min (a recent commit may have just
+    # superseded a file that a play is still streaming)
+    assert _remove_superseded_day_files(day, now) == []
+```
+
+- [ ] **Step 2: Run them and confirm they fail** — ImportError for `_remove_superseded_day_files`.
+- [ ] **Step 3: Implement.** A file is kept if its name appears as a path in `manifest.json` or any other `*.json` in the folder (routine sidecars), or is a `.json`. Otherwise it is deleted only when its own mtime and the newest `*.json` mtime are both older than `ALL_HEARD_KEEP_SUPERSEDED` (1 h): nothing was superseded within the hour, so no play can still be streaming it. `async_prune` runs it on today's folder.
+- [ ] **Step 4: Run tests, lint, format** (as Task 1 Step 4)
+- [ ] **Step 5: Commit** `feat(storage): delete superseded files within the day`
