@@ -82,7 +82,7 @@ Use **Add person** on the CastStudio entry. Fields:
 | Daily reset time | When the person's briefing day starts (default 03:00). Anything built or played before it counts as the previous day. |
 | Maximum content age (minutes) | Stored content older than this is rebuilt before it plays. `0` (default) turns the age check off. |
 
-The **Advanced** section holds the entities and voices used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; the person's voice; a backup conversation agent; the greeting title, subtitle and image; and the person's **Pronunciations** list. Each field says what it does and what leaving it empty means. **Greeting image** is an image picker: choose a picture from your media or upload one, and it replaces the daily AI-generated greeting background.
+The **Advanced** section holds the entities used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; a backup conversation agent; the greeting title, subtitle and image; and the person's **Pronunciations** list. Each field says what it does and what leaving it empty means. **Greeting image** is an image picker: choose a picture from your media or upload one, and it replaces the daily AI-generated greeting background.
 
 **Daily text** lists JW Library daily text sensors and text helpers; use a text helper to feed in any other source. **Fun fact** and **National Day** need no entity: the AI writes them from today's date.
 
@@ -90,7 +90,7 @@ The **Advanced** section holds the entities and voices used to build segments: w
 
 **Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. Any persona can speak any segment. Each dropdown option shows the persona's name and a one-line summary.
 
-**Voice.** In the person's **Advanced** section, **Voice** picks who speaks every segment of that person's routines. Pick one to always hear it, or several to get a different one each briefing day; every segment that day keeps the same speaker. With nothing picked, the form shows **News Anchor**, the voice used when the picker is empty.
+**Voice.** On the person form, **Voice** picks who speaks every segment of that person's routines. Pick one to always hear it, or several to get a different one each briefing day; every segment that day keeps the same speaker. With nothing picked, the form shows **News Anchor**, the voice used when the picker is empty.
 
 **Voice changes.** A routine can give individual segments a different voice. In the routine's **Advanced** section, add a row to **Voice changes**, pick one of the routine's segments and one or more personas (several rotate daily, like the person's voice). Segments not listed use the person's voice. A segment voiced by a different persona is written in that persona's character, so it is built separately from the person-voice copy other routines share. The daily text is always read word for word; a persona only changes how it sounds. When editing a routine, the segment list shows the segments the routine had when the form opened: add a segment, save, then edit again to give it a voice change. Removing a segment from a routine drops its voice change.
 

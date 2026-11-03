@@ -367,10 +367,11 @@ async def test_add_person_subentry_creates_person(
     assert result["type"] == data_entry_flow.FlowResultType.FORM
     assert result["step_id"] == "user"
     keys = [str(k) for k in result["data_schema"].schema]
-    assert keys[:4] == [
+    assert keys[:5] == [
         "name",
         "phonetic_name",
         "media_player",
+        "voice_personas",
         "commute_destination_zone",
     ]
     assert "output_format" not in keys
@@ -1166,6 +1167,11 @@ def _advanced_selectors(schema: vol.Schema) -> dict[str, Any]:
     return {str(key): value for key, value in advanced.schema.schema.items()}
 
 
+def _main_selectors(schema: vol.Schema) -> dict[str, Any]:
+    """Return the form's top-level selectors keyed by field name."""
+    return {str(key): value for key, value in schema.schema.items()}
+
+
 def _option_values(sel: Any) -> set[str]:
     return {option["value"] for option in sel.config["options"]}
 
@@ -1231,7 +1237,7 @@ async def test_person_form_persona_options_show_summaries(
 ) -> None:
     """Each persona option reads 'Name: summary' so it says who it is."""
     result = await _start_subentry(hass, config_entry, "person")
-    voice = _advanced_selectors(result["data_schema"])["voice_personas"]
+    voice = _main_selectors(result["data_schema"])["voice_personas"]
     labels = {opt["value"]: opt["label"] for opt in voice.config["options"]}
     elena = get_persona("elena")
     assert labels["elena"] == f"Elena: {elena.summary}"
@@ -1241,16 +1247,18 @@ async def test_person_form_persona_options_show_summaries(
 async def test_person_form_has_one_voice_picker(
     hass: HomeAssistant, config_entry: MockConfigEntry
 ) -> None:
-    """One Voice picker offering every persona, showing News Anchor when empty."""
+    """One Voice picker in the main form, showing News Anchor when empty."""
     result = await _start_subentry(hass, config_entry, "person")
-    selectors = _advanced_selectors(result["data_schema"])
-    assert "host_personas" not in selectors
-    assert "reader_personas" not in selectors
-    voice = selectors["voice_personas"]
+    advanced = _advanced_selectors(result["data_schema"])
+    for key in ("host_personas", "reader_personas", "voice_personas"):
+        assert key not in advanced
+    voice = _main_selectors(result["data_schema"])["voice_personas"]
     assert voice.config["multiple"] is True
     assert {"malenfant", "theo", "default_reader"} <= _option_values(voice)
-    suggested = _advanced_suggestions(result["data_schema"])
-    assert suggested["voice_personas"] == ["default_host"]
+    field = next(
+        key for key in result["data_schema"].schema if str(key) == "voice_personas"
+    )
+    assert field.description == {"suggested_value": ["default_host"]}
 
 
 VOICE_HELP = (
@@ -1266,12 +1274,11 @@ def test_voice_strings() -> None:
     for path in (base / "strings.json", base / "translations" / "en.json"):
         data = json.loads(path.read_text(encoding="utf-8"))
         for step in ("user", "reconfigure"):
-            advanced = data["config_subentries"]["person"]["step"][step]["sections"][
-                "advanced"
-            ]
-            assert advanced["data"]["voice_personas"] == "Voice"
-            assert advanced["data_description"]["voice_personas"] == VOICE_HELP
-            for key in ("host_personas", "reader_personas"):
+            form = data["config_subentries"]["person"]["step"][step]
+            assert form["data"]["voice_personas"] == "Voice"
+            assert form["data_description"]["voice_personas"] == VOICE_HELP
+            advanced = form["sections"]["advanced"]
+            for key in ("host_personas", "reader_personas", "voice_personas"):
                 assert key not in advanced["data"]
                 assert key not in advanced["data_description"]
 
@@ -1288,7 +1295,7 @@ async def test_add_person_saves_voice(
             "name": "Sam",
             "phonetic_name": "Sam",
             "transportation_mode": "driving",
-            "advanced": {"voice_personas": ["arthur", "theo"]},
+            "voice_personas": ["arthur", "theo"],
         },
     )
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
@@ -1308,12 +1315,9 @@ async def test_reconfigure_person_drops_removed_personas(
         data={**subentry.data, "voice_personas": ["gone_persona", "arthur"]},
     )
     result = await entry_with_sam.start_subentry_reconfigure_flow(hass, SAM_ID)
-    advanced = next(
-        value
-        for key, value in result["data_schema"].schema.items()
-        if str(key) == "advanced"
+    field = next(
+        key for key in result["data_schema"].schema if str(key) == "voice_personas"
     )
-    field = next(key for key in advanced.schema.schema if str(key) == "voice_personas")
     assert field.description["suggested_value"] == ["arthur"]
 
 

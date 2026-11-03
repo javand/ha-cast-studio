@@ -42,6 +42,7 @@
             "name": "Name",
             "phonetic_name": "Phonetic pronunciation",
             "media_player": "Output device (optional)",
+            "voice_personas": "Voice",
             "commute_destination_zone": "Work or commute destination zone",
             "transportation_mode": "Travel mode",
             "reset_time": "Daily reset time",
@@ -50,6 +51,7 @@
           "data_description": {
             "phonetic_name": "How the name should be spoken, for example Al-ex.",
             "media_player": "Where this person's briefings play.",
+            "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice under Advanced.",
             "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
             "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
             "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
@@ -67,7 +69,6 @@
                 "commute_transit_sensor": "Commute transit-time sensor",
                 "commute_drive_return_sensor": "Evening drive-home sensor",
                 "commute_transit_return_sensor": "Evening transit-home sensor",
-                "voice_personas": "Voice",
                 "conversation_agent": "Conversation agent",
                 "greeting_title": "Greeting title",
                 "greeting_subtitle": "Greeting subtitle",
@@ -81,7 +82,6 @@
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
                 "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
-                "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice under Advanced.",
                 "conversation_agent": "Backup writer for the briefing, used only when Gemini isn't set up or a Gemini request fails. Leave empty for Home Assistant's default agent.",
                 "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
                 "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",
@@ -97,6 +97,7 @@
             "name": "Name",
             "phonetic_name": "Phonetic pronunciation",
             "media_player": "Output device (optional)",
+            "voice_personas": "Voice",
             "commute_destination_zone": "Work or commute destination zone",
             "transportation_mode": "Travel mode",
             "reset_time": "Daily reset time",
@@ -105,6 +106,7 @@
           "data_description": {
             "phonetic_name": "How the name should be spoken, for example Al-ex.",
             "media_player": "Where this person's briefings play.",
+            "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice under Advanced.",
             "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
             "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
             "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
@@ -122,7 +124,6 @@
                 "commute_transit_sensor": "Commute transit-time sensor",
                 "commute_drive_return_sensor": "Evening drive-home sensor",
                 "commute_transit_return_sensor": "Evening transit-home sensor",
-                "voice_personas": "Voice",
                 "conversation_agent": "Conversation agent",
                 "greeting_title": "Greeting title",
                 "greeting_subtitle": "Greeting subtitle",
@@ -136,7 +137,6 @@
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
                 "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
-                "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice under Advanced.",
                 "conversation_agent": "Backup writer for the briefing, used only when Gemini isn't set up or a Gemini request fails. Leave empty for Home Assistant's default agent.",
                 "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
                 "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",

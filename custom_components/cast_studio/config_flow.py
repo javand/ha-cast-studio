@@ -295,7 +295,6 @@ def _person_settings_selectors() -> dict[str, selector.Selector]:
         PERSON_COMMUTE_TRANSIT_SENSOR: _entity_selector("sensor"),
         PERSON_COMMUTE_DRIVE_RETURN_SENSOR: _entity_selector("sensor"),
         PERSON_COMMUTE_TRANSIT_RETURN_SENSOR: _entity_selector("sensor"),
-        PERSON_VOICE: _persona_selector(),
         "conversation_agent": selector.ConversationAgentSelector(),
         "greeting_title": _text_selector(),
         "greeting_subtitle": _text_selector(),
@@ -355,6 +354,9 @@ def _person_schema(current: dict[str, Any], default_mode: str) -> vol.Schema:
                 description=_suggested(current.get(PERSON_MEDIA_PLAYER)),
             ): _entity_selector("media_player"),
             vol.Optional(
+                PERSON_VOICE, description=_suggested(current[PERSON_VOICE])
+            ): _persona_selector(),
+            vol.Optional(
                 PERSON_COMMUTE_DESTINATION,
                 description=_suggested(current.get(PERSON_COMMUTE_DESTINATION)),
             ): _destination_selector(),
@@ -408,6 +410,9 @@ def _person_data(user_input: dict[str, Any]) -> dict[str, Any]:
     for key in PERSON_SETTINGS_KEYS:
         if advanced.get(key) not in (None, "", []):
             data[key] = advanced[key]
+    data.pop(PERSON_VOICE, None)
+    if voice := user_input.get(PERSON_VOICE):
+        data[PERSON_VOICE] = voice
     data.pop(PERSON_PRONUNCIATIONS, None)
     if rows := clean_pronunciations(advanced.get(PERSON_PRONUNCIATIONS)):
         data[PERSON_PRONUNCIATIONS] = [
