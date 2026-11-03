@@ -1157,11 +1157,51 @@ def test_superseded_day_files_removed_after_grace(tmp_path: Path) -> None:
     assert (day / "routine_x.json").exists()
 
 
-def test_superseded_day_files_kept_within_grace(tmp_path: Path) -> None:
-    # A commit ten minutes ago may have superseded a file a play still streams.
-    day = _day_with_superseded_files(tmp_path, json_age=timedelta(minutes=10))
-    assert _remove_superseded_day_files(day, PRUNE_NOW) == []
-    assert (day / "weather--theo.old.mp3").exists()
+def test_file_superseded_within_grace_is_kept(tmp_path: Path) -> None:
+    # Superseded ten minutes ago: a play may still be streaming it.
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(hours=2))
+    recent = (PRUNE_NOW - timedelta(minutes=10)).timestamp()
+    os.utime(day / "weather--theo.old.mp3", (recent, recent))
+    removed = {Path(p).name for p in _remove_superseded_day_files(day, PRUNE_NOW)}
+    assert "weather--theo.old.mp3" not in removed
+    assert "routine_x.old.mp4" in removed
+
+
+def test_busy_folder_still_cleaned(tmp_path: Path) -> None:
+    # Refreshes every few minutes keep some record new; old files still go.
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(minutes=5))
+    removed = {Path(p).name for p in _remove_superseded_day_files(day, PRUNE_NOW)}
+    assert removed == {"play_x.old.mp3", "routine_x.old.mp4", "weather--theo.old.mp3"}
+
+
+def test_file_vanishing_during_cleanup_is_ignored(tmp_path: Path) -> None:
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(hours=2))
+    real_stat = Path.stat
+
+    def _stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self.name == "play_x.old.mp3":
+            raise FileNotFoundError(self)
+        return real_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", _stat):
+        removed = {Path(p).name for p in _remove_superseded_day_files(day, PRUNE_NOW)}
+    assert "routine_x.old.mp4" in removed
+
+
+async def test_store_marks_the_replaced_files_superseded_now(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """Replacing a segment stamps its old files, starting their grace period."""
+    _set_fake_states(hass)
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    await _build_greeting(hass, store, person)
+    old = store.get_fresh(person, "greeting", at(8))
+    long_ago = (dt_util.utcnow() - timedelta(hours=3)).timestamp()
+    os.utime(old.audio_path, (long_ago, long_ago))
+
+    await _build_greeting(hass, store, person)
+    assert Path(old.audio_path).stat().st_mtime > long_ago + 3600
 
 
 def test_recent_unreferenced_file_kept(tmp_path: Path) -> None:
@@ -1170,3 +1210,51 @@ def test_recent_unreferenced_file_kept(tmp_path: Path) -> None:
     os.utime(day / "play_x.old.mp3", (fresh, fresh))
     removed = _remove_superseded_day_files(day, PRUNE_NOW)
     assert "play_x.old.mp3" not in {Path(p).name for p in removed}
+
+
+# --- A stored segment remembers its persona -------------------------------------
+
+
+async def _build_greeting(hass: HomeAssistant, store: SegmentStore, person: Person):
+    with _Patched(_build_patches()):
+        await async_build_segments(
+            hass,
+            store,
+            person,
+            ["greeting"],
+            {"platform": "gemini", "api_key": "k"},
+            now=at(8),
+        )
+
+
+async def test_segment_in_another_persona_is_stale(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """A mid-day voice edit must not play the copy built in the old voice."""
+    _set_fake_states(hass)
+    theo = make_person(settings={**SAM_SETTINGS, "voice_personas": ["theo"]})
+    arthur = make_person(settings={**SAM_SETTINGS, "voice_personas": ["arthur"]})
+    store = SegmentStore(hass, str(tmp_path))
+    await _build_greeting(hass, store, theo)
+
+    assert _manifest(store, theo, at(8))["segments"]["greeting"]["persona"] == "theo"
+    assert store.get_fresh(theo, "greeting", at(8)) is not None
+    assert store.get_fresh(arthur, "greeting", at(8)) is None
+
+
+async def test_manifest_without_persona_is_rebuilt(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """A day built before personas were recorded may be in the old reader voice."""
+    _set_fake_states(hass)
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    await _build_greeting(hass, store, person)
+    manifest_path = store.person_dir(person) / "2026-10-20" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["segments"]["greeting"]["persona"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    reloaded = SegmentStore(hass, str(tmp_path))
+    await reloaded.async_load(person, at(8))
+    assert reloaded.get_fresh(person, "greeting", at(8)) is None

@@ -21,8 +21,10 @@ daily prune, and old all-heard files are deleted once safely out of use.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
+import os
 import secrets
 import shutil
 import tempfile
@@ -241,7 +243,7 @@ def segment_persona(
     return picked or person_default_persona(person, day)
 
 
-def _key_persona(person: Person, key: str, day: date) -> Persona:
+def key_persona(person: Person, key: str, day: date) -> Persona:
     """Return who voices a stored key: its own persona, else the person's."""
     persona_id = persona_of(key)
     return (persona_id and get_persona(persona_id)) or person_default_persona(
@@ -279,7 +281,7 @@ def build_segment_step(
         "type": segment_type,
         "visual": visual,
         "standalone_segment": True,
-        **persona_voice(_key_persona(person, segment_key, day)),
+        **persona_voice(key_persona(person, segment_key, day)),
     }
     if settings.get("conversation_agent"):
         step["conversation_agent"] = settings["conversation_agent"]
@@ -377,6 +379,9 @@ class StoredSegment:
     built_at: datetime
     built_day: date
     degraded: bool = False
+    # The persona that voiced and wrote it; None for one built before this
+    # was recorded.
+    persona_id: str | None = None
 
 
 def _segment_to_json(segment: StoredSegment) -> dict[str, Any]:
@@ -388,6 +393,7 @@ def _segment_to_json(segment: StoredSegment) -> dict[str, Any]:
         "built_at": segment.built_at.isoformat(),
         "built_day": segment.built_day.isoformat(),
         "degraded": segment.degraded,
+        "persona": segment.persona_id,
     }
 
 
@@ -401,6 +407,7 @@ def _segment_from_json(key: str, data: dict[str, Any], base: Path) -> StoredSegm
         built_at=datetime.fromisoformat(data["built_at"]),
         built_day=date.fromisoformat(data["built_day"]),
         degraded=bool(data.get("degraded", False)),
+        persona_id=data.get("persona"),
     )
 
 
@@ -459,11 +466,14 @@ def _commit_segment(
         ),
     )
     segments = _read_manifest(directory)
+    replaced = segments.get(segment.key)
     segments[segment.key] = segment
     payload = {
         "segments": {key: _segment_to_json(seg) for key, seg in segments.items()}
     }
     write_json_atomic(directory / MANIFEST_FILE, payload)
+    if replaced is not None:
+        mark_superseded(replaced.audio_path, replaced.clip_path)
     return segments
 
 
@@ -515,38 +525,52 @@ def _json_strings(value: Any) -> Iterator[str]:
             yield from _json_strings(item)
 
 
+def mark_superseded(*paths: str | Path | None) -> None:
+    """
+    Stamp files a newer build just replaced with the current time.
+
+    Their modification time then says when they were superseded, which starts
+    the grace period ``_remove_superseded_day_files`` gives a play that may
+    still be streaming them.
+    """
+    for path in paths:
+        if path:
+            with contextlib.suppress(FileNotFoundError):
+                os.utime(path)
+
+
 def _remove_superseded_day_files(directory: Path, now: datetime) -> list[str]:
     """
     Delete files in a day folder that no manifest or routine file points to.
 
     Every rebuild writes new versioned files and leaves the old ones for any
-    play still streaming them. Only once nothing was superseded within
-    ``ALL_HEARD_KEEP_SUPERSEDED`` (the newest ``*.json`` is that old) can no
-    play still be running from an old file; files written within that time are
-    kept too.
+    play still streaming them. A file goes once nothing points to it and it
+    was neither written nor superseded (see ``mark_superseded``) within
+    ``ALL_HEARD_KEEP_SUPERSEDED``.
     """
     cutoff = (now - ALL_HEARD_KEEP_SUPERSEDED).timestamp()
-    records = list(directory.glob("*.json"))
-    if any(record.stat().st_mtime > cutoff for record in records):
-        return []
     keep: set[str] = set()
-    for record in records:
+    for record in directory.glob("*.json"):
         try:
             payload = json.loads(record.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
         except (OSError, ValueError):
             # Unreadable: can't tell what it points to, so delete nothing.
             return []
         keep.update(Path(value).name for value in _json_strings(payload))
     removed: list[str] = []
     for child in directory.iterdir():
-        if (
-            child.is_file()
-            and child.suffix != ".json"
-            and child.name not in keep
-            and child.stat().st_mtime <= cutoff
-        ):
-            child.unlink(missing_ok=True)
-            removed.append(str(child))
+        if child.suffix == ".json" or child.name in keep:
+            continue
+        # A file may vanish mid-scan (a build renaming or removing its own).
+        try:
+            if not child.is_file() or child.stat().st_mtime > cutoff:
+                continue
+            child.unlink()
+        except FileNotFoundError:
+            continue
+        removed.append(str(child))
     return removed
 
 
@@ -590,6 +614,9 @@ class SegmentStore:
         if segment is None or not is_content_fresh(
             person, segment.built_at, segment.built_day, now
         ):
+            return None
+        # Built in another voice (the person's voice was edited since).
+        if segment.persona_id != key_persona(person, key, cached[0]).persona_id:
             return None
         return segment
 
@@ -736,6 +763,7 @@ async def _async_build_one(  # noqa: PLR0913
         built_at=now,
         built_day=briefing_day(person, now),
         degraded=voice.used,
+        persona_id=key_persona(person, key, briefing_day(person, now)).persona_id,
     )
     return segment, staged
 

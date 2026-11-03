@@ -66,6 +66,7 @@ from .segments import (
     StoredSegment,
     async_build_segments,
     dynamic_segment_types,
+    mark_superseded,
     routine_segment_keys,
     segment_type_of,
     unvoiced_key,
@@ -422,9 +423,16 @@ async def _async_store_routine_media(  # noqa: PLR0913
         "duration": sum(segment.duration for segment in segments),
         "segments": _segments_signature(segments),
     }
+    previous = await async_run_in_executor(hass, _read_json, base.with_suffix(".json"))
     await async_run_in_executor(
         hass, write_json_atomic, base.with_suffix(".json"), payload
     )
+    if previous is not None:
+        await async_run_in_executor(
+            hass,
+            mark_superseded,
+            _routine_media_file(base, previous, video=video),
+        )
 
 
 async def _async_store_visual_routines(

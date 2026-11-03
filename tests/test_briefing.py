@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import tempfile
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ from custom_components.cast_studio.segments import (
     ALL_HEARD_KEY,
     SegmentStore,
     StoredSegment,
+    key_persona,
 )
 
 from .conftest import ALEX_ID, SAM_ID, person_subentry, routine_subentry
@@ -137,6 +139,7 @@ class FakeBuilder:
                 duration=0.0,
                 built_at=now,
                 built_day=today,
+                persona_id=key_persona(person, key, today).persona_id,
             )
             await store.async_store(person, target_dir, segment, staged)
             if key != ALL_HEARD_KEY:
@@ -1041,6 +1044,33 @@ async def test_visual_prebuild_stores_stitched_routine_video(
     assert audio_meta["audio"].endswith(".mp3")
     assert (day / audio_meta["audio"]).is_file()
     assert (day / "routine_quick.json").is_file()
+
+
+async def test_restitched_routine_marks_its_old_video_superseded(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            person_subentry(ALEX_ID, "Alex", media_player=DISPLAY),
+            routine_subentry("r_alex_quick", ALEX_ID, "Quick", QUICK),
+        ],
+    )
+    await h.prebuild("Quick")
+    day = tmp_path / "people" / ALEX_ID / "2026-10-20"
+    (old,) = day.glob("routine_quick.*.mp4")
+    long_ago = old.stat().st_mtime - 3 * 3600
+    os.utime(old, (long_ago, long_ago))
+
+    await h.prebuild("Quick")
+    assert old.stat().st_mtime > long_ago + 3600
 
 
 async def test_prebuild_audio_routine_builds_no_clips_and_stitches_nothing(
