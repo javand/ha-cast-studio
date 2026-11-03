@@ -1755,7 +1755,9 @@ async def _async_resolve_media_image(hass: HomeAssistant, media_id: str) -> str 
     except HomeAssistantError as err:
         LOGGER.warning("Picked image %s could not be found: %s", media_id, err)
         return None
-    if played.path is None or not played.path.is_file():
+    if played.path is None or not await _async_run_in_executor(
+        hass, played.path.is_file
+    ):
         LOGGER.warning("Picked image %s has no file to show", media_id)
         return None
     return str(played.path)
