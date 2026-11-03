@@ -129,7 +129,7 @@ Each routine also has a device page, named like its row in the CastStudio list, 
 | Control | Entity | What it does |
 |---|---|---|
 | **Play** | `button.cast_studio_play_<person>_<routine>` | Plays the routine on the player shown in **Play on**, straight away. It uses what is already built and builds only segments that are missing or out of date, so weather and commute are as of their last build. |
-| **Refresh** | `button.cast_studio_refresh_<person>_<routine>` | Rebuilds only the weather and commute segments, so they reflect this moment, and plays nothing. Quick; the same as the `cast_studio.refresh` action. |
+| **Refresh** | `button.cast_studio_refresh_<person>_<routine>` | Rebuilds only the routine's **Refresh segments** (weather and commute unless you chose others in **Advanced**), so they reflect this moment, and plays nothing. The same as the `cast_studio.refresh` action. |
 | **Rebuild** | `button.cast_studio_rebuild_<person>_<routine>` | Builds every segment of the routine again from scratch (new words, images and voice) and plays nothing. Takes a few minutes; the same as the `cast_studio.prebuild` action. |
 | **Rebuild and play** | `button.cast_studio_regenerate_and_play_<person>_<routine>` | Rebuild, then Play, in one press. (Named **Regenerate and play** before 0.7.0; its entity id is unchanged.) |
 | **Play on** | `select.cast_studio_play_on_<person>_<routine>` | The player the two play buttons use. It starts at the person's output device; pick another to test on it. It lists Google Cast speakers and displays plus any player a person or routine already uses (a Squeezebox output device, say); other players, such as Plex apps or receiver zones, and unavailable players are left out. The choice lasts until the output device changes or Home Assistant restarts. |
@@ -145,24 +145,24 @@ Builds and stores segments without playing anything. For Visual routines the sti
 | `routine` | no | Routine to pre-build. At least one of `person` or `routine` is required. |
 
 ### `cast_studio.refresh`
-Rebuilds only the **dynamic segments**, weather and commute, so they reflect this moment. Other segments are left as they are, so a refresh is much faster than a prebuild. Call it from your own automation at a moment that predicts the play, for example when you get out of bed. A play started while a refresh is still running waits up to 10 seconds for it, then plays the stored segments. If only one of weather or commute rebuilds, the fresh one is kept and the other keeps its stored copy. During a refresh the commute sensors get at most 5 seconds to update before their last value is used.
+Rebuilds only each routine's **refresh segments** so they reflect this moment: weather and commute unless you choose others under **Refresh segments** in the routine's **Advanced** section (for example Agenda, to pick up a meeting booked after the prebuild). Other segments are left as they are, so a refresh is much faster than a prebuild. Weather and commute mostly re-read sensors and take seconds; any other segment is written again by the AI and takes longer. Call it from your own automation at a moment that predicts the play, for example when you get out of bed. A play started while a refresh is still running waits up to 10 seconds for it, then plays the stored segments; a slower refresh (an agenda rewrite, say) keeps going and the next play gets its result. If only some segments rebuild, the fresh ones are kept and the others keep their stored copies. During a refresh the commute sensors get at most 5 seconds to update before their last value is used.
 
 | Field | Required | Meaning |
 | :--- | :--- | :--- |
-| `person` | no | At least one of `person` or `routine` is required. Alone: refreshes every routine of that person that has a weather or commute segment. With `routine`: picks whose routine is meant. |
-| `routine` | no | Routine whose weather and commute to refresh. At least one of `person` or `routine` is required. |
-| `segments` | no | Only these dynamic segment types are refreshed, for example `[weather]`. Without it, every dynamic type is refreshed. A type that is not dynamic is rejected with an error that lists the allowed ones. |
+| `person` | no | At least one of `person` or `routine` is required. Alone: refreshes the refresh segments of all of that person's routines, each segment once. With `routine`: picks whose routine is meant. |
+| `routine` | no | Routine whose refresh segments to refresh. At least one of `person` or `routine` is required. |
+| `segments` | no | Refresh these segment types instead of the routines' own lists, for example `[weather]` or `[agenda]`. Only types the routine has are rebuilt. An unknown type is rejected with an error that lists the valid ones. |
 
-**Dynamic segment types** are the ones that change through the day:
+**Default refresh segments** are the ones that change through the day:
 
 | Type | Why it is dynamic |
 | :--- | :--- |
 | `weather` | Current conditions, temperature and the chance of rain change through the morning. |
 | `commute` | Travel times change with traffic. |
 
-Each routine's status sensor shows which of its own segments are dynamic in its `dynamic_segments` attribute (for example `[weather, commute]`), so you can see what a refresh of that routine rebuilds.
+Each routine's status sensor shows its refresh segments in its `dynamic_segments` attribute (for example `[weather, commute]`), so you can see what a refresh of that routine rebuilds.
 
-Stored segments belong to the person, not to one routine, so a refresh for one routine also gives the person's other routines the fresh weather and commute. Nothing refreshes on its own schedule: a routine played later in the day (for example a night routine) needs its own `refresh` (or a routine-scoped `prebuild`) at that time. The person's **max age** setting (`max_age_minutes`) is the safety net: a segment older than that is rebuilt when the routine plays.
+Stored segments belong to the person, not to one routine, so a refresh for one routine also gives the person's other routines the fresh copies of those segments. Nothing refreshes on its own schedule: a routine played later in the day (for example a night routine) needs its own `refresh` (or a routine-scoped `prebuild`) at that time. The person's **max age** setting (`max_age_minutes`) is the safety net: a segment older than that is rebuilt when the routine plays.
 
 Every segment build logs how long it took at INFO level (`Built segment 'weather' for Sam in 6.2s (refresh)`), as does each refresh in total and any wait a play had for a refresh.
 

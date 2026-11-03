@@ -38,6 +38,7 @@ from custom_components.cast_studio.people import (
     person_voice,
     slugify_name,
 )
+from custom_components.cast_studio.segments import dynamic_segment_types
 
 from .conftest import ALEX_ID, SAM_ID, make_entry, person_subentry, routine_subentry
 
@@ -483,3 +484,34 @@ def test_routine_without_voice_changes_has_none() -> None:
         ]
     )
     assert get_routines(entry)[0].voice_changes == ()
+
+
+def test_routine_refresh_segments_default_to_weather_and_commute() -> None:
+    entry = make_entry(
+        [
+            person_subentry(SAM_ID, "Sam"),
+            routine_subentry("r1", SAM_ID, "Q", ["commute", "agenda", "weather"]),
+        ]
+    )
+    (routine,) = get_routines(entry)
+    assert dynamic_segment_types(routine) == ["commute", "weather"]
+
+
+def test_routine_refresh_segments_follow_the_routine() -> None:
+    """Saved choices keep routine order; ones not in the routine are dropped."""
+    entry = make_entry(
+        [
+            person_subentry(SAM_ID, "Sam"),
+            routine_subentry(
+                "r1",
+                SAM_ID,
+                "Q",
+                ["weather", "fun_fact", "agenda"],
+                refresh_segments=["agenda", "commute", "weather"],
+            ),
+            routine_subentry("r2", SAM_ID, "R", ["weather"], refresh_segments=[]),
+        ]
+    )
+    first, second = get_routines(entry)
+    assert dynamic_segment_types(first) == ["weather", "agenda"]
+    assert dynamic_segment_types(second) == []

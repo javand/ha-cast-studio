@@ -366,7 +366,7 @@ async def test_refresh_says_when_a_routine_has_nothing_to_refresh(
         entry, routine, data={**routine.data, "segments": ["greeting"]}
     )
     await hass.async_block_till_done()
-    with pytest.raises(HomeAssistantError, match="no weather or commute"):
+    with pytest.raises(HomeAssistantError, match="has no segments set to refresh"):
         await _press(hass, REFRESH)
 
 

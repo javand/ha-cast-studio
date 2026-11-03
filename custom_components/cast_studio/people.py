@@ -112,6 +112,7 @@ ROUTINE_DASHBOARD_DISPLAY = "dashboard_display"
 ROUTINE_OUTPUT_FORMAT = "output_format"
 # Segments this routine voices with other personas: [{segment, personas}].
 ROUTINE_VOICE_CHANGES = "voice_changes"
+ROUTINE_REFRESH_SEGMENTS = "refresh_segments"
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,9 @@ class Routine:
     output_format: Literal["audio", "visual"] = DEFAULT_OUTPUT_FORMAT
     # (segment type, persona ids): who voices that segment in this routine.
     voice_changes: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # Segment types Refresh rebuilds, in routine order; None means the default
+    # (its weather and commute).
+    refresh_segments: tuple[str, ...] | None = None
 
 
 def slugify_name(value: str) -> str:
@@ -251,6 +255,11 @@ def _routine_from_subentry(subentry: ConfigSubentry) -> Routine:
         dashboard_display=data.get(ROUTINE_DASHBOARD_DISPLAY) or None,
         output_format=data.get(ROUTINE_OUTPUT_FORMAT) or DEFAULT_OUTPUT_FORMAT,
         voice_changes=_voice_changes(data.get(ROUTINE_VOICE_CHANGES), segments),
+        refresh_segments=(
+            None
+            if (refresh := data.get(ROUTINE_REFRESH_SEGMENTS)) is None
+            else tuple(t for t in dict.fromkeys(segments) if t in set(refresh))
+        ),
     )
 
 

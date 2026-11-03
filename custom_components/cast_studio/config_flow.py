@@ -73,6 +73,7 @@ from .people import (
     ROUTINE_NAME,
     ROUTINE_OUTPUT_FORMAT,
     ROUTINE_PERSON_ID,
+    ROUTINE_REFRESH_SEGMENTS,
     ROUTINE_SEGMENTS,
     ROUTINE_VOICE_CHANGES,
     SEGMENT_TYPES,
@@ -94,6 +95,7 @@ from .personas import (
     PERSONAS,
     get_persona,
 )
+from .segments import default_refresh_segments
 
 ADVANCED_SECTION = "advanced"
 
@@ -545,12 +547,23 @@ class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
                 for change in data[ROUTINE_VOICE_CHANGES]
                 if change["segment"] not in data[ROUTINE_SEGMENTS]
             ]
+            stray_refresh = [
+                segment
+                for segment in data[ROUTINE_REFRESH_SEGMENTS]
+                if segment not in data[ROUTINE_SEGMENTS]
+            ]
             if subentry is not None:
-                # Removing a segment from a routine drops its voice change.
+                # Removing a segment from a routine drops its voice change and
+                # its refresh.
                 data[ROUTINE_VOICE_CHANGES] = [
                     change
                     for change in data[ROUTINE_VOICE_CHANGES]
                     if change not in stray
+                ]
+                data[ROUTINE_REFRESH_SEGMENTS] = [
+                    segment
+                    for segment in data[ROUTINE_REFRESH_SEGMENTS]
+                    if segment not in stray_refresh
                 ]
             if not is_valid_name(data[ROUTINE_NAME]):
                 errors["base"] = "invalid_name"
@@ -558,6 +571,8 @@ class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
                 errors[ROUTINE_SEGMENTS] = "no_segments"
             elif subentry is None and stray:
                 errors["base"] = "voice_change_not_in_routine"
+            elif subentry is None and stray_refresh:
+                errors["base"] = "refresh_not_in_routine"
             elif any(
                 routine.routine_id != own_id
                 and slugify_name(routine.name) == slugify_name(data[ROUTINE_NAME])
@@ -602,7 +617,35 @@ def _routine_data(user_input: dict[str, Any]) -> dict[str, Any]:
             for row in advanced.get(ROUTINE_VOICE_CHANGES) or []
             if isinstance(row, dict) and row.get("segment") and row.get("personas")
         ],
+        # Not shown yet (a new routine, or the section never opened): the
+        # default, weather and commute.
+        ROUTINE_REFRESH_SEGMENTS: _refresh_segments(
+            advanced.get(ROUTINE_REFRESH_SEGMENTS),
+            user_input.get(ROUTINE_SEGMENTS) or [],
+        ),
     }
+
+
+def _refresh_suggestion(current: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    Pre-fill Refresh segments: the saved list (even empty), else the default.
+
+    A new routine gets none, so an untouched picker saves the default.
+    """
+    if ROUTINE_REFRESH_SEGMENTS in current:
+        return {"suggested_value": list(current[ROUTINE_REFRESH_SEGMENTS])}
+    if segments := current.get(ROUTINE_SEGMENTS):
+        return {"suggested_value": default_refresh_segments(segments)}
+    return None
+
+
+def _refresh_segments(picked: list[str] | None, segments: list[str]) -> list[str]:
+    """Order the picked refresh segments like the routine; None: the default."""
+    if picked is None:
+        return default_refresh_segments(segments)
+    order = list(dict.fromkeys(segments))
+    known = [segment for segment in order if segment in picked]
+    return known + [segment for segment in picked if segment not in order]
 
 
 def _join_dashboard(path: str | None, view: str | None) -> str | None:
@@ -735,7 +778,18 @@ def _routine_schema(
                             description=_suggested(
                                 current.get(ROUTINE_VOICE_CHANGES) or None
                             ),
-                        ): _voice_changes_selector(segment_choices)
+                        ): _voice_changes_selector(segment_choices),
+                        vol.Optional(
+                            ROUTINE_REFRESH_SEGMENTS,
+                            description=_refresh_suggestion(current),
+                        ): selector.SelectSelector(
+                            selector.SelectSelectorConfig(
+                                options=segment_choices,
+                                multiple=True,
+                                mode=selector.SelectSelectorMode.DROPDOWN,
+                                translation_key="segment_type",
+                            )
+                        ),
                     }
                 ),
                 {"collapsed": True},

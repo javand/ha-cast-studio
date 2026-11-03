@@ -1708,3 +1708,134 @@ def test_fallback_ai_is_named_and_explained_in_the_section() -> None:
             assert "Fallback AI" in advanced["description"]
             assert "Gemini" in advanced["description"]
             assert "backup writer" not in advanced["description"]
+
+
+# --- Refresh segments per routine ---------------------------------------------
+
+
+def _refresh_field(schema: vol.Schema) -> tuple[Any, Any]:
+    advanced = next(
+        value for key, value in schema.schema.items() if str(key) == "advanced"
+    )
+    return next(
+        (key, value)
+        for key, value in advanced.schema.schema.items()
+        if str(key) == "refresh_segments"
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_segments_offer_the_routines_segments_and_default(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """Editing lists the routine's segments; unset shows weather and commute."""
+    await _add_routine(
+        hass,
+        entry_with_sam,
+        {"person_id": SAM_ID, "name": "Morning", "segments": ["agenda", "weather"]},
+    )
+    routine = find_routine(entry_with_sam, "Morning")
+    data = entry_with_sam.subentries[routine.routine_id].data
+    assert data["refresh_segments"] == ["weather"]
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    key, sel = _refresh_field(result["data_schema"])
+    assert sel.config["options"] == ["agenda", "weather"]
+    assert sel.config["multiple"] is True
+    assert key.description == {"suggested_value": ["weather"]}
+
+
+@pytest.mark.asyncio
+async def test_add_routine_rejects_refresh_of_an_unpicked_segment(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    result = await _start_subentry(hass, entry_with_sam, "routine")
+    _, sel = _refresh_field(result["data_schema"])
+    assert sel.config["options"] == list(SEGMENT_TYPES)
+    result = await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting"],
+            "advanced": {"refresh_segments": ["agenda"]},
+        },
+    )
+    assert result["errors"] == {"base": "refresh_not_in_routine"}
+
+
+@pytest.mark.asyncio
+async def test_routine_refresh_segments_saved_and_trimmed_on_edit(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["weather", "agenda", "fun_fact"],
+            "advanced": {"refresh_segments": ["fun_fact", "agenda"]},
+        },
+    )
+    routine = find_routine(entry_with_sam, "Morning")
+    data = entry_with_sam.subentries[routine.routine_id].data
+    assert data["refresh_segments"] == ["agenda", "fun_fact"]
+    assert "advanced" not in data
+
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["weather", "agenda"],
+            "advanced": {"refresh_segments": ["fun_fact", "agenda"]},
+        },
+    )
+    data = entry_with_sam.subentries[routine.routine_id].data
+    assert data["refresh_segments"] == ["agenda"]
+
+
+@pytest.mark.asyncio
+async def test_routine_refresh_segments_can_be_cleared(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["weather"],
+            "advanced": {"refresh_segments": []},
+        },
+    )
+    routine = find_routine(entry_with_sam, "Morning")
+    assert entry_with_sam.subentries[routine.routine_id].data["refresh_segments"] == []
+
+
+def test_refresh_segments_strings() -> None:
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        routine = data["config_subentries"]["routine"]
+        for step in ("user", "reconfigure"):
+            advanced = routine["step"][step]["sections"]["advanced"]
+            assert advanced["data"]["refresh_segments"] == "Refresh segments"
+            assert "Refresh button" in advanced["data_description"]["refresh_segments"]
+        assert "refresh_not_in_routine" in routine["error"]
+
+
+@pytest.mark.asyncio
+async def test_new_routine_refresh_has_no_empty_suggestion(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """An empty suggestion could save "refresh nothing"; leave it unset."""
+    result = await _start_subentry(hass, entry_with_sam, "routine")
+    key, _ = _refresh_field(result["data_schema"])
+    assert not key.description

@@ -155,8 +155,8 @@ async def async_refresh_routine(hass: HomeAssistant, routine_id: str) -> None:
     _, routine = current_routine(hass, routine_id)
     if not dynamic_segment_types(routine):
         msg = (
-            f"'{routine.name}' has no weather or commute segment to refresh; "
-            "use Rebuild to build everything again"
+            f"'{routine.name}' has no segments set to refresh (Refresh segments "
+            "in the routine's Advanced section); use Rebuild to build everything"
         )
         raise HomeAssistantError(msg)
     await briefing.async_refresh(hass, entry, routine=routine)

@@ -53,6 +53,7 @@ from .orchestrator import (
     is_cast_player,
 )
 from .people import (
+    SEGMENT_TYPES,
     briefing_day,
     get_people,
     get_routines,
@@ -672,22 +673,23 @@ def is_refreshing(hass: HomeAssistant, person_id: str) -> bool:
 
 
 def _dynamic_keys(
-    person: Person, routine: Routine, types: Collection[str], now: datetime
+    person: Person, routine: Routine, types: Collection[str] | None, now: datetime
 ) -> list[str]:
-    return [key for key in _keys(person, routine, now) if segment_type_of(key) in types]
+    """Return the routine's keys to refresh: ``types``, or its own list."""
+    wanted = dynamic_segment_types(routine) if types is None else types
+    return [
+        key for key in _keys(person, routine, now) if segment_type_of(key) in wanted
+    ]
 
 
-def _refresh_types(segments: Iterable[str] | None) -> frozenset[str]:
-    """Return the dynamic types to refresh; raise on a type that is not one."""
+def _refresh_types(segments: Iterable[str] | None) -> frozenset[str] | None:
+    """Return the types asked for (None: each routine's list); raise on unknown."""
     if segments is None:
-        return DYNAMIC_SEGMENT_TYPES
+        return None
     for segment in segments:
-        if segment not in DYNAMIC_SEGMENT_TYPES:
-            allowed = ", ".join(sorted(DYNAMIC_SEGMENT_TYPES))
-            msg = (
-                f"segments: '{segment}' is not a dynamic segment type; "
-                f"choose from: {allowed}"
-            )
+        if segment not in SEGMENT_TYPES:
+            allowed = ", ".join(SEGMENT_TYPES)
+            msg = f"segments: '{segment}' is not a segment type; choose from: {allowed}"
             raise HomeAssistantError(msg)
     return frozenset(segments)
 
@@ -720,7 +722,7 @@ async def async_refresh(
     )
     if not keys:
         LOGGER.info(
-            "Nothing to refresh for %s: no weather or commute segment", person.name
+            "Nothing to refresh for %s: no segments set to refresh", person.name
         )
         return
     started = time.monotonic()

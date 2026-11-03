@@ -200,10 +200,12 @@
             "advanced": {
               "name": "Advanced",
               "data": {
-                "voice_changes": "Voice changes"
+                "voice_changes": "Voice changes",
+                "refresh_segments": "Refresh segments"
               },
               "data_description": {
-                "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds."
+                "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds.",
+                "refresh_segments": "Segments rebuilt by the Refresh button and the cast_studio.refresh action, so they are current when the briefing plays. Weather and commute only re-read sensors and are quick; any other segment is written again by the AI, which takes longer. Leave it as weather and commute unless you want more."
               },
               "description": "Optional changes for this routine only."
             }
@@ -231,10 +233,12 @@
             "advanced": {
               "name": "Advanced",
               "data": {
-                "voice_changes": "Voice changes"
+                "voice_changes": "Voice changes",
+                "refresh_segments": "Refresh segments"
               },
               "data_description": {
-                "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds."
+                "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds.",
+                "refresh_segments": "Segments rebuilt by the Refresh button and the cast_studio.refresh action, so they are current when the briefing plays. Weather and commute only re-read sensors and are quick; any other segment is written again by the AI, which takes longer. Leave it as weather and commute unless you want more."
               },
               "description": "Optional changes for this routine only."
             }
@@ -245,7 +249,8 @@
         "duplicate_routine": "This person already has a routine with that name.",
         "no_segments": "Pick at least one segment.",
         "invalid_name": "Enter a routine name with at least one letter or number.",
-        "voice_change_not_in_routine": "A voice change names a segment that isn't in this routine. Add the segment or remove the voice change."
+        "voice_change_not_in_routine": "A voice change names a segment that isn't in this routine. Add the segment or remove the voice change.",
+        "refresh_not_in_routine": "Refresh segments names a segment that isn't in this routine. Add the segment or remove it from Refresh segments."
       },
       "abort": {
         "no_people": "Add a person before adding a routine.",
@@ -426,20 +431,20 @@
       }
     },
     "refresh": {
-      "name": "Refresh dynamic segments",
-      "description": "Rebuilds only the weather and commute segments of a routine, or of all of a person's routines that have them, so they reflect this moment. Other segments are left as they are. A play started while a refresh runs waits up to 10 seconds for it, then plays the stored segments.",
+      "name": "Refresh segments",
+      "description": "Rebuilds only a routine's refresh segments (weather and commute unless chosen otherwise under Refresh segments in the routine's Advanced section), or those of all of a person's routines, so they reflect this moment. Other segments are left as they are. A play started while a refresh runs waits up to 10 seconds for it, then plays the stored segments.",
       "fields": {
         "person": {
           "name": "Person",
-          "description": "Person to refresh. Alone, refreshes every routine of that person that has a weather or commute segment; with a routine, picks which person's routine is meant."
+          "description": "Person to refresh. Alone, refreshes the refresh segments of all of that person's routines, each once; with a routine, picks which person's routine is meant."
         },
         "routine": {
           "name": "Routine",
-          "description": "Routine whose weather and commute segments to refresh. Give a person or a routine, or both."
+          "description": "Routine whose refresh segments to refresh. Give a person or a routine, or both."
         },
         "segments": {
           "name": "Segments",
-          "description": "Optional. Only these dynamic segment types are refreshed, for example weather. Allowed: commute, weather. Without it, every dynamic type is refreshed. A routine's status sensor lists its dynamic segments in the dynamic_segments attribute."
+          "description": "Optional. Refresh these segment types instead of the routines' own lists, for example weather or agenda. Only types the routine has are rebuilt. A routine's status sensor lists its refresh segments in the dynamic_segments attribute."
         }
       }
     },

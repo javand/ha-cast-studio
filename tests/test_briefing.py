@@ -1948,17 +1948,79 @@ async def test_refresh_segments_limits_the_rebuild_to_chosen_types(
     assert h.builder.calls == [["weather"]]
 
 
-async def test_refresh_segments_rejects_a_non_dynamic_type(sam_full: Harness) -> None:
+async def test_refresh_segments_accepts_any_segment_type(sam_full: Harness) -> None:
+    h = sam_full
+    await briefing.async_refresh(
+        h.hass, h.entry, routine=h.routine("Full"), segments=["scripture"]
+    )
+    assert h.builder.calls == [["scripture"]]
+
+
+async def test_refresh_segments_rejects_an_unknown_type(sam_full: Harness) -> None:
     h = sam_full
     with pytest.raises(
-        HomeAssistantError,
-        match=r"segments: 'agenda' is not a dynamic segment type; "
-        r"choose from: commute, weather",
+        HomeAssistantError, match=r"segments: 'bogus' is not a segment type"
     ):
         await briefing.async_refresh(
-            h.hass, h.entry, routine=h.routine("Full"), segments=["weather", "agenda"]
+            h.hass, h.entry, routine=h.routine("Full"), segments=["weather", "bogus"]
         )
     assert h.builder.calls == []
+
+
+@pytest.fixture
+async def sam_refreshing_scripture(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> Harness:
+    return await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            _sam(),
+            routine_subentry(
+                "r_sam_full",
+                SAM_ID,
+                "Full",
+                FULL,
+                output_format="audio",
+                refresh_segments=["weather", "scripture"],
+            ),
+            routine_subentry(
+                "r_sam_quick", SAM_ID, "Quick", QUICK, output_format="audio"
+            ),
+        ],
+    )
+
+
+async def test_refresh_uses_the_routines_own_list(
+    sam_refreshing_scripture: Harness,
+) -> None:
+    h = sam_refreshing_scripture
+    await h.refresh("Full")
+    assert h.builder.calls == [["weather", "scripture"]]
+
+
+async def test_person_refresh_covers_every_routines_list_once(
+    sam_refreshing_scripture: Harness,
+) -> None:
+    h = sam_refreshing_scripture
+    await h.refresh(person=SAM_ID)
+    assert len(h.builder.calls) == 1
+    assert sorted(h.builder.calls[0]) == ["scripture", "weather"]
+
+
+async def test_routine_sensor_lists_its_refresh_segments(
+    sam_refreshing_scripture: Harness,
+) -> None:
+    h = sam_refreshing_scripture
+    await h.prebuild("Full")
+    state = h.hass.states.get("sensor.cast_studio_sam_full")
+    assert state.attributes["dynamic_segments"] == ["weather", "scripture"]
 
 
 async def test_refresh_segments_not_in_the_routine_refreshes_nothing(

@@ -190,9 +190,16 @@ def segment_type_of(key: str) -> str:
 DYNAMIC_SEGMENT_TYPES = frozenset({"weather", "commute"})
 
 
+def default_refresh_segments(segments: Iterable[str]) -> list[str]:
+    """Return the segment types a routine refreshes unless told otherwise."""
+    return [t for t in dict.fromkeys(segments) if t in DYNAMIC_SEGMENT_TYPES]
+
+
 def dynamic_segment_types(routine: Routine) -> list[str]:
-    """Return the routine's dynamic segment types, in routine order."""
-    return [t for t in routine.segments if t in DYNAMIC_SEGMENT_TYPES]
+    """Return the segment types Refresh rebuilds for the routine, in its order."""
+    if routine.refresh_segments is None:
+        return default_refresh_segments(routine.segments)
+    return list(routine.refresh_segments)
 
 
 def routine_segment_keys(person: Person, routine: Routine, day: date) -> list[str]:
