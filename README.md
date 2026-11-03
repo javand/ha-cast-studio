@@ -88,7 +88,22 @@ The **Advanced** section holds the entities and voices used to build segments: w
 
 **Calendars** takes any number of calendars, for example a personal calendar and a shared Family calendar. The agenda merges their events into one timeline, and the narration calls them all "your calendar". **To-do lists** works the same way, for example your own list plus a Chores list. A person saved with a single calendar or to-do list keeps it.
 
-**Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. In **Advanced**, pick **Host personas** for the greeting, weather, agenda, commute, fun fact and closing, and **Reader personas** for the daily text and daily encouragement. Each picker lists only the personas suited to that role. Pick one to always hear it, or several to get one at random each briefing day; every part of that day's briefing keeps the same speaker. Leave a picker empty for the default voice: Pulcherrima with a news-anchor style for the host, and Enceladus with a life-coach style for the reader.
+**Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. In **Advanced**, pick **Host personas** for the greeting, weather, agenda, commute, fun fact and closing, and **Reader personas** for the daily text and daily encouragement. Each picker lists only the personas suited to that role. Pick one to always hear it, or several to get one at random each briefing day; every part of that day's briefing keeps the same speaker. The **host** speaks the greeting, weather, national day, fun fact, agenda, commute and closing; the **reader** reads the daily text and daily encouragement. Each dropdown option shows the persona's name and a one-line summary. A persona that can do both jobs appears in both lists. With nothing picked, the form shows **Default Host** and **Default Reader**, the personas used when a picker is empty.
+
+| Persona | Host | Reader | Style | Voice |
+|---|:-:|:-:|---|---|
+| Default Host | ✓ |  | Clear, polished news anchor | Pulcherrima |
+| Default Reader |  | ✓ | Calm, encouraging life coach | Enceladus |
+| Elena | ✓ | ✓ | Warm Saint Lucian friend, calm and unhurried | Kore |
+| Malenfant |  | ✓ | Deep-voiced pastoral mentor, slow and earnest | Charon |
+| Della | ✓ | ✓ | Joyful Southern auntie, soothing and homey | Kore |
+| Cole | ✓ |  | Smooth, classy Brooklyn gentleman with dry wit | Charon |
+| Arthur | ✓ |  | Polite British butler with a bone-dry wit | Iapetus |
+| Theo | ✓ |  | Upbeat morning-radio host, bright and playful | Puck |
+| Nana Rose | ✓ | ✓ | Gentle, patient grandmother | Sulafat |
+| Sage |  | ✓ | Calm meditation guide, slow and spacious | Achernar |
+| Ray | ✓ |  | Brisk news and traffic anchor, facts first | Alnilam |
+| Pip | ✓ |  | Playful, kind guide for children | Leda |
 
 | Persona | Roles | Character |
 | :--- | :--- | :--- |

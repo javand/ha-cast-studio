@@ -39,6 +39,7 @@ from custom_components.cast_studio.people import (
     get_people,
     get_routines,
 )
+from custom_components.cast_studio.personas import get_persona
 from custom_components.cast_studio.pronunciation import (
     apply_pronunciations,
     build_lexicon,
@@ -1213,6 +1214,55 @@ def test_person_settings_fields_have_help_text() -> None:
                 assert advanced["data_description"][key], (path.name, step, key)
             for key in ("host_personas", "reader_personas"):
                 assert "below" not in advanced["data_description"][key]
+
+
+def _advanced_suggestions(schema: vol.Schema) -> dict[str, Any]:
+    """Return the advanced section's suggested values keyed by field name."""
+    advanced = next(
+        value for key, value in schema.schema.items() if str(key) == "advanced"
+    )
+    return {
+        str(key): (key.description or {}).get("suggested_value")
+        for key in advanced.schema.schema
+    }
+
+
+@pytest.mark.asyncio
+async def test_person_form_persona_options_show_summaries(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """Each persona option reads 'Name: summary' so it says who it is."""
+    result = await _start_subentry(hass, config_entry, "person")
+    host = _advanced_selectors(result["data_schema"])["host_personas"]
+    labels = {opt["value"]: opt["label"] for opt in host.config["options"]}
+    elena = get_persona("elena")
+    assert labels["elena"] == f"Elena: {elena.summary}"
+
+
+@pytest.mark.asyncio
+async def test_new_person_form_shows_default_personas(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """With nothing picked, the pickers show who speaks: the default personas."""
+    result = await _start_subentry(hass, config_entry, "person")
+    suggested = _advanced_suggestions(result["data_schema"])
+    assert suggested["host_personas"] == ["default_host"]
+    assert suggested["reader_personas"] == ["default_reader"]
+
+
+def test_persona_help_text_names_defaults_and_segments() -> None:
+    """The persona fields say which segments each role speaks and the default."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for step in ("user", "reconfigure"):
+            desc = data["config_subentries"]["person"]["step"][step]["sections"][
+                "advanced"
+            ]["data_description"]
+            assert "Default Host" in desc["host_personas"]
+            assert "fun fact" in desc["host_personas"]
+            assert "Default Reader" in desc["reader_personas"]
+            assert "both lists" in desc["reader_personas"]
 
 
 @pytest.mark.asyncio

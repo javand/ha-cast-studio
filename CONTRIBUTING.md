@@ -17,7 +17,8 @@ Pull requests are the best way to propose changes to the codebase.
 2. If you've changed something, update the documentation.
 3. Make sure your code lints (using `scripts/lint`).
 4. Test you contribution.
-5. Issue that pull request!
+5. To ship a release, bump `version` in `custom_components/cast_studio/manifest.json` (semantic versioning). Merging to `main` tags and releases that version if it isn't released yet, and it's the version Home Assistant shows.
+6. Issue that pull request!
 
 ## Any contributions you make will be under the MIT Software License
 

@@ -23,15 +23,17 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine Next Version
+      - name: Read manifest version
         id: tag_version
-        uses: mathieudutour/github-tag-action@a22cf08638b34d5badda920f9daf6e72c477b07b # v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          default_bump: patch
-          tag_prefix: v
-          release_branches: main
-          dry_run: true
+        run: |
+          # The manifest is the version Home Assistant shows, so it names the
+          # release. Bump it in the PR; a merge without a bump releases nothing.
+          version="$(jq -r .version custom_components/cast_studio/manifest.json)"
+          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
+            echo "v${version} already released; nothing to do."
+          else
+            echo "new_tag=v${version}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create GitHub Release
         if: steps.tag_version.outputs.new_tag
@@ -40,6 +42,5 @@ jobs:
           tag_name: ${{ steps.tag_version.outputs.new_tag }}
           name: ${{ steps.tag_version.outputs.new_tag }}
           target_commitish: ${{ github.sha }}
-          body: ${{ steps.tag_version.outputs.changelog }}
           generate_release_notes: true
           token: ${{ secrets.GITHUB_TOKEN }}

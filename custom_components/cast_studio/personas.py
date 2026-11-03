@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 ROLE_HOST = "host"
 ROLE_READER = "reader"
 
+# Who speaks a role when the person picks no persona for it.
+DEFAULT_HOST_PERSONA = "default_host"
+DEFAULT_READER_PERSONA = "default_reader"
+
 
 @dataclass(frozen=True)
 class Persona:
@@ -32,6 +36,8 @@ class Persona:
 
     persona_id: str
     name: str
+    # One line shown beside the name in the settings dropdown.
+    summary: str
     roles: frozenset[str]
     character: str
     gemini_voice: str
@@ -57,6 +63,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="default_host",
         name="Default Host",
+        summary="Clear, polished news anchor",
         roles=HOST,
         character="news_anchor",
         gemini_voice=DEFAULT_HOST_VOICE,
@@ -66,6 +73,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="default_reader",
         name="Default Reader",
+        summary="Calm, encouraging life coach",
         roles=READER,
         character="life_coach",
         gemini_voice=DEFAULT_SCRIPTURE_VOICE,
@@ -75,6 +83,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="elena",
         name="Elena",
+        summary="Warm Saint Lucian friend, calm and unhurried",
         roles=BOTH,
         character=(
             "A warm, grounded, hard-working young woman from Saint Lucia who "
@@ -98,6 +107,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="malenfant",
         name="Malenfant",
+        summary="Deep-voiced pastoral mentor, slow and earnest",
         roles=READER,
         character=(
             "A mature, warm and dignified mentor who speaks like a calm, "
@@ -122,6 +132,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="della",
         name="Della",
+        summary="Joyful Southern auntie, soothing and homey",
         roles=BOTH,
         character=(
             "A joyful Southern woman in her forties with a big, gentle heart who "
@@ -145,6 +156,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="cole",
         name="Cole",
+        summary="Smooth, classy Brooklyn gentleman with dry wit",
         roles=HOST,
         character=(
             "A well-educated, well-read man in his thirties from Brooklyn with "
@@ -167,6 +179,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="arthur",
         name="Arthur",
+        summary="Polite British butler with a bone-dry wit",
         roles=HOST,
         character=(
             "A crisp, impeccably polite British butler: precise, unflappable "
@@ -186,6 +199,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="theo",
         name="Theo",
+        summary="Upbeat morning-radio host, bright and playful",
         roles=HOST,
         character=(
             "An upbeat morning-radio host who loves getting people going: "
@@ -205,6 +219,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="nana_rose",
         name="Nana Rose",
+        summary="Gentle, patient grandmother",
         roles=BOTH,
         character=(
             "A gentle, loving grandmother who has all the time in the world: "
@@ -224,6 +239,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="sage",
         name="Sage",
+        summary="Calm meditation guide, slow and spacious",
         roles=READER,
         character=(
             "A calm meditation guide who invites the listener to slow down and "
@@ -243,6 +259,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="ray",
         name="Ray",
+        summary="Brisk news and traffic anchor, facts first",
         roles=HOST,
         character=(
             "A no-nonsense news and traffic anchor: facts first, brisk and "
@@ -261,6 +278,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="pip",
         name="Pip",
+        summary="Playful, kind guide for children",
         roles=HOST,
         character=(
             "A playful, kind guide for children: cheerful, encouraging and "

@@ -89,6 +89,8 @@ from .people import (
     slugify_name,
 )
 from .personas import (
+    DEFAULT_HOST_PERSONA,
+    DEFAULT_READER_PERSONA,
     PERSONAS,
     ROLE_HOST,
     ROLE_READER,
@@ -258,7 +260,10 @@ def _persona_selector(role: str | None) -> selector.SelectSelector:
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=[
-                selector.SelectOptionDict(value=persona.persona_id, label=persona.name)
+                selector.SelectOptionDict(
+                    value=persona.persona_id,
+                    label=f"{persona.name}: {persona.summary}",
+                )
                 for persona in (PERSONAS if role is None else personas_for_role(role))
             ],
             multiple=True,
@@ -332,9 +337,14 @@ def _person_schema(current: dict[str, Any], default_mode: str) -> vol.Schema:
             else None
         ),
         # A persona dropped from the catalog would fail the picker's validation.
+        # With none picked, show the default persona who speaks the role.
         **{
-            key: [pid for pid in current.get(key) or () if get_persona(pid)] or None
-            for key in (PERSON_HOST_PERSONAS, PERSON_READER_PERSONAS)
+            key: [pid for pid in current.get(key) or () if get_persona(pid)]
+            or [default]
+            for key, default in (
+                (PERSON_HOST_PERSONAS, DEFAULT_HOST_PERSONA),
+                (PERSON_READER_PERSONAS, DEFAULT_READER_PERSONA),
+            )
         },
     }
     settings_fields: dict[Any, Any] = {

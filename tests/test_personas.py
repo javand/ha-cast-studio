@@ -5,10 +5,13 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
+import pytest
+
 from custom_components.cast_studio.personas import (
     PERSONAS,
     ROLE_HOST,
     ROLE_READER,
+    Persona,
     get_persona,
     personas_for_role,
     pick_persona,
@@ -92,3 +95,11 @@ def test_characters_never_name_the_persona() -> None:
         assert not re.search(
             rf"\b{re.escape(persona.name)}\b", persona.character, re.IGNORECASE
         )
+
+
+@pytest.mark.parametrize("persona", PERSONAS, ids=lambda p: p.persona_id)
+def test_every_persona_has_a_short_summary(persona: Persona) -> None:
+    """The settings dropdown shows a one-line summary next to each name."""
+    assert persona.summary
+    assert len(persona.summary) <= 60
+    assert persona.name.lower() not in persona.summary.lower()
