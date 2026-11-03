@@ -341,13 +341,19 @@
           "api_key": "API Key (Optional)",
           "maps_api_key": "Google Maps API Key (Optional)",
           "default_transportation_mode": "Default Transportation Mode",
-          "output_dir": "Output Directory"
+          "output_dir": "Output Directory",
+          "text_model": "Writing model",
+          "image_model": "Image model",
+          "voice_model": "Voice model"
         },
         "data_description": {
           "api_key": "Gemini API key for writing, images and voices. Leave empty to reuse the key from the Google Generative AI integration, or to use a Home Assistant conversation agent if there is none.",
           "maps_api_key": "Shows a route map on the commute slide (needs the Directions and Static Maps APIs). Leave empty to reuse a key from Google Travel Time, Google Maps or secrets.yaml; with none, a simple drawn map is used.",
           "default_transportation_mode": "Travel mode new people start with. Fastest compares driving and transit and leads with the quicker one.",
-          "output_dir": "Folder where built briefings are stored. Keep it under /config/www so displays can load the files."
+          "output_dir": "Folder where built briefings are stored. Keep it under /config/www so displays can load the files.",
+          "text_model": "Gemini model that writes the briefing text. Pick one or type any Gemini model name. Default: gemini-2.5-flash.",
+          "image_model": "Gemini model that draws the slide images. Pick one or type any Gemini image model name. Default: gemini-2.5-flash-image.",
+          "voice_model": "Gemini model that speaks the briefing. Each model has its own daily limit; when it runs out, Home Assistant's own TTS reads instead. Default: gemini-3.8-flash-lite-tts."
         }
       }
     }

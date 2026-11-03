@@ -16,7 +16,16 @@ import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .ai_health import async_report_ai_failure, async_report_ai_success
-from .const import DOMAIN, LOGGER
+from .const import (
+    CONF_IMAGE_MODEL,
+    CONF_TEXT_MODEL,
+    CONF_VOICE_MODEL,
+    DEFAULT_IMAGE_MODEL,
+    DEFAULT_TEXT_MODEL,
+    DEFAULT_VOICE_MODEL,
+    DOMAIN,
+    LOGGER,
+)
 from .helpers import async_run_in_executor
 
 if TYPE_CHECKING:
@@ -414,9 +423,9 @@ async def _query_gemini_structured(
     hass: HomeAssistant,
     prompt: str,
     api_key: str,
-    model: str = "gemini-2.5-flash",
+    model: str = DEFAULT_TEXT_MODEL,
 ) -> dict[str, Any]:
-    """Execute direct REST request to Gemini 2.5 Flash with structured JSON output."""
+    """Execute a direct REST request to a Gemini model with structured JSON output."""
     session = async_get_clientsession(hass)
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -472,7 +481,7 @@ async def _query_gemini_image_api(  # noqa: PLR0913
     hass: HomeAssistant,
     prompt: str,
     api_key: str,
-    model: str = "models/gemini-2.5-flash-image",
+    model: str = DEFAULT_IMAGE_MODEL,
     *,
     images: Sequence[tuple[str, bytes]] = (),
     aspect_ratio: str | None = None,
@@ -483,7 +492,8 @@ async def _query_gemini_image_api(  # noqa: PLR0913
     ``images`` are (mime type, bytes) reference pictures sent after the prompt.
     """
     url = (
-        f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent"
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model.removeprefix('models/')}:generateContent"
         f"?key={api_key}"
     )
     parts: list[dict[str, Any]] = [{"text": prompt}]
@@ -564,6 +574,7 @@ async def async_generate_ai_image(  # noqa: PLR0913
             hass,
             prompt,
             creds["api_key"],
+            model=creds.get(CONF_IMAGE_MODEL) or DEFAULT_IMAGE_MODEL,
             images=reference_images,
             aspect_ratio=aspect_ratio,
         )
@@ -718,12 +729,36 @@ async def async_discover_ai_credentials(
     2. Auto-detected google_generative_ai active entry.
     3. Fallback to native Home Assistant conversation agent.
     """
+    models = _configured_models(hass)
     for domain in (DOMAIN, "google_generative_ai", "google_generative_ai_conversation"):
         for entry in hass.config_entries.async_entries(domain):
             if api_key := _extract_entry_api_key(entry):
-                return {"platform": "gemini", "api_key": api_key}
+                return {"platform": "gemini", "api_key": api_key, **models}
 
-    return {"platform": "conversation_agent", "api_key": None}
+    return {"platform": "conversation_agent", "api_key": None, **models}
+
+
+def _configured_models(hass: HomeAssistant) -> dict[str, str]:
+    """Return the Gemini models chosen in CastStudio's options, else defaults."""
+    chosen: dict[str, Any] = {}
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        data = getattr(entry, "data", None)
+        options = getattr(entry, "options", None)
+        chosen = {
+            **(data if isinstance(data, Mapping) else {}),
+            **(options if isinstance(options, Mapping) else {}),
+        }
+        break
+
+    def _model(key: str, default: str) -> str:
+        value = chosen.get(key)
+        return value.strip() if isinstance(value, str) and value.strip() else default
+
+    return {
+        CONF_TEXT_MODEL: _model(CONF_TEXT_MODEL, DEFAULT_TEXT_MODEL),
+        CONF_IMAGE_MODEL: _model(CONF_IMAGE_MODEL, DEFAULT_IMAGE_MODEL),
+        CONF_VOICE_MODEL: _model(CONF_VOICE_MODEL, DEFAULT_VOICE_MODEL),
+    }
 
 
 async def _async_query_structured(
@@ -735,7 +770,10 @@ async def _async_query_structured(
     if creds.get("platform") == "gemini" and api_key:
         try:
             return await _query_gemini_structured(
-                hass=hass, prompt=prompt, api_key=api_key
+                hass=hass,
+                prompt=prompt,
+                api_key=api_key,
+                model=creds.get(CONF_TEXT_MODEL) or DEFAULT_TEXT_MODEL,
             )
         except (AIClientError, aiohttp.ClientError, TimeoutError) as err:
             LOGGER.warning(
@@ -767,7 +805,12 @@ async def async_generate_step_content(
     raw_content = await _async_query_structured(
         hass,
         prompt,
-        {"platform": platform, "api_key": api_key, "agent_id": agent_id},
+        {
+            **effective_creds,
+            "platform": platform,
+            "api_key": api_key,
+            "agent_id": agent_id,
+        },
         "structured content generation",
     )
 

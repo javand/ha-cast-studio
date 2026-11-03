@@ -35,14 +35,23 @@ from .const import (
     CONF_API_KEY,
     CONF_COMMUTE_DESTINATION,
     CONF_DEFAULT_TRANSPORTATION_MODE,
+    CONF_IMAGE_MODEL,
     CONF_MAPS_API_KEY,
     CONF_OUTPUT_DIR,
     CONF_PHONETIC_NAME,
     CONF_RECIPIENT_NAME,
+    CONF_TEXT_MODEL,
+    CONF_VOICE_MODEL,
+    DEFAULT_IMAGE_MODEL,
     DEFAULT_OUTPUT_DIR,
+    DEFAULT_TEXT_MODEL,
     DEFAULT_TRANSPORTATION_MODE,
+    DEFAULT_VOICE_MODEL,
     DOMAIN,
+    IMAGE_MODELS,
     LOGGER,
+    TEXT_MODELS,
+    VOICE_MODELS,
 )
 from .people import (
     DEFAULT_MAX_AGE_MINUTES,
@@ -1026,6 +1035,21 @@ class CastStudioOptionsFlowHandler(config_entries.OptionsFlowWithReload):
         schema_fields[vol.Required(CONF_OUTPUT_DIR, default=current_output_dir)] = (
             _text_selector()
         )
+        for key, default, known in (
+            (CONF_TEXT_MODEL, DEFAULT_TEXT_MODEL, TEXT_MODELS),
+            (CONF_IMAGE_MODEL, DEFAULT_IMAGE_MODEL, IMAGE_MODELS),
+            (CONF_VOICE_MODEL, DEFAULT_VOICE_MODEL, VOICE_MODELS),
+        ):
+            current = options.get(key, data.get(key)) or default
+            schema_fields[
+                vol.Optional(key, description={"suggested_value": current})
+            ] = selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=list(dict.fromkeys((*known, current))),
+                    custom_value=True,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            )
 
         return self.async_show_form(
             step_id="init",

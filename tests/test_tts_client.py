@@ -179,6 +179,7 @@ async def test_synthesize_speech_gemini_voices(tmp_path: Path) -> None:
             output_wav,
             "test_key",
             session=ANY,
+            model="gemini-3.8-flash-lite-tts",
             profile=None,
         )
 
@@ -210,6 +211,7 @@ async def test_synthesize_speech_gemini_enceladus_voice(tmp_path: Path) -> None:
             output_wav,
             "test_gemini_key",
             session=ANY,
+            model="gemini-3.8-flash-lite-tts",
             profile=None,
         )
 
@@ -780,6 +782,7 @@ async def test_synthesize_speech_defaults(tmp_path: Path) -> None:
             output_wav,
             "k",
             session=ANY,
+            model="gemini-3.8-flash-lite-tts",
             profile=None,
         )
 
@@ -819,6 +822,7 @@ async def test_synthesize_speech_reuses_clientsession(tmp_path: Path) -> None:
             output_wav,
             "k",
             session=mock_session,
+            model="gemini-3.8-flash-lite-tts",
             profile=None,
         )
 
@@ -995,7 +999,14 @@ async def test_synthesize_passes_profile_to_gemini(tmp_path: Path) -> None:
             voice_profile="P",
         )
     mock_tts.assert_awaited_once_with(
-        "Hello", "Kore", "A warm friend.", output_wav, "k", session=ANY, profile="P"
+        "Hello",
+        "Kore",
+        "A warm friend.",
+        output_wav,
+        "k",
+        session=ANY,
+        model="gemini-3.8-flash-lite-tts",
+        profile="P",
     )
 
 
@@ -1060,3 +1071,20 @@ async def test_gemini_failure_with_persona_falls_back_to_ha_tts(
     mock_ha.assert_awaited_once_with(
         hass, "Hello", "Kore", "calm", output_wav, target_engine=None
     )
+
+
+async def test_gemini_voice_uses_the_configured_model(tmp_path: Path) -> None:
+    wav = str(tmp_path / "out.wav")
+    with patch(f"{TTS}._synthesize_gemini_tts", return_value=wav) as gemini:
+        await _speak(
+            tmp_path,
+            {"platform": "gemini", "api_key": "k", "voice_model": "gemini-x-tts"},
+        )
+    assert gemini.call_args.kwargs["model"] == "gemini-x-tts"
+
+
+async def test_gemini_voice_defaults_to_flash_lite_tts(tmp_path: Path) -> None:
+    wav = str(tmp_path / "out.wav")
+    with patch(f"{TTS}._synthesize_gemini_tts", return_value=wav) as gemini:
+        await _speak(tmp_path, {"platform": "gemini", "api_key": "k"})
+    assert gemini.call_args.kwargs["model"] == "gemini-3.8-flash-lite-tts"

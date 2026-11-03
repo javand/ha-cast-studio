@@ -24,13 +24,19 @@ from custom_components.cast_studio.const import (
     CONF_API_KEY,
     CONF_COMMUTE_DESTINATION,
     CONF_DEFAULT_TRANSPORTATION_MODE,
+    CONF_IMAGE_MODEL,
     CONF_MAPS_API_KEY,
     CONF_OUTPUT_DIR,
     CONF_PHONETIC_NAME,
     CONF_RECIPIENT_NAME,
+    CONF_TEXT_MODEL,
+    CONF_VOICE_MODEL,
+    DEFAULT_IMAGE_MODEL,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PHONETIC_NAME,
     DEFAULT_RECIPIENT_NAME,
+    DEFAULT_TEXT_MODEL,
+    DEFAULT_VOICE_MODEL,
     DOMAIN,
 )
 from custom_components.cast_studio.people import (
@@ -225,6 +231,51 @@ async def test_options_flow_updates_options_and_reloads(
         mock_reload.assert_awaited_once_with(entry.entry_id)
 
 
+def _suggested(result: Any, key: str) -> Any:
+    for marker in result["data_schema"].schema:
+        if marker == key:
+            return (marker.description or {}).get("suggested_value")
+    msg = f"{key} not in form"
+    raise AssertionError(msg)
+
+
+@pytest.mark.asyncio
+async def test_options_form_offers_the_three_models(hass: HomeAssistant) -> None:
+    """Writing, image and voice models start at the defaults."""
+    entry = MockConfigEntry(domain=DOMAIN, entry_id="m", data={}, options={})
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert _suggested(result, CONF_TEXT_MODEL) == DEFAULT_TEXT_MODEL
+    assert _suggested(result, CONF_IMAGE_MODEL) == DEFAULT_IMAGE_MODEL
+    assert _suggested(result, CONF_VOICE_MODEL) == DEFAULT_VOICE_MODEL
+
+
+@pytest.mark.asyncio
+async def test_options_form_shows_the_chosen_models(hass: HomeAssistant) -> None:
+    """A saved model, even one typed in, is shown and kept."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="m",
+        data={},
+        options={CONF_TEXT_MODEL: "gemini-9-pro", CONF_VOICE_MODEL: "my-tts"},
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert _suggested(result, CONF_TEXT_MODEL) == "gemini-9-pro"
+    assert _suggested(result, CONF_VOICE_MODEL) == "my-tts"
+    with patch("homeassistant.config_entries.ConfigEntries.async_reload", AsyncMock()):
+        done = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_OUTPUT_DIR: "/x", CONF_VOICE_MODEL: "other-tts"},
+        )
+    assert entry.options[CONF_VOICE_MODEL] == "other-tts"
+    assert done["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+
+
 def test_translations_en_structure() -> None:
     """Test translations en.json schema."""
     en_path = (
@@ -309,6 +360,9 @@ async def test_commute_destination_zone_in_user_and_options_flows(
         CONF_MAPS_API_KEY,
         CONF_DEFAULT_TRANSPORTATION_MODE,
         CONF_OUTPUT_DIR,
+        CONF_TEXT_MODEL,
+        CONF_IMAGE_MODEL,
+        CONF_VOICE_MODEL,
     }
 
 
