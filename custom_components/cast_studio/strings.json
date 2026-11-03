@@ -61,7 +61,7 @@
               "data": {
                 "weather_entity": "Weather entity",
                 "calendar_entities": "Calendars",
-                "todo_entity": "To-do list entity",
+                "todo_entities": "To-do lists",
                 "scripture_entity": "Daily text entity",
                 "commute_drive_sensor": "Commute drive-time sensor",
                 "commute_transit_sensor": "Commute transit-time sensor",
@@ -118,7 +118,7 @@
               "data": {
                 "weather_entity": "Weather entity",
                 "calendar_entities": "Calendars",
-                "todo_entity": "To-do list entity",
+                "todo_entities": "To-do lists",
                 "scripture_entity": "Daily text entity",
                 "commute_drive_sensor": "Commute drive-time sensor",
                 "commute_transit_sensor": "Commute transit-time sensor",

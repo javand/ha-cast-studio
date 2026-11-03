@@ -73,6 +73,9 @@ PERSON_COMMUTE_TRANSIT_RETURN_SENSOR = "commute_transit_return_sensor"
 # The agenda's calendars; older entries stored one under PERSON_LEGACY_CALENDAR.
 PERSON_CALENDARS = "calendar_entities"
 PERSON_LEGACY_CALENDAR = "calendar_entity"
+# The agenda's to-do lists; older entries stored one under PERSON_LEGACY_TODO.
+PERSON_TODOS = "todo_entities"
+PERSON_LEGACY_TODO = "todo_entity"
 
 # Built-in personas picked for each role; several means one at random per day.
 PERSON_HOST_PERSONAS = "host_personas"
@@ -82,7 +85,7 @@ PERSON_READER_PERSONAS = "reader_personas"
 PERSON_SETTINGS_KEYS: tuple[str, ...] = (
     "weather_entity",
     PERSON_CALENDARS,
-    "todo_entity",
+    PERSON_TODOS,
     "scripture_entity",
     PERSON_COMMUTE_DRIVE_SENSOR,
     PERSON_COMMUTE_TRANSIT_SENSOR,
@@ -362,11 +365,21 @@ def is_content_fresh(
     return now - built_at <= timedelta(minutes=person.max_age_minutes)
 
 
+def _entity_list(settings: Mapping[str, Any], key: str, legacy_key: str) -> list[str]:
+    """Return the entity ids under ``key``, falling back to one under ``legacy_key``."""
+    eids = settings.get(key)
+    if isinstance(eids, str):
+        eids = [eids]
+    if not eids and (legacy := settings.get(legacy_key)):
+        eids = [legacy]
+    return [str(eid) for eid in eids or [] if eid]
+
+
 def person_calendars(settings: Mapping[str, Any]) -> list[str]:
     """Return a person's agenda calendars, reading the older single-calendar key."""
-    calendars = settings.get(PERSON_CALENDARS)
-    if isinstance(calendars, str):
-        calendars = [calendars]
-    if not calendars and (legacy := settings.get(PERSON_LEGACY_CALENDAR)):
-        calendars = [legacy]
-    return [str(eid) for eid in calendars or [] if eid]
+    return _entity_list(settings, PERSON_CALENDARS, PERSON_LEGACY_CALENDAR)
+
+
+def person_todos(settings: Mapping[str, Any]) -> list[str]:
+    """Return a person's agenda to-do lists, reading the older single-list key."""
+    return _entity_list(settings, PERSON_TODOS, PERSON_LEGACY_TODO)

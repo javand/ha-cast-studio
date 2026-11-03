@@ -57,6 +57,7 @@ from .people import (
     briefing_day,
     is_content_fresh,
     person_calendars,
+    person_todos,
 )
 from .personas import ROLE_HOST, ROLE_READER, pick_persona
 from .slide_renderer import CANVAS_HEIGHT, CANVAS_WIDTH
@@ -273,11 +274,11 @@ def build_segment_step(
         step["entity_id"] = settings.get("weather_entity") or ""
     elif segment_type == "agenda":
         calendars = person_calendars(settings)
-        todo = settings.get("todo_entity") or ""
+        todos = person_todos(settings)
         step.update(
             calendar_entities=calendars,
-            todo_entity=todo,
-            entity_ids=[*calendars, *([todo] if todo else [])],
+            todo_entities=todos,
+            entity_ids=[*calendars, *todos],
         )
     elif segment_type == "commute":
         drive = settings.get(PERSON_COMMUTE_DRIVE_SENSOR) or None

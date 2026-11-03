@@ -206,16 +206,14 @@ def _format_weather_service_response(
     return ", ".join(line_parts)
 
 
-def _format_calendar_service_response(
-    eid: str, events: list[Any], name: str | None = None
-) -> str:
+def _format_calendar_service_response(events: list[Any]) -> str:
     """
     Format calendar.get_events response list into context string.
 
-    The calendar's name leads the line so a briefing drawing on several
-    calendars can say which one each event is on.
+    The line names no calendar: a calendar called after an email address or
+    a person would be read aloud, and the person hears only "your calendar".
     """
-    label = f"Calendar '{name}' ({eid})" if name else f"Calendar ({eid})"
+    label = "Calendar"
     event_strs: list[str] = []
     for ev in events:
         if not isinstance(ev, dict):
@@ -240,14 +238,6 @@ def _format_calendar_service_response(
     return f"{label}: {'; '.join(event_strs)}"
 
 
-def _calendar_name(hass: HomeAssistant, eid: str) -> str | None:
-    """Return a calendar's friendly name, if Home Assistant knows it."""
-    states = getattr(hass, "states", None)
-    state = states.get(eid) if states is not None else None
-    name = state.attributes.get("friendly_name") if state is not None else None
-    return name if isinstance(name, str) and name else None
-
-
 def _event_start_key(start: Any) -> str:
     """
     Sort key for merging events from several calendars into one timeline.
@@ -260,8 +250,14 @@ def _event_start_key(start: Any) -> str:
     return str(start) if start else "~"
 
 
-def _format_todo_service_response(eid: str, items: list[Any]) -> str:
-    """Format todo.get_items response list into context string."""
+def _format_todo_service_response(items: list[Any]) -> str:
+    """
+    Format todo.get_items response list into context string.
+
+    The line names no list, for the same reason as calendars: the person
+    hears only "your to-do list".
+    """
+    label = "To-do list"
     summaries = [
         str(item.get("summary")).strip()
         for item in items
@@ -270,8 +266,8 @@ def _format_todo_service_response(eid: str, items: list[Any]) -> str:
         and str(item.get("summary")).strip()
     ]
     if summaries:
-        return f"To-do ({eid}): {len(summaries)} tasks pending: {', '.join(summaries)}"
-    return f"To-do ({eid}): 0 tasks pending"
+        return f"{label}: {len(summaries)} tasks pending: {', '.join(summaries)}"
+    return f"{label}: 0 tasks pending"
 
 
 ISO_DATE_LENGTH = 10
@@ -1062,10 +1058,10 @@ def _format_single_entity_state(  # noqa: PLR0912
         start_time = attrs.get("start_time")
         if state_val == "off" and not summary:
             return (
-                f"Calendar ({eid}): No scheduled meetings today. "
+                "Calendar: No scheduled meetings today. "
                 "The user's schedule is completely clear."
             )
-        line_parts = [f"Calendar ({eid}): State: {state_val}"]
+        line_parts = [f"Calendar: State: {state_val}"]
         if summary:
             line_parts.append(f"Summary: {summary}")
         if start_time:
@@ -1073,7 +1069,7 @@ def _format_single_entity_state(  # noqa: PLR0912
         return ", ".join(line_parts)
 
     if eid.startswith("todo."):
-        return f"To-do ({eid}): {state_val} tasks pending"
+        return f"To-do list: {state_val} tasks pending"
 
     if any(str(k).lower() in ("scripture", "text", "commentary") for k in attrs):
         return _format_scripture_sensor(hass, eid, attrs)
@@ -1510,7 +1506,7 @@ async def async_extract_entity_context(  # noqa: C901, PLR0912, PLR0915
                     events = res[eid].get("events")
                     if isinstance(events, list):
                         service_overrides[eid] = _format_calendar_service_response(
-                            eid, events, _calendar_name(hass, eid)
+                            events
                         )
                         for ev in events:
                             if not isinstance(ev, dict):
@@ -1547,9 +1543,7 @@ async def async_extract_entity_context(  # noqa: C901, PLR0912, PLR0915
                 if res and isinstance(res.get(eid), dict):
                     items = res[eid].get("items")
                     if isinstance(items, list):
-                        service_overrides[eid] = _format_todo_service_response(
-                            eid, items
-                        )
+                        service_overrides[eid] = _format_todo_service_response(items)
                         for item in items:
                             if isinstance(item, dict):
                                 summary = (
@@ -1793,10 +1787,13 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
             or step_to_process.get("context")
             or "National Day celebration"
         )
+        today = dt_util.now()
         dynamic_prompt = (
             f"A vibrant, festive cinematic photograph celebrating {topic}, "
             "holiday atmosphere, joyful, detailed, beautiful natural lighting, "
-            "16:9 widescreen aspect ratio"
+            "16:9 widescreen aspect ratio. "
+            f"Today is {today:%B} {today.day}: any date shown on a sign or "
+            "banner must read exactly that, with no other dates or numbers"
         )
     elif step_key in ("fun_fact", "trivia") or name_key in ("fun_fact", "trivia"):
         fallback_asset = "fun_fact.jpg"

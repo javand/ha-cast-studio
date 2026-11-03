@@ -686,6 +686,10 @@ def test_build_prompt_agenda_guidelines() -> None:
     assert "agenda_split" in prompt
     assert "calendar_items" in prompt
     assert "todo_items" in prompt
+    assert "'your calendar'" in prompt
+    assert "'your to-do list'" in prompt
+    assert "which calendar" not in prompt
+    assert "which list" not in prompt
 
 
 def test_enforce_recipient_separation_preserves_custom_card_fields() -> None:
@@ -721,6 +725,8 @@ def test_build_prompt_national_day_and_fun_fact_guidelines() -> None:
     )
     assert "NATIONAL DAY NARRATION" in nd_prompt
     assert "Holiday Name" in nd_prompt
+    assert "most fun and widely recognized" in nd_prompt
+    assert "choose only from that list" in nd_prompt
 
     ff_prompt = _build_prompt(
         {"name": "fun_fact", "type": "fun_fact"},
