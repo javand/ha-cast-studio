@@ -290,14 +290,33 @@ def _set_sensor(  # noqa: PLR0913
     routine: Routine,
     now: datetime,
 ) -> None:
-    sensor.set_briefing_state(
-        state,
-        briefing_day=briefing_day(person, now).isoformat(),
-        ready_segments=[
+    sensor.set_briefing_state(state, **_readiness(store, person, routine, now))
+
+
+def _readiness(
+    store: SegmentStore, person: Person, routine: Routine, now: datetime
+) -> dict[str, Any]:
+    return {
+        "briefing_day": briefing_day(person, now).isoformat(),
+        "ready_segments": [
             unvoiced_key(key) for key in _ready_keys(store, person, routine, now)
         ],
-        dynamic_segments=dynamic_segment_types(routine),
-    )
+        "dynamic_segments": dynamic_segment_types(routine),
+    }
+
+
+def prime_sensor(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    sensor: CastStudioBriefingSensor,
+    person: Person,
+    routine: Routine,
+) -> None:
+    """Give a new sensor its readiness before its first state is written."""
+    store = _store(hass, entry)
+    now = dt_util.now()
+    readiness = _readiness(store, person, routine, now)
+    sensor.prime("ready" if readiness["ready_segments"] else "idle", **readiness)
 
 
 def _person_of(entry: ConfigEntry, routine: Routine) -> Person:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -58,7 +59,16 @@ class RoutineEntity(Entity):
 
 def current_routine(hass: HomeAssistant, routine_id: str) -> tuple[Person, Routine]:
     """Return the routine's current settings and its person, or raise."""
-    entry = get_loaded_entry(hass)
+    # While the entry is still setting up, its entities are being added: they
+    # must show their real value straight away, not a placeholder.
+    entry = get_loaded_entry(hass) or next(
+        (
+            entry
+            for entry in hass.config_entries.async_entries(DOMAIN)
+            if entry.state is ConfigEntryState.SETUP_IN_PROGRESS
+        ),
+        None,
+    )
     if entry is not None:
         people = {person.person_id: person for person in get_people(entry)}
         for routine in get_routines(entry):

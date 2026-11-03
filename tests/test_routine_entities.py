@@ -250,3 +250,65 @@ async def test_a_routine_added_later_gets_its_controls(
 
     assert hass.states.get("button.cast_studio_play_sam_late") is not None
     assert hass.states.get("select.cast_studio_play_on_sam_late") is not None
+
+
+async def test_startup_writes_each_entity_once_with_its_real_value(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """No placeholder state at startup, so the logbook shows no fake change."""
+    import json
+
+    from homeassistant.const import EVENT_STATE_CHANGED
+    from homeassistant.util import dt as dt_util
+
+    hass.states.async_set(SPEAKER, "idle")
+    now = dt_util.now()
+    day = now.date() if now.hour >= 3 else now.date().fromordinal(now.toordinal() - 1)
+    folder = tmp_path / "people" / SAM_ID / day.isoformat()
+    folder.mkdir(parents=True)
+    segments = {}
+    for key in ("greeting", "weather"):
+        (folder / f"{key}.mp3").write_bytes(b"x")
+        segments[key] = {
+            "audio": f"{key}.mp3",
+            "clip": None,
+            "duration": 1.0,
+            "built_at": now.isoformat(),
+            "built_day": day.isoformat(),
+            "degraded": False,
+            "persona": "default_host",
+        }
+    (folder / "manifest.json").write_text(json.dumps({"segments": segments}))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        minor_version=2,
+        unique_id=DOMAIN,
+        title="CastStudio",
+        data={CONF_OUTPUT_DIR: str(tmp_path)},
+        subentries_data=[
+            person_subentry(SAM_ID, "Sam", media_player=SPEAKER),
+            routine_subentry(
+                ROUTINE_ID,
+                SAM_ID,
+                "Quick",
+                ["greeting", "weather"],
+                output_format="audio",
+            ),
+        ],
+    )
+    entry.add_to_hass(hass)
+    seen: dict[str, list[str]] = {PLAY_ON: [], SENSOR: []}
+
+    def _record(event: Any) -> None:
+        if event.data["entity_id"] in seen and event.data["new_state"]:
+            seen[event.data["entity_id"]].append(event.data["new_state"].state)
+
+    hass.bus.async_listen(EVENT_STATE_CHANGED, _record)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert seen[PLAY_ON][0] == SPEAKER
+    assert set(seen[PLAY_ON]) == {SPEAKER}
+    assert seen[SENSOR][0] == "ready"
+    assert set(seen[SENSOR]) == {"ready"}
