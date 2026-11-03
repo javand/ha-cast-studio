@@ -532,8 +532,9 @@ async def test_resolve_step_visual_assets_ai_image_generation_and_fallback(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persona_id", [None, "theo"])
 async def test_async_compile_single_step_verbatim_scripture_bypasses_llm(
-    tmp_path: Path,
+    tmp_path: Path, persona_id: str | None
 ) -> None:
     """Verify scripture step produces verbatim narration from daily text sensors and bypasses LLM."""
     from types import SimpleNamespace
@@ -559,6 +560,12 @@ async def test_async_compile_single_step_verbatim_scripture_bypasses_llm(
         "type": "scripture",
         "entity_id": "sensor.jw_library_daily_text_today",
     }
+    if persona_id:
+        # Any persona, including a routine's voice change, reads it word for word.
+        from custom_components.cast_studio.personas import get_persona
+        from custom_components.cast_studio.segments import persona_voice
+
+        step.update(persona_voice(get_persona(persona_id)))
     recipient = {"name": "Alex", "phonetic_name": "Al-ex"}
     ai_creds = {"platform": "conversation_agent"}
 
@@ -2409,6 +2416,88 @@ def test_daily_encouragement_prompt_requires_exact_signoff() -> None:
     )
     assert '"Have a great day, Al-ex!"' in prompt
     assert "under 30 words" in prompt
+
+
+@pytest.mark.asyncio
+async def test_picked_greeting_image_is_resolved_to_a_file(tmp_path: Path) -> None:
+    """A greeting image picked from media is used instead of an AI image."""
+    from homeassistant.components.media_source import PlayMedia
+
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    picked = tmp_path / "sam.jpg"
+    picked.write_bytes(b"jpg")
+    media_id = "media-source://media_source/local/sam.jpg"
+    with (
+        patch(
+            "custom_components.cast_studio.generator.media_source.async_resolve_media",
+            new=AsyncMock(
+                return_value=PlayMedia(
+                    "/media/local/sam.jpg", "image/jpeg", path=picked
+                )
+            ),
+        ) as mock_resolve,
+        patch(
+            "custom_components.cast_studio.generator.async_generate_ai_image",
+            new=AsyncMock(),
+        ) as mock_gen,
+    ):
+        card: dict[str, Any] = {}
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {"name": "greeting", "image_media_id": media_id},
+            "greeting",
+            card,
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+        )
+
+    assert mock_resolve.await_args.args[1] == media_id
+    assert card["image_path"] == str(picked)
+    assert card["image_type"] == "static"
+    mock_gen.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_picked_greeting_image_falls_back_to_ai(tmp_path: Path) -> None:
+    """A picked image that no longer resolves leaves the daily AI image."""
+    from homeassistant.components.media_source import Unresolvable
+
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    def _gen(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.media_source.async_resolve_media",
+            new=AsyncMock(side_effect=Unresolvable("gone")),
+        ),
+        patch(
+            "custom_components.cast_studio.generator.async_generate_ai_image",
+            new=AsyncMock(side_effect=_gen),
+        ) as mock_gen,
+    ):
+        card: dict[str, Any] = {}
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {
+                "name": "greeting",
+                "image_media_id": "media-source://media_source/local/gone.jpg",
+            },
+            "greeting",
+            card,
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+        )
+
+    assert card["image_type"] == "dynamic"
+    mock_gen.assert_awaited_once()
 
 
 @pytest.mark.asyncio

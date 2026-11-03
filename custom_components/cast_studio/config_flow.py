@@ -35,14 +35,23 @@ from .const import (
     CONF_API_KEY,
     CONF_COMMUTE_DESTINATION,
     CONF_DEFAULT_TRANSPORTATION_MODE,
+    CONF_IMAGE_MODEL,
     CONF_MAPS_API_KEY,
     CONF_OUTPUT_DIR,
     CONF_PHONETIC_NAME,
     CONF_RECIPIENT_NAME,
+    CONF_TEXT_MODEL,
+    CONF_VOICE_MODEL,
+    DEFAULT_IMAGE_MODEL,
     DEFAULT_OUTPUT_DIR,
+    DEFAULT_TEXT_MODEL,
     DEFAULT_TRANSPORTATION_MODE,
+    DEFAULT_VOICE_MODEL,
     DOMAIN,
+    IMAGE_MODELS,
     LOGGER,
+    TEXT_MODELS,
+    VOICE_MODELS,
 )
 from .people import (
     DEFAULT_MAX_AGE_MINUTES,
@@ -56,17 +65,16 @@ from .people import (
     PERSON_COMMUTE_TRANSIT_RETURN_SENSOR,
     PERSON_COMMUTE_TRANSIT_SENSOR,
     PERSON_CORE_KEYS,
-    PERSON_HOST_PERSONAS,
     PERSON_MAX_AGE_MINUTES,
     PERSON_MEDIA_PLAYER,
     PERSON_NAME,
     PERSON_PHONETIC_NAME,
     PERSON_PRONUNCIATIONS,
-    PERSON_READER_PERSONAS,
     PERSON_RESET_TIME,
     PERSON_SETTINGS_KEYS,
     PERSON_TODOS,
     PERSON_TRANSPORTATION_MODE,
+    PERSON_VOICE,
     ROUTINE_DASHBOARD,
     ROUTINE_DASHBOARD_DISPLAY,
     ROUTINE_DASHBOARD_PATH,
@@ -74,7 +82,9 @@ from .people import (
     ROUTINE_NAME,
     ROUTINE_OUTPUT_FORMAT,
     ROUTINE_PERSON_ID,
+    ROUTINE_REFRESH_SEGMENTS,
     ROUTINE_SEGMENTS,
+    ROUTINE_VOICE_CHANGES,
     SEGMENT_TYPES,
     SUBENTRY_PERSON,
     SUBENTRY_ROUTINE,
@@ -86,15 +96,15 @@ from .people import (
     is_valid_name,
     person_calendars,
     person_todos,
+    person_voice,
     slugify_name,
 )
 from .personas import (
+    DEFAULT_VOICE_PERSONA,
     PERSONAS,
-    ROLE_HOST,
-    ROLE_READER,
     get_persona,
-    personas_for_role,
 )
+from .segments import default_refresh_segments
 
 ADVANCED_SECTION = "advanced"
 
@@ -253,13 +263,16 @@ def _entity_selector(domain: str | None = None) -> selector.EntitySelector:
     return selector.EntitySelector(selector.EntitySelectorConfig(domain=domain))
 
 
-def _persona_selector(role: str | None) -> selector.SelectSelector:
-    """Pick one or more of the built-in personas suited to a role (any if None)."""
+def _persona_selector() -> selector.SelectSelector:
+    """Pick one or more of the built-in personas."""
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=[
-                selector.SelectOptionDict(value=persona.persona_id, label=persona.name)
-                for persona in (PERSONAS if role is None else personas_for_role(role))
+                selector.SelectOptionDict(
+                    value=persona.persona_id,
+                    label=f"{persona.name}: {persona.summary}",
+                )
+                for persona in PERSONAS
             ],
             multiple=True,
             mode=selector.SelectSelectorMode.DROPDOWN,
@@ -293,16 +306,12 @@ def _person_settings_selectors() -> dict[str, selector.Selector]:
         PERSON_COMMUTE_TRANSIT_SENSOR: _entity_selector("sensor"),
         PERSON_COMMUTE_DRIVE_RETURN_SENSOR: _entity_selector("sensor"),
         PERSON_COMMUTE_TRANSIT_RETURN_SENSOR: _entity_selector("sensor"),
-        PERSON_HOST_PERSONAS: _persona_selector(ROLE_HOST),
-        PERSON_READER_PERSONAS: _persona_selector(ROLE_READER),
-        "host_voice": _text_selector(),
-        "scripture_voice": _text_selector(),
-        "host_personality": _text_selector(multiline=True),
-        "scripture_personality": _text_selector(multiline=True),
         "conversation_agent": selector.ConversationAgentSelector(),
         "greeting_title": _text_selector(),
         "greeting_subtitle": _text_selector(),
-        "greeting_image": _text_selector(),
+        "greeting_image": selector.MediaSelector(
+            selector.MediaSelectorConfig(accept=["image/*"])
+        ),
         PERSON_PRONUNCIATIONS: selector.ObjectSelector(
             selector.ObjectSelectorConfig(
                 multiple=True,
@@ -327,11 +336,16 @@ def _person_schema(current: dict[str, Any], default_mode: str) -> vol.Schema:
         **current,
         PERSON_CALENDARS: person_calendars(current) or None,
         PERSON_TODOS: person_todos(current) or None,
+        # A path typed before the image picker would fail the picker's validation.
+        "greeting_image": (
+            current.get("greeting_image")
+            if isinstance(current.get("greeting_image"), dict)
+            else None
+        ),
         # A persona dropped from the catalog would fail the picker's validation.
-        **{
-            key: [pid for pid in current.get(key) or () if get_persona(pid)] or None
-            for key in (PERSON_HOST_PERSONAS, PERSON_READER_PERSONAS)
-        },
+        # With none picked, show the persona who speaks: the default voice.
+        PERSON_VOICE: [pid for pid in person_voice(current) if get_persona(pid)]
+        or [DEFAULT_VOICE_PERSONA],
     }
     settings_fields: dict[Any, Any] = {
         vol.Optional(key, description=_suggested(current.get(key))): sel
@@ -350,6 +364,9 @@ def _person_schema(current: dict[str, Any], default_mode: str) -> vol.Schema:
                 PERSON_MEDIA_PLAYER,
                 description=_suggested(current.get(PERSON_MEDIA_PLAYER)),
             ): _entity_selector("media_player"),
+            vol.Optional(
+                PERSON_VOICE, description=_suggested(current[PERSON_VOICE])
+            ): _persona_selector(),
             vol.Optional(
                 PERSON_COMMUTE_DESTINATION,
                 description=_suggested(current.get(PERSON_COMMUTE_DESTINATION)),
@@ -404,6 +421,9 @@ def _person_data(user_input: dict[str, Any]) -> dict[str, Any]:
     for key in PERSON_SETTINGS_KEYS:
         if advanced.get(key) not in (None, "", []):
             data[key] = advanced[key]
+    data.pop(PERSON_VOICE, None)
+    if voice := user_input.get(PERSON_VOICE):
+        data[PERSON_VOICE] = voice
     data.pop(PERSON_PRONUNCIATIONS, None)
     if rows := clean_pronunciations(advanced.get(PERSON_PRONUNCIATIONS)):
         data[PERSON_PRONUNCIATIONS] = [
@@ -520,14 +540,48 @@ class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
 
         errors: dict[str, str] = {}
         current = dict(subentry.data) if subentry else {}
+        # A form can't follow the segment chips live, so an edit offers the
+        # segments the routine had when the form opened.
+        segment_choices = (
+            list(subentry.data.get(ROUTINE_SEGMENTS) or [])
+            if subentry
+            else list(SEGMENT_TYPES)
+        )
         if user_input is not None:
             data = _routine_data(user_input)
             current = data
             own_id = subentry.subentry_id if subentry else None
+            stray = [
+                change
+                for change in data[ROUTINE_VOICE_CHANGES]
+                if change["segment"] not in data[ROUTINE_SEGMENTS]
+            ]
+            stray_refresh = [
+                segment
+                for segment in data[ROUTINE_REFRESH_SEGMENTS]
+                if segment not in data[ROUTINE_SEGMENTS]
+            ]
+            if subentry is not None:
+                # Removing a segment from a routine drops its voice change and
+                # its refresh.
+                data[ROUTINE_VOICE_CHANGES] = [
+                    change
+                    for change in data[ROUTINE_VOICE_CHANGES]
+                    if change not in stray
+                ]
+                data[ROUTINE_REFRESH_SEGMENTS] = [
+                    segment
+                    for segment in data[ROUTINE_REFRESH_SEGMENTS]
+                    if segment not in stray_refresh
+                ]
             if not is_valid_name(data[ROUTINE_NAME]):
                 errors["base"] = "invalid_name"
             elif not data[ROUTINE_SEGMENTS]:
                 errors[ROUTINE_SEGMENTS] = "no_segments"
+            elif subentry is None and stray:
+                errors["base"] = "voice_change_not_in_routine"
+            elif subentry is None and stray_refresh:
+                errors["base"] = "refresh_not_in_routine"
             elif any(
                 routine.routine_id != own_id
                 and slugify_name(routine.name) == slugify_name(data[ROUTINE_NAME])
@@ -548,13 +602,17 @@ class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
         return self.async_show_form(
             step_id=step_id,
             data_schema=_routine_schema(
-                people, current, await async_dashboard_options(self.hass)
+                people,
+                current,
+                await async_dashboard_options(self.hass),
+                segment_choices,
             ),
             errors=errors,
         )
 
 
 def _routine_data(user_input: dict[str, Any]) -> dict[str, Any]:
+    advanced = user_input.get(ADVANCED_SECTION) or {}
     return {
         ROUTINE_PERSON_ID: user_input[ROUTINE_PERSON_ID],
         ROUTINE_NAME: (user_input.get(ROUTINE_NAME) or "").strip(),
@@ -563,7 +621,40 @@ def _routine_data(user_input: dict[str, Any]) -> dict[str, Any]:
         or DEFAULT_OUTPUT_FORMAT,
         **_split_dashboard(user_input.get(ROUTINE_DASHBOARD)),
         ROUTINE_DASHBOARD_DISPLAY: user_input.get(ROUTINE_DASHBOARD_DISPLAY) or None,
+        ROUTINE_VOICE_CHANGES: [
+            {"segment": row["segment"], "personas": list(row["personas"])}
+            for row in advanced.get(ROUTINE_VOICE_CHANGES) or []
+            if isinstance(row, dict) and row.get("segment") and row.get("personas")
+        ],
+        # Not shown yet (a new routine, or the section never opened): the
+        # default, weather and commute.
+        ROUTINE_REFRESH_SEGMENTS: _refresh_segments(
+            advanced.get(ROUTINE_REFRESH_SEGMENTS),
+            user_input.get(ROUTINE_SEGMENTS) or [],
+        ),
     }
+
+
+def _refresh_suggestion(current: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    Pre-fill Refresh segments: the saved list (even empty), else the default.
+
+    A new routine gets none, so an untouched picker saves the default.
+    """
+    if ROUTINE_REFRESH_SEGMENTS in current:
+        return {"suggested_value": list(current[ROUTINE_REFRESH_SEGMENTS])}
+    if segments := current.get(ROUTINE_SEGMENTS):
+        return {"suggested_value": default_refresh_segments(segments)}
+    return None
+
+
+def _refresh_segments(picked: list[str] | None, segments: list[str]) -> list[str]:
+    """Order the picked refresh segments like the routine; None: the default."""
+    if picked is None:
+        return default_refresh_segments(segments)
+    order = list(dict.fromkeys(segments))
+    known = [segment for segment in order if segment in picked]
+    return known + [segment for segment in picked if segment not in order]
 
 
 def _join_dashboard(path: str | None, view: str | None) -> str | None:
@@ -633,6 +724,7 @@ def _routine_schema(
     people: list[Any],
     current: dict[str, Any],
     dashboards: list[selector.SelectOptionDict],
+    segment_choices: list[str],
 ) -> vol.Schema:
     person_options = [
         selector.SelectOptionDict(value=p.person_id, label=p.name) for p in people
@@ -687,7 +779,57 @@ def _routine_schema(
                 ROUTINE_DASHBOARD_DISPLAY,
                 description=_suggested(current.get(ROUTINE_DASHBOARD_DISPLAY)),
             ): _cast_display_selector(),
+            vol.Optional(ADVANCED_SECTION): section(
+                vol.Schema(
+                    {
+                        vol.Optional(
+                            ROUTINE_VOICE_CHANGES,
+                            description=_suggested(
+                                current.get(ROUTINE_VOICE_CHANGES) or None
+                            ),
+                        ): _voice_changes_selector(segment_choices),
+                        vol.Optional(
+                            ROUTINE_REFRESH_SEGMENTS,
+                            description=_refresh_suggestion(current),
+                        ): selector.SelectSelector(
+                            selector.SelectSelectorConfig(
+                                options=segment_choices,
+                                multiple=True,
+                                mode=selector.SelectSelectorMode.DROPDOWN,
+                                translation_key="segment_type",
+                            )
+                        ),
+                    }
+                ),
+                {"collapsed": True},
+            ),
         }
+    )
+
+
+def _voice_changes_selector(segment_choices: list[str]) -> selector.ObjectSelector:
+    """Rows of one routine segment and the persona(s) that voice it."""
+    return selector.ObjectSelector(
+        selector.ObjectSelectorConfig(
+            multiple=True,
+            fields={
+                "segment": {
+                    "selector": {
+                        "select": {
+                            "options": segment_choices,
+                            "translation_key": "segment_type",
+                        }
+                    },
+                    "required": True,
+                },
+                "personas": {
+                    "selector": {"select": _persona_selector().config},
+                    "required": True,
+                },
+            },
+            label_field="segment",
+            translation_key=ROUTINE_VOICE_CHANGES,
+        )
     )
 
 
@@ -811,7 +953,7 @@ def _announcement_schema(current: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 ANN_PERSONAS,
                 default=list(current.get(ANN_PERSONAS) or [DEFAULT_PERSONA]),
-            ): _persona_selector(None),
+            ): _persona_selector(),
             vol.Optional(
                 ANN_REBUILD_TIME,
                 default=current.get(ANN_REBUILD_TIME, DEFAULT_REBUILD_TIME),
@@ -893,6 +1035,21 @@ class CastStudioOptionsFlowHandler(config_entries.OptionsFlowWithReload):
         schema_fields[vol.Required(CONF_OUTPUT_DIR, default=current_output_dir)] = (
             _text_selector()
         )
+        for key, default, known in (
+            (CONF_TEXT_MODEL, DEFAULT_TEXT_MODEL, TEXT_MODELS),
+            (CONF_IMAGE_MODEL, DEFAULT_IMAGE_MODEL, IMAGE_MODELS),
+            (CONF_VOICE_MODEL, DEFAULT_VOICE_MODEL, VOICE_MODELS),
+        ):
+            current = options.get(key, data.get(key)) or default
+            schema_fields[
+                vol.Optional(key, description={"suggested_value": current})
+            ] = selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=list(dict.fromkeys((*known, current))),
+                    custom_value=True,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            )
 
         return self.async_show_form(
             step_id="init",

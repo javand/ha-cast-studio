@@ -15,7 +15,12 @@
         },
         "data_description": {
           "phonetic_name": "How the name should be spoken, for example Al-ex. Leave blank to say it as written.",
-          "commute_destination_zone": "Zone used as the commute map destination. Leave empty to use zone.work or zone.office if they exist; otherwise the map is skipped."
+          "commute_destination_zone": "Zone used as the commute map destination. Leave empty to use zone.work or zone.office if they exist; otherwise the map is skipped.",
+          "api_key": "Gemini API key for writing, images and voices. Leave empty to reuse the key from the Google Generative AI integration, or to use a Home Assistant conversation agent if there is none.",
+          "maps_api_key": "Shows a route map on the commute slide (needs the Directions and Static Maps APIs). Leave empty to reuse a key from Google Travel Time, Google Maps or secrets.yaml; with none, a simple drawn map is used.",
+          "default_transportation_mode": "Travel mode new people start with. Fastest compares driving and transit and leads with the quicker one.",
+          "output_dir": "Folder where built briefings are stored. Keep it under /config/www so displays can load the files.",
+          "recipient_name": "Who the first briefing is for. It greets them by this name."
         }
       }
     },
@@ -42,6 +47,7 @@
             "name": "Name",
             "phonetic_name": "Phonetic pronunciation",
             "media_player": "Output device (optional)",
+            "voice_personas": "Voice",
             "commute_destination_zone": "Work or commute destination zone",
             "transportation_mode": "Travel mode",
             "reset_time": "Daily reset time",
@@ -50,14 +56,17 @@
           "data_description": {
             "phonetic_name": "How the name should be spoken, for example Al-ex.",
             "media_player": "Where this person's briefings play.",
+            "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice in its own Advanced section.",
             "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
             "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
-            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
+            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped.",
+            "name": "Who the briefings are for. The greeting uses this name.",
+            "transportation_mode": "How this person gets to work. Fastest compares driving and transit and leads with the quicker one."
           },
           "sections": {
             "advanced": {
               "name": "Advanced",
-              "description": "Entities, voices and greeting details used to build this person's segments.",
+              "description": "Entities and greeting details used to build this person's segments. Fallback AI picks the Home Assistant assistant that writes this person's briefing if Gemini isn't set up or a Gemini request fails; leave it empty for Home Assistant's default assistant.",
               "data": {
                 "weather_entity": "Weather entity",
                 "calendar_entities": "Calendars",
@@ -67,13 +76,7 @@
                 "commute_transit_sensor": "Commute transit-time sensor",
                 "commute_drive_return_sensor": "Evening drive-home sensor",
                 "commute_transit_return_sensor": "Evening transit-home sensor",
-                "host_personas": "Host personas",
-                "reader_personas": "Reader personas",
-                "host_voice": "Host voice",
-                "scripture_voice": "Scripture voice",
-                "host_personality": "Host personality",
-                "scripture_personality": "Scripture personality",
-                "conversation_agent": "Conversation agent",
+                "conversation_agent": "Fallback AI (conversation agent)",
                 "greeting_title": "Greeting title",
                 "greeting_subtitle": "Greeting subtitle",
                 "greeting_image": "Greeting image",
@@ -86,8 +89,13 @@
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
                 "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
-                "host_personas": "Who hosts the briefing: greeting, weather, agenda, commute and closing. Pick several to get a different one each day. Leave empty to use the host voice and personality below.",
-                "reader_personas": "Who reads the daily text and daily encouragement. Pick several to get a different one each day. Leave empty to use the scripture voice and personality below."
+                "conversation_agent": "Writes the briefing's words if Gemini isn't set up or a Gemini request fails. Leave empty to use Home Assistant's default assistant.",
+                "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
+                "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",
+                "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day.",
+                "weather_entity": "Weather for the weather segment.",
+                "calendar_entities": "Calendars read by the agenda segment. Add as many as you like; their events are merged and called \"your calendar\".",
+                "todo_entities": "To-do lists read by the agenda segment after the calendar. Add as many as you like; they are called \"your to-do list\"."
               }
             }
           }
@@ -99,6 +107,7 @@
             "name": "Name",
             "phonetic_name": "Phonetic pronunciation",
             "media_player": "Output device (optional)",
+            "voice_personas": "Voice",
             "commute_destination_zone": "Work or commute destination zone",
             "transportation_mode": "Travel mode",
             "reset_time": "Daily reset time",
@@ -107,14 +116,17 @@
           "data_description": {
             "phonetic_name": "How the name should be spoken, for example Al-ex.",
             "media_player": "Where this person's briefings play.",
+            "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice in its own Advanced section.",
             "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
             "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
-            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
+            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped.",
+            "name": "Who the briefings are for. The greeting uses this name.",
+            "transportation_mode": "How this person gets to work. Fastest compares driving and transit and leads with the quicker one."
           },
           "sections": {
             "advanced": {
               "name": "Advanced",
-              "description": "Entities, voices and greeting details used to build this person's segments.",
+              "description": "Entities and greeting details used to build this person's segments. Fallback AI picks the Home Assistant assistant that writes this person's briefing if Gemini isn't set up or a Gemini request fails; leave it empty for Home Assistant's default assistant.",
               "data": {
                 "weather_entity": "Weather entity",
                 "calendar_entities": "Calendars",
@@ -124,13 +136,7 @@
                 "commute_transit_sensor": "Commute transit-time sensor",
                 "commute_drive_return_sensor": "Evening drive-home sensor",
                 "commute_transit_return_sensor": "Evening transit-home sensor",
-                "host_personas": "Host personas",
-                "reader_personas": "Reader personas",
-                "host_voice": "Host voice",
-                "scripture_voice": "Scripture voice",
-                "host_personality": "Host personality",
-                "scripture_personality": "Scripture personality",
-                "conversation_agent": "Conversation agent",
+                "conversation_agent": "Fallback AI (conversation agent)",
                 "greeting_title": "Greeting title",
                 "greeting_subtitle": "Greeting subtitle",
                 "greeting_image": "Greeting image",
@@ -143,8 +149,13 @@
                 "commute_drive_return_sensor": "Optional. Travel-time sensor (minutes) for driving home in the evening, such as Google Maps Travel Time set to a departure time. Adds the trip home and a round-trip total.",
                 "commute_transit_return_sensor": "Optional. Travel-time sensor (minutes) for taking transit home in the evening. Adds the trip home and a round-trip total.",
                 "scripture_entity": "A JW Library daily text sensor, or a text helper with the day's text.",
-                "host_personas": "Who hosts the briefing: greeting, weather, agenda, commute and closing. Pick several to get a different one each day. Leave empty to use the host voice and personality below.",
-                "reader_personas": "Who reads the daily text and daily encouragement. Pick several to get a different one each day. Leave empty to use the scripture voice and personality below."
+                "conversation_agent": "Writes the briefing's words if Gemini isn't set up or a Gemini request fails. Leave empty to use Home Assistant's default assistant.",
+                "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
+                "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",
+                "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day.",
+                "weather_entity": "Weather for the weather segment.",
+                "calendar_entities": "Calendars read by the agenda segment. Add as many as you like; their events are merged and called \"your calendar\".",
+                "todo_entities": "To-do lists read by the agenda segment after the calendar. Add as many as you like; they are called \"your to-do list\"."
               }
             }
           }
@@ -182,7 +193,22 @@
             "segments": "Segments play in the order you pick them.",
             "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
-            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
+            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device. When the routine plays on a different screen (Play on), the dashboard shows on that screen instead.",
+            "person_id": "Who this routine is for. It uses their voice, entities and output device."
+          },
+          "sections": {
+            "advanced": {
+              "name": "Advanced",
+              "data": {
+                "voice_changes": "Voice changes",
+                "refresh_segments": "Refresh segments"
+              },
+              "data_description": {
+                "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds.",
+                "refresh_segments": "Segments rebuilt by the Refresh button and the cast_studio.refresh action, so they are current when the briefing plays. Weather and commute only re-read sensors and are quick; any other segment is written again by the AI, which takes longer. Leave it as weather and commute unless you want more."
+              },
+              "description": "Optional changes for this routine only."
+            }
           }
         },
         "reconfigure": {
@@ -200,14 +226,31 @@
             "segments": "Segments play in the order you pick them.",
             "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
-            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
+            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device. When the routine plays on a different screen (Play on), the dashboard shows on that screen instead.",
+            "person_id": "Who this routine is for. It uses their voice, entities and output device."
+          },
+          "sections": {
+            "advanced": {
+              "name": "Advanced",
+              "data": {
+                "voice_changes": "Voice changes",
+                "refresh_segments": "Refresh segments"
+              },
+              "data_description": {
+                "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds.",
+                "refresh_segments": "Segments rebuilt by the Refresh button and the cast_studio.refresh action, so they are current when the briefing plays. Weather and commute only re-read sensors and are quick; any other segment is written again by the AI, which takes longer. Leave it as weather and commute unless you want more."
+              },
+              "description": "Optional changes for this routine only."
+            }
           }
         }
       },
       "error": {
         "duplicate_routine": "This person already has a routine with that name.",
         "no_segments": "Pick at least one segment.",
-        "invalid_name": "Enter a routine name with at least one letter or number."
+        "invalid_name": "Enter a routine name with at least one letter or number.",
+        "voice_change_not_in_routine": "A voice change names a segment that isn't in this routine. Add the segment or remove the voice change.",
+        "refresh_not_in_routine": "Refresh segments names a segment that isn't in this routine. Add the segment or remove it from Refresh segments."
       },
       "abort": {
         "no_people": "Add a person before adding a routine.",
@@ -298,7 +341,19 @@
           "api_key": "API Key (Optional)",
           "maps_api_key": "Google Maps API Key (Optional)",
           "default_transportation_mode": "Default Transportation Mode",
-          "output_dir": "Output Directory"
+          "output_dir": "Output Directory",
+          "text_model": "Writing model",
+          "image_model": "Image model",
+          "voice_model": "Voice model"
+        },
+        "data_description": {
+          "api_key": "Gemini API key for writing, images and voices. Leave empty to reuse the key from the Google Generative AI integration, or to use a Home Assistant conversation agent if there is none.",
+          "maps_api_key": "Shows a route map on the commute slide (needs the Directions and Static Maps APIs). Leave empty to reuse a key from Google Travel Time, Google Maps or secrets.yaml; with none, a simple drawn map is used.",
+          "default_transportation_mode": "Travel mode new people start with. Fastest compares driving and transit and leads with the quicker one.",
+          "output_dir": "Folder where built briefings are stored. Keep it under /config/www so displays can load the files.",
+          "text_model": "Gemini model that writes the briefing text. Pick one or type any Gemini model name. Default: gemini-2.5-flash.",
+          "image_model": "Gemini model that draws the slide images. Pick one or type any Gemini image model name. Default: gemini-2.5-flash-image.",
+          "voice_model": "Gemini model that speaks the briefing. Each model has its own daily limit; when it runs out, Home Assistant's own TTS reads instead. Default: gemini-3.8-flash-lite-tts."
         }
       }
     }
@@ -353,6 +408,17 @@
         "static": "Static",
         "daily": "Daily"
       }
+    },
+    "voice_changes": {
+      "fields": {
+        "segment": {
+          "name": "Segment"
+        },
+        "personas": {
+          "name": "Voice",
+          "description": "Pick several to get a different one each day."
+        }
+      }
     }
   },
   "services": {
@@ -371,20 +437,20 @@
       }
     },
     "refresh": {
-      "name": "Refresh dynamic segments",
-      "description": "Rebuilds only the weather and commute segments of a routine, or of all of a person's routines that have them, so they reflect this moment. Other segments are left as they are. A play started while a refresh runs waits up to 10 seconds for it, then plays the stored segments.",
+      "name": "Refresh segments",
+      "description": "Rebuilds only a routine's refresh segments (weather and commute unless chosen otherwise under Refresh segments in the routine's Advanced section), or those of all of a person's routines, so they reflect this moment. Other segments are left as they are. A play started while a refresh runs waits up to 10 seconds for it, then plays the stored segments.",
       "fields": {
         "person": {
           "name": "Person",
-          "description": "Person to refresh. Alone, refreshes every routine of that person that has a weather or commute segment; with a routine, picks which person's routine is meant."
+          "description": "Person to refresh. Alone, refreshes the refresh segments of all of that person's routines, each once; with a routine, picks which person's routine is meant."
         },
         "routine": {
           "name": "Routine",
-          "description": "Routine whose weather and commute segments to refresh. Give a person or a routine, or both."
+          "description": "Routine whose refresh segments to refresh. Give a person or a routine, or both."
         },
         "segments": {
           "name": "Segments",
-          "description": "Optional. Only these dynamic segment types are refreshed, for example weather. Allowed: commute, weather. Without it, every dynamic type is refreshed. A routine's status sensor lists its dynamic segments in the dynamic_segments attribute."
+          "description": "Optional. Refresh these segment types instead of the routines' own lists, for example weather or agenda. Only types the routine has are rebuilt. A routine's status sensor lists its refresh segments in the dynamic_segments attribute."
         }
       }
     },

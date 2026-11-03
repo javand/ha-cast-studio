@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import time, timedelta
 from types import MappingProxyType
@@ -15,7 +16,6 @@ from homeassistant.util import slugify
 from .const import DEFAULT_TRANSPORTATION_MODE, DOMAIN, LOGGER
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from datetime import date, datetime
 
     from homeassistant.config_entries import ConfigEntry, ConfigSubentry
@@ -77,9 +77,10 @@ PERSON_LEGACY_CALENDAR = "calendar_entity"
 PERSON_TODOS = "todo_entities"
 PERSON_LEGACY_TODO = "todo_entity"
 
-# Built-in personas picked for each role; several means one at random per day.
-PERSON_HOST_PERSONAS = "host_personas"
-PERSON_READER_PERSONAS = "reader_personas"
+# Personas who speak the person's segments; several means one at random per day.
+PERSON_VOICE = "voice_personas"
+# Saved before the single voice replaced the host and reader pickers.
+PERSON_LEGACY_HOST_PERSONAS = "host_personas"
 
 # Per-person segment settings (§5.2), shown in the person form's advanced section.
 PERSON_SETTINGS_KEYS: tuple[str, ...] = (
@@ -91,12 +92,7 @@ PERSON_SETTINGS_KEYS: tuple[str, ...] = (
     PERSON_COMMUTE_TRANSIT_SENSOR,
     PERSON_COMMUTE_DRIVE_RETURN_SENSOR,
     PERSON_COMMUTE_TRANSIT_RETURN_SENSOR,
-    PERSON_HOST_PERSONAS,
-    PERSON_READER_PERSONAS,
-    "host_voice",
-    "scripture_voice",
-    "host_personality",
-    "scripture_personality",
+    PERSON_VOICE,
     "conversation_agent",
     "greeting_title",
     "greeting_subtitle",
@@ -114,6 +110,9 @@ ROUTINE_DASHBOARD = "dashboard"
 ROUTINE_DASHBOARD_VIEW = "dashboard_view"
 ROUTINE_DASHBOARD_DISPLAY = "dashboard_display"
 ROUTINE_OUTPUT_FORMAT = "output_format"
+# Segments this routine voices with other personas: [{segment, personas}].
+ROUTINE_VOICE_CHANGES = "voice_changes"
+ROUTINE_REFRESH_SEGMENTS = "refresh_segments"
 
 
 @dataclass(frozen=True)
@@ -144,6 +143,11 @@ class Routine:
     dashboard_view: str | None
     dashboard_display: str | None
     output_format: Literal["audio", "visual"] = DEFAULT_OUTPUT_FORMAT
+    # (segment type, persona ids): who voices that segment in this routine.
+    voice_changes: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # Segment types Refresh rebuilds, in routine order; None means the default
+    # (its weather and commute).
+    refresh_segments: tuple[str, ...] | None = None
 
 
 def slugify_name(value: str) -> str:
@@ -216,17 +220,46 @@ def _person_from_subentry(subentry: ConfigSubentry) -> Person:
     )
 
 
+def _voice_changes(
+    rows: Any, segments: tuple[str, ...]
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """
+    Return a routine's voice changes in segment order.
+
+    Rows for segments not in the routine or naming no persona are dropped; a
+    later row for the same segment replaces an earlier one.
+    """
+    changes: dict[str, tuple[str, ...]] = {}
+    for row in rows or ():
+        if not isinstance(row, Mapping):
+            continue
+        segment = row.get("segment")
+        personas = tuple(str(pid) for pid in row.get("personas") or () if pid)
+        if segment in segments and personas:
+            changes[segment] = personas
+    return tuple(
+        (seg, changes[seg]) for seg in dict.fromkeys(segments) if seg in changes
+    )
+
+
 def _routine_from_subentry(subentry: ConfigSubentry) -> Routine:
     data = subentry.data
+    segments = tuple(data.get(ROUTINE_SEGMENTS) or ())
     return Routine(
         routine_id=subentry.subentry_id,
         person_id=data[ROUTINE_PERSON_ID],
         name=data.get(ROUTINE_NAME) or subentry.title,
-        segments=tuple(data.get(ROUTINE_SEGMENTS) or ()),
+        segments=segments,
         dashboard_path=data.get(ROUTINE_DASHBOARD_PATH) or None,
         dashboard_view=data.get(ROUTINE_DASHBOARD_VIEW) or None,
         dashboard_display=data.get(ROUTINE_DASHBOARD_DISPLAY) or None,
         output_format=data.get(ROUTINE_OUTPUT_FORMAT) or DEFAULT_OUTPUT_FORMAT,
+        voice_changes=_voice_changes(data.get(ROUTINE_VOICE_CHANGES), segments),
+        refresh_segments=(
+            None
+            if (refresh := data.get(ROUTINE_REFRESH_SEGMENTS)) is None
+            else tuple(t for t in dict.fromkeys(segments) if t in set(refresh))
+        ),
     )
 
 
@@ -383,3 +416,9 @@ def person_calendars(settings: Mapping[str, Any]) -> list[str]:
 def person_todos(settings: Mapping[str, Any]) -> list[str]:
     """Return a person's agenda to-do lists, reading the older single-list key."""
     return _entity_list(settings, PERSON_TODOS, PERSON_LEGACY_TODO)
+
+
+def person_voice(settings: Mapping[str, Any]) -> list[str]:
+    """Return the persona ids of a person's voice, reading the older host key."""
+    ids = settings.get(PERSON_VOICE) or settings.get(PERSON_LEGACY_HOST_PERSONAS)
+    return [str(pid) for pid in ids or () if pid]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import tempfile
 from dataclasses import dataclass, field
@@ -15,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
@@ -36,6 +37,7 @@ from custom_components.cast_studio.segments import (
     ALL_HEARD_KEY,
     SegmentStore,
     StoredSegment,
+    key_persona,
 )
 
 from .conftest import ALEX_ID, SAM_ID, person_subentry, routine_subentry
@@ -137,6 +139,7 @@ class FakeBuilder:
                 duration=0.0,
                 built_at=now,
                 built_day=today,
+                persona_id=key_persona(person, key, today).persona_id,
             )
             await store.async_store(person, target_dir, segment, staged)
             if key != ALL_HEARD_KEY:
@@ -912,6 +915,42 @@ async def test_post_briefing_dashboard_runs_after_playback(
     ]
 
 
+async def test_dashboard_follows_a_display_picked_for_the_play(
+    sam_visual_with_dashboard: Harness,
+) -> None:
+    """Played on another screen: the dashboard shows where you are watching."""
+    h = sam_visual_with_dashboard
+    other = "media_player.kitchen_display"
+    h.hass.states.async_set(other, "playing", {"app_name": "Default Media Receiver"})
+    await h.play("Quick", target=other)
+
+    assert h.played[0]["entity_id"] == other
+    assert [d["entity_id"] for d in h.dashboards] == [other]
+
+
+async def test_dashboard_stays_on_its_display_when_played_on_a_speaker(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    routine = dashboard_routine("r_sam_quick", SAM_ID, "Quick", QUICK)
+    routine["data"]["dashboard_display"] = DISPLAY
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [person_subentry(SAM_ID, "Sam", media_player=DISPLAY), routine],
+    )
+    hass.states.async_set(SPEAKER, "playing", {"app_name": "Spotify"})
+    await h.play("Quick", target=SPEAKER)
+
+    assert h.played[0]["entity_id"] == SPEAKER
+    assert [d["entity_id"] for d in h.dashboards] == [DISPLAY]
+
+
 async def test_dashboard_skipped_for_non_cast_target(
     sam_audio_with_dashboard: Harness, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1041,6 +1080,33 @@ async def test_visual_prebuild_stores_stitched_routine_video(
     assert audio_meta["audio"].endswith(".mp3")
     assert (day / audio_meta["audio"]).is_file()
     assert (day / "routine_quick.json").is_file()
+
+
+async def test_restitched_routine_marks_its_old_video_superseded(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> None:
+    h = await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            person_subentry(ALEX_ID, "Alex", media_player=DISPLAY),
+            routine_subentry("r_alex_quick", ALEX_ID, "Quick", QUICK),
+        ],
+    )
+    await h.prebuild("Quick")
+    day = tmp_path / "people" / ALEX_ID / "2026-10-20"
+    (old,) = day.glob("routine_quick.*.mp4")
+    long_ago = old.stat().st_mtime - 3 * 3600
+    os.utime(old, (long_ago, long_ago))
+
+    await h.prebuild("Quick")
+    assert old.stat().st_mtime > long_ago + 3600
 
 
 async def test_prebuild_audio_routine_builds_no_clips_and_stitches_nothing(
@@ -1250,6 +1316,67 @@ async def test_all_heard_on_speaker_plays_mp3(
     assert _media_id(h.played[0]).endswith(f"{ALL_HEARD_DIR}/{ALL_HEARD_KEY}.mp3")
 
 
+@pytest.fixture
+async def sam_with_voice_change(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> Harness:
+    return await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            _sam(),
+            routine_subentry("r_sam_full", SAM_ID, "Full", FULL, output_format="audio"),
+            routine_subentry(
+                "r_sam_night",
+                SAM_ID,
+                "Night",
+                ["weather", "closing"],
+                output_format="audio",
+                voice_changes=[{"segment": "weather", "personas": ["arthur"]}],
+            ),
+        ],
+    )
+
+
+async def test_prebuild_builds_each_voice_once(sam_with_voice_change: Harness) -> None:
+    """Shared segments are built once; a voice change adds only its variant."""
+    h = sam_with_voice_change
+    await briefing.async_prebuild(h.hass, h.entry, person=h.person(SAM_ID))
+    assert h.builder.calls == [[*FULL, "weather--arthur"]]
+
+
+async def test_ready_segments_name_segment_types_not_voices(
+    sam_with_voice_change: Harness,
+) -> None:
+    h = sam_with_voice_change
+    await briefing.async_prebuild(h.hass, h.entry, person=h.person(SAM_ID))
+    state = h.hass.states.get("sensor.cast_studio_sam_night")
+    assert state.attributes["ready_segments"] == ["weather", "closing"]
+
+
+async def test_refresh_rebuilds_every_voice_of_a_dynamic_segment(
+    sam_with_voice_change: Harness,
+) -> None:
+    h = sam_with_voice_change
+    await h.refresh(person=SAM_ID)
+    assert len(h.builder.calls) == 1
+    assert set(h.builder.calls[0]) == {"weather", "commute", "weather--arthur"}
+
+
+async def test_play_with_voice_change_plays_its_variant(
+    sam_with_voice_change: Harness,
+) -> None:
+    h = sam_with_voice_change
+    await h.play("Night")
+    assert h.builder.calls == [["weather--arthur", "closing"]]
+
+
 async def test_prebuild_person_builds_union_of_routines(
     sam_quick_and_full: Harness,
 ) -> None:
@@ -1315,6 +1442,38 @@ async def test_switch_audio_to_visual_rebuilds_segments_with_clips(
     assert _media_id(h.played[0]).endswith("play_quick.mp4")
     state = hass.states.get("sensor.cast_studio_alex_quick")
     assert state.attributes["ready_segments"] == QUICK
+
+
+def _record_states(h: Harness, entity_id: str) -> list[str]:
+    states: list[str] = []
+
+    @callback
+    def _changed(event: Any) -> None:
+        if event.data["entity_id"] == entity_id and event.data["new_state"]:
+            states.append(event.data["new_state"].state)
+
+    h.hass.bus.async_listen("state_changed", _changed)
+    return states
+
+
+async def test_play_of_a_built_routine_skips_generating(sam_quick: Harness) -> None:
+    h = sam_quick
+    await h.prebuild("Quick")
+    states = _record_states(h, "sensor.cast_studio_sam_quick")
+
+    await h.play("Quick")
+
+    assert "generating" not in states
+    assert "playing" in states
+
+
+async def test_play_shows_generating_while_it_builds(sam_quick: Harness) -> None:
+    h = sam_quick
+    states = _record_states(h, "sensor.cast_studio_sam_quick")
+
+    await h.play("Quick")
+
+    assert states.index("generating") < states.index("playing")
 
 
 async def test_prebuild_does_not_flip_a_playing_routine(sam_quick: Harness) -> None:
@@ -1821,17 +1980,79 @@ async def test_refresh_segments_limits_the_rebuild_to_chosen_types(
     assert h.builder.calls == [["weather"]]
 
 
-async def test_refresh_segments_rejects_a_non_dynamic_type(sam_full: Harness) -> None:
+async def test_refresh_segments_accepts_any_segment_type(sam_full: Harness) -> None:
+    h = sam_full
+    await briefing.async_refresh(
+        h.hass, h.entry, routine=h.routine("Full"), segments=["scripture"]
+    )
+    assert h.builder.calls == [["scripture"]]
+
+
+async def test_refresh_segments_rejects_an_unknown_type(sam_full: Harness) -> None:
     h = sam_full
     with pytest.raises(
-        HomeAssistantError,
-        match=r"segments: 'agenda' is not a dynamic segment type; "
-        r"choose from: commute, weather",
+        HomeAssistantError, match=r"segments: 'bogus' is not a segment type"
     ):
         await briefing.async_refresh(
-            h.hass, h.entry, routine=h.routine("Full"), segments=["weather", "agenda"]
+            h.hass, h.entry, routine=h.routine("Full"), segments=["weather", "bogus"]
         )
     assert h.builder.calls == []
+
+
+@pytest.fixture
+async def sam_refreshing_scripture(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    freezer: FrozenDateTimeFactory,
+    request: Any,
+    patched: None,
+) -> Harness:
+    return await _harness(
+        hass,
+        tmp_path,
+        freezer,
+        request,
+        [
+            _sam(),
+            routine_subentry(
+                "r_sam_full",
+                SAM_ID,
+                "Full",
+                FULL,
+                output_format="audio",
+                refresh_segments=["weather", "scripture"],
+            ),
+            routine_subentry(
+                "r_sam_quick", SAM_ID, "Quick", QUICK, output_format="audio"
+            ),
+        ],
+    )
+
+
+async def test_refresh_uses_the_routines_own_list(
+    sam_refreshing_scripture: Harness,
+) -> None:
+    h = sam_refreshing_scripture
+    await h.refresh("Full")
+    assert h.builder.calls == [["weather", "scripture"]]
+
+
+async def test_person_refresh_covers_every_routines_list_once(
+    sam_refreshing_scripture: Harness,
+) -> None:
+    h = sam_refreshing_scripture
+    await h.refresh(person=SAM_ID)
+    assert len(h.builder.calls) == 1
+    assert sorted(h.builder.calls[0]) == ["scripture", "weather"]
+
+
+async def test_routine_sensor_lists_its_refresh_segments(
+    sam_refreshing_scripture: Harness,
+) -> None:
+    h = sam_refreshing_scripture
+    await h.prebuild("Full")
+    state = h.hass.states.get("sensor.cast_studio_sam_full")
+    assert state.attributes["dynamic_segments"] == ["weather", "scripture"]
 
 
 async def test_refresh_segments_not_in_the_routine_refreshes_nothing(

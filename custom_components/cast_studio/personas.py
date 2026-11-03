@@ -1,5 +1,5 @@
 """
-Built-in personas: who hosts the briefing and who reads it.
+Built-in personas: who speaks a person's briefings.
 
 A persona shapes both the words and the sound of the segments it speaks. Its
 ``character`` goes to the writer as the step's voice personality, and its
@@ -22,8 +22,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import date
 
-ROLE_HOST = "host"
-ROLE_READER = "reader"
+# Who speaks when a person picks no voice.
+DEFAULT_VOICE_PERSONA = "default_host"
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,8 @@ class Persona:
 
     persona_id: str
     name: str
-    roles: frozenset[str]
+    # One line shown beside the name in the settings dropdown.
+    summary: str
     character: str
     gemini_voice: str
     delivery: str
@@ -49,15 +50,11 @@ def _profile(title: str, style: str, pacing: str) -> str:
     )
 
 
-HOST = frozenset({ROLE_HOST})
-READER = frozenset({ROLE_READER})
-BOTH = frozenset({ROLE_HOST, ROLE_READER})
-
 PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="default_host",
-        name="Default Host",
-        roles=HOST,
+        name="News Anchor",
+        summary="Polished, clear and steady on air",
         character="news_anchor",
         gemini_voice=DEFAULT_HOST_VOICE,
         delivery=PERSONALITY_PROMPTS["news_anchor"],
@@ -65,8 +62,8 @@ PERSONAS: tuple[Persona, ...] = (
     ),
     Persona(
         persona_id="default_reader",
-        name="Default Reader",
-        roles=READER,
+        name="Life Coach",
+        summary="Calm, warm and encouraging",
         character="life_coach",
         gemini_voice=DEFAULT_SCRIPTURE_VOICE,
         delivery=PERSONALITY_PROMPTS["life_coach"],
@@ -75,7 +72,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="elena",
         name="Elena",
-        roles=BOTH,
+        summary="Warm Saint Lucian friend, calm and unhurried",
         character=(
             "A warm, grounded, hard-working young woman from Saint Lucia who "
             "looks out for the listener like a close friend. Calm, affectionate "
@@ -98,7 +95,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="malenfant",
         name="Malenfant",
-        roles=READER,
+        summary="Deep-voiced pastoral mentor, slow and earnest",
         character=(
             "A mature, warm and dignified mentor who speaks like a calm, "
             "thoughtful pastor addressing friends: earnest, sincere and "
@@ -122,7 +119,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="della",
         name="Della",
-        roles=BOTH,
+        summary="Joyful Southern auntie, soothing and homey",
         character=(
             "A joyful Southern woman in her forties with a big, gentle heart who "
             "talks like a loving auntie: soothing, encouraging and full of "
@@ -145,7 +142,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="cole",
         name="Cole",
-        roles=HOST,
+        summary="Smooth, classy Brooklyn gentleman with dry wit",
         character=(
             "A well-educated, well-read man in his thirties from Brooklyn with "
             "style, class and quiet confidence: smooth, composed and emotionally "
@@ -167,7 +164,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="arthur",
         name="Arthur",
-        roles=HOST,
+        summary="Polite British butler with a bone-dry wit",
         character=(
             "A crisp, impeccably polite British butler: precise, unflappable "
             "and quietly devoted, with a bone-dry wit. Delivers news with "
@@ -186,7 +183,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="theo",
         name="Theo",
-        roles=HOST,
+        summary="Upbeat morning-radio host, bright and playful",
         character=(
             "An upbeat morning-radio host who loves getting people going: "
             "bright, playful and genuinely excited about the day, with "
@@ -205,7 +202,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="nana_rose",
         name="Nana Rose",
-        roles=BOTH,
+        summary="Gentle, patient grandmother",
         character=(
             "A gentle, loving grandmother who has all the time in the world: "
             "tender, patient and reassuring, with soft encouragement and a "
@@ -224,7 +221,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="sage",
         name="Sage",
-        roles=READER,
+        summary="Calm meditation guide, slow and spacious",
         character=(
             "A calm meditation guide who invites the listener to slow down and "
             "breathe: peaceful, spacious and kind, speaking in simple, "
@@ -243,7 +240,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="ray",
         name="Ray",
-        roles=HOST,
+        summary="Brisk news and traffic anchor, facts first",
         character=(
             "A no-nonsense news and traffic anchor: facts first, brisk and "
             "clear, friendly but efficient. Gives the essentials in plain "
@@ -261,7 +258,7 @@ PERSONAS: tuple[Persona, ...] = (
     Persona(
         persona_id="pip",
         name="Pip",
-        roles=HOST,
+        summary="Playful, kind guide for children",
         character=(
             "A playful, kind guide for children: cheerful, encouraging and "
             "silly in a gentle way, using simple words and short sentences a "
@@ -286,34 +283,23 @@ def get_persona(persona_id: str) -> Persona | None:
     return _BY_ID.get(persona_id)
 
 
-def personas_for_role(role: str) -> list[Persona]:
-    """Return the personas suited to a role, in catalog order."""
-    return [persona for persona in PERSONAS if role in persona.roles]
-
-
 def pick_persona(
     persona_ids: Sequence[str] | None,
-    role: str,
     person_id: str,
     day: date,
 ) -> Persona | None:
     """
-    Pick one of a person's chosen personas for a role on a briefing day.
+    Pick one of the chosen personas for a briefing day.
 
-    Unknown ids and personas not suited to the role are skipped; None means
-    the role keeps today's voice and style. With several choices the pick is
-    random but stable for the person, role and day, so every segment and
-    rebuild that day uses the same speaker.
+    Unknown ids are skipped; None means none of them exists. With several
+    choices the pick is random but depends only on the person, the day and
+    the set of personas, so every place that lists the same personas (the
+    person's voice or a routine's voice change) gets the same speaker that
+    day.
     """
-    valid = sorted(
-        {
-            persona_id
-            for persona_id in persona_ids or ()
-            if (persona := _BY_ID.get(persona_id)) and role in persona.roles
-        }
-    )
+    valid = sorted({pid for pid in persona_ids or () if pid in _BY_ID})
     if not valid:
         return None
-    seed = f"{person_id}:{role}:{day.isoformat()}".encode()
+    seed = f"{person_id}:{day.isoformat()}:{','.join(valid)}".encode()
     index = int(hashlib.sha256(seed).hexdigest(), 16) % len(valid)
     return _BY_ID[valid[index]]

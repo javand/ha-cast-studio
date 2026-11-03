@@ -53,6 +53,7 @@ from .orchestrator import (
     is_cast_player,
 )
 from .people import (
+    SEGMENT_TYPES,
     briefing_day,
     get_people,
     get_routines,
@@ -66,8 +67,10 @@ from .segments import (
     StoredSegment,
     async_build_segments,
     dynamic_segment_types,
+    mark_superseded,
     routine_segment_keys,
     segment_type_of,
+    unvoiced_key,
     versioned_path,
 )
 from .sensor import (
@@ -77,7 +80,7 @@ from .sensor import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Collection, Iterable
+    from collections.abc import AsyncIterator, Callable, Collection, Iterable
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -264,12 +267,17 @@ def _person_has_visual_routine(entry: ConfigEntry, person: Person) -> bool:
     return any(_is_visual(r) for r in get_routines(entry, person.person_id))
 
 
+def _keys(person: Person, routine: Routine, now: datetime) -> list[str]:
+    """Return the routine's segment keys for the person's briefing day at ``now``."""
+    return routine_segment_keys(person, routine, briefing_day(person, now))
+
+
 def _ready_keys(
     store: SegmentStore, person: Person, routine: Routine, now: datetime
 ) -> list[str]:
     return [
         key
-        for key in routine_segment_keys(routine)
+        for key in _keys(person, routine, now)
         if _usable_segment(store, person, key, now, visual=_is_visual(routine))
         is not None
     ]
@@ -283,12 +291,33 @@ def _set_sensor(  # noqa: PLR0913
     routine: Routine,
     now: datetime,
 ) -> None:
-    sensor.set_briefing_state(
-        state,
-        briefing_day=briefing_day(person, now).isoformat(),
-        ready_segments=_ready_keys(store, person, routine, now),
-        dynamic_segments=dynamic_segment_types(routine),
-    )
+    sensor.set_briefing_state(state, **_readiness(store, person, routine, now))
+
+
+def _readiness(
+    store: SegmentStore, person: Person, routine: Routine, now: datetime
+) -> dict[str, Any]:
+    return {
+        "briefing_day": briefing_day(person, now).isoformat(),
+        "ready_segments": [
+            unvoiced_key(key) for key in _ready_keys(store, person, routine, now)
+        ],
+        "dynamic_segments": dynamic_segment_types(routine),
+    }
+
+
+def prime_sensor(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    sensor: CastStudioBriefingSensor,
+    person: Person,
+    routine: Routine,
+) -> None:
+    """Give a new sensor its readiness before its first state is written."""
+    store = _store(hass, entry)
+    now = dt_util.now()
+    readiness = _readiness(store, person, routine, now)
+    sensor.prime("ready" if readiness["ready_segments"] else "idle", **readiness)
 
 
 def _person_of(entry: ConfigEntry, routine: Routine) -> Person:
@@ -395,7 +424,7 @@ async def _async_store_routine_media(  # noqa: PLR0913
     """Stitch a visual routine's fresh clips or audio into its pre-built file."""
     segments = [
         segment
-        for key in routine_segment_keys(routine)
+        for key in _keys(person, routine, now)
         if (segment := _usable_segment(store, person, key, now, visual=True))
         is not None
     ]
@@ -414,9 +443,16 @@ async def _async_store_routine_media(  # noqa: PLR0913
         "duration": sum(segment.duration for segment in segments),
         "segments": _segments_signature(segments),
     }
+    previous = await async_run_in_executor(hass, _read_json, base.with_suffix(".json"))
     await async_run_in_executor(
         hass, write_json_atomic, base.with_suffix(".json"), payload
     )
+    if previous is not None:
+        await async_run_in_executor(
+            hass,
+            mark_superseded,
+            _routine_media_file(base, previous, video=video),
+        )
 
 
 async def _async_store_visual_routines(
@@ -538,7 +574,7 @@ async def _async_build_and_store(  # noqa: PLR0913
                 key
                 for r in get_routines(entry, person.person_id)
                 if _is_visual(r)
-                for key in routine_segment_keys(r)
+                for key in _keys(person, r, now)
             } & set(keys)
             results = await async_build_segments(
                 hass,
@@ -611,7 +647,8 @@ async def async_prebuild(
     too, so a plain play needs no stitching (spec §5.3).
     """
     person, routines = _target(entry, routine, person, "async_prebuild")
-    keys = list(dict.fromkeys(key for r in routines for key in routine_segment_keys(r)))
+    now = dt_util.now()
+    keys = list(dict.fromkeys(key for r in routines for key in _keys(person, r, now)))
     results = await _async_build_and_store(
         hass, entry, person, routines, keys, source="prebuild"
     )
@@ -635,23 +672,24 @@ def is_refreshing(hass: HomeAssistant, person_id: str) -> bool:
     return person_id in _refreshing(hass)
 
 
-def _dynamic_keys(routine: Routine, types: Collection[str]) -> list[str]:
+def _dynamic_keys(
+    person: Person, routine: Routine, types: Collection[str] | None, now: datetime
+) -> list[str]:
+    """Return the routine's keys to refresh: ``types``, or its own list."""
+    wanted = dynamic_segment_types(routine) if types is None else types
     return [
-        key for key in routine_segment_keys(routine) if segment_type_of(key) in types
+        key for key in _keys(person, routine, now) if segment_type_of(key) in wanted
     ]
 
 
-def _refresh_types(segments: Iterable[str] | None) -> frozenset[str]:
-    """Return the dynamic types to refresh; raise on a type that is not one."""
+def _refresh_types(segments: Iterable[str] | None) -> frozenset[str] | None:
+    """Return the types asked for (None: each routine's list); raise on unknown."""
     if segments is None:
-        return DYNAMIC_SEGMENT_TYPES
+        return None
     for segment in segments:
-        if segment not in DYNAMIC_SEGMENT_TYPES:
-            allowed = ", ".join(sorted(DYNAMIC_SEGMENT_TYPES))
-            msg = (
-                f"segments: '{segment}' is not a dynamic segment type; "
-                f"choose from: {allowed}"
-            )
+        if segment not in SEGMENT_TYPES:
+            allowed = ", ".join(SEGMENT_TYPES)
+            msg = f"segments: '{segment}' is not a segment type; choose from: {allowed}"
             raise HomeAssistantError(msg)
     return frozenset(segments)
 
@@ -675,11 +713,16 @@ async def async_refresh(
     """
     person, routines = _target(entry, routine, person, "async_refresh")
     types = _refresh_types(segments)
-    routines = [r for r in routines if _dynamic_keys(r, types)]
-    keys = list(dict.fromkeys(key for r in routines for key in _dynamic_keys(r, types)))
+    now = dt_util.now()
+    routines = [r for r in routines if _dynamic_keys(person, r, types, now)]
+    keys = list(
+        dict.fromkeys(
+            key for r in routines for key in _dynamic_keys(person, r, types, now)
+        )
+    )
     if not keys:
         LOGGER.info(
-            "Nothing to refresh for %s: no weather or commute segment", person.name
+            "Nothing to refresh for %s: no segments set to refresh", person.name
         )
         return
     started = time.monotonic()
@@ -762,12 +805,20 @@ def _resolve_target(hass: HomeAssistant, person: Person, target: str | None) -> 
 
 
 def _dashboard_actions(
-    hass: HomeAssistant, person: Person, routine: Routine
+    hass: HomeAssistant, person: Person, routine: Routine, player: str
 ) -> list[dict[str, Any]]:
-    """Return the post-briefing dashboard action, if one applies (spec §5.3a)."""
+    """
+    Return the post-briefing dashboard action, if one applies (spec §5.3a).
+
+    Played on a screen other than the person's output device (Play on, or a
+    play target), the dashboard follows it: that is where someone is watching.
+    """
     if not routine.dashboard_path:
         return []
-    display = routine.dashboard_display or person.media_player
+    if player != person.media_player and has_screen(hass, player):
+        display = player
+    else:
+        display = routine.dashboard_display or person.media_player
     if not display or not is_cast_player(hass, display):
         LOGGER.warning(
             "Skipping post-briefing dashboard for %s's '%s': %s is not a Cast display",
@@ -795,9 +846,13 @@ async def _async_segments_to_play(  # noqa: PLR0913
     *,
     visual: bool,
     build_dynamic: bool = True,
+    on_build: Callable[[], None] | None = None,
 ) -> list[StoredSegment]:
     """
     Return fresh segments for ``keys``, building missing ones live.
+
+    ``on_build`` is called just before a build starts, so a play shows
+    "generating" only while it really builds.
 
     Without ``build_dynamic``, missing ``DYNAMIC_SEGMENT_TYPES`` are not built
     (a refresh is building them). Keys that still have no fresh segment are
@@ -810,6 +865,8 @@ async def _async_segments_to_play(  # noqa: PLR0913
         and (build_dynamic or segment_type_of(key) not in DYNAMIC_SEGMENT_TYPES)
     ]
     if missing:
+        if on_build is not None:
+            on_build()
         creds = await async_discover_ai_credentials(hass)
         await async_build_segments(
             hass,
@@ -840,16 +897,19 @@ async def _async_segments_to_play(  # noqa: PLR0913
     return segments
 
 
-async def _async_all_heard(
+async def _async_all_heard(  # noqa: PLR0913
     hass: HomeAssistant,
     store: SegmentStore,
     person: Person,
     now: datetime,
     *,
     visual: bool,
+    on_build: Callable[[], None] | None = None,
 ) -> _Media:
     clip = store.all_heard_clip(person)
     if clip is None or clip.built_day != briefing_day(person, now):
+        if on_build is not None:
+            on_build()
         creds = await async_discover_ai_credentials(hass)
         await async_build_segments(
             hass,
@@ -998,15 +1058,17 @@ async def async_play(  # noqa: PLR0913
             await store.async_load(person, now)
             # Video only for a visual routine on a device with a screen.
             video = _is_visual(routine) and has_screen(hass, player)
-            all_keys = routine_segment_keys(routine)
+            all_keys = _keys(person, routine, now)
             keys = all_keys
             if skip_played:
                 heard = history.played(person, routine, now)
                 keys = [key for key in all_keys if segment_type_of(key) not in heard]
 
+            def _generating() -> None:
+                sensor.set_briefing_state("generating")
+
             segments: list[StoredSegment] = []
             if keys:
-                sensor.set_briefing_state("generating")
                 segments = await _async_segments_to_play(
                     hass,
                     store,
@@ -1016,6 +1078,7 @@ async def async_play(  # noqa: PLR0913
                     now,
                     visual=video,
                     build_dynamic=locked,
+                    on_build=_generating,
                 )
                 media = None
                 if _is_visual(routine) and keys == all_keys:
@@ -1027,7 +1090,9 @@ async def async_play(  # noqa: PLR0913
                         hass, store, person, routine, segments, now, visual=video
                     )
             else:
-                media = await _async_all_heard(hass, store, person, now, visual=video)
+                media = await _async_all_heard(
+                    hass, store, person, now, visual=video, on_build=_generating
+                )
 
             metadata: dict[str, Any] = {
                 ("video_path" if media.is_video else "audio_path"): media.path,
@@ -1036,7 +1101,7 @@ async def async_play(  # noqa: PLR0913
             if volume is not None:
                 metadata["volume_level"] = volume
             release_player: str | None = None
-            if actions := _dashboard_actions(hass, person, routine):
+            if actions := _dashboard_actions(hass, person, routine, player):
                 metadata["post_routine_actions"] = actions
             elif is_cast_player(hass, player):
                 # No dashboard to show: leave the cast screen when done.

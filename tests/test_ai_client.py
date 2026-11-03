@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -880,3 +881,91 @@ async def test_generate_ai_image_passes_reference_images(tmp_path: Path) -> None
         )
     assert query.call_args.kwargs["images"] == [("image/png", b"x")]
     assert query.call_args.kwargs["aspect_ratio"] == "16:9"
+
+
+def _hass_with_entries(entries: dict[str, list[Any]]) -> MagicMock:
+    hass = MagicMock()
+    hass.config_entries.async_entries.side_effect = lambda domain=None: entries.get(
+        domain, []
+    )
+    return hass
+
+
+def _entry(data: dict[str, Any], options: dict[str, Any] | None = None) -> MagicMock:
+    entry = MagicMock()
+    entry.data = data
+    entry.options = options or {}
+    entry.disabled_by = None
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_credentials_carry_the_configured_models() -> None:
+    """Models come from CastStudio's options even with a reused Gemini key."""
+    hass = _hass_with_entries(
+        {
+            DOMAIN: [
+                _entry(
+                    {"text_model": "gemini-old"},
+                    {
+                        "text_model": "gemini-3.5-flash",
+                        "image_model": "gemini-img",
+                        "voice_model": "gemini-tts",
+                    },
+                )
+            ],
+            "google_generative_ai": [_entry({"api_key": "k"})],
+        }
+    )
+    creds = await async_discover_ai_credentials(hass)
+    assert creds["api_key"] == "k"
+    assert creds["text_model"] == "gemini-3.5-flash"
+    assert creds["image_model"] == "gemini-img"
+    assert creds["voice_model"] == "gemini-tts"
+
+
+@pytest.mark.asyncio
+async def test_credentials_default_models() -> None:
+    hass = _hass_with_entries({DOMAIN: [_entry({"api_key": "k"})]})
+    creds = await async_discover_ai_credentials(hass)
+    assert creds["text_model"] == "gemini-2.5-flash"
+    assert creds["image_model"] == "gemini-2.5-flash-image"
+    assert creds["voice_model"] == "gemini-3.8-flash-lite-tts"
+
+
+@pytest.mark.asyncio
+async def test_writing_uses_the_configured_model() -> None:
+    with patch(
+        "custom_components.cast_studio.ai_client._query_gemini_structured",
+        new=AsyncMock(return_value={"visual_card": {}, "narration_script": "Hi"}),
+    ) as query:
+        await async_generate_step_content(
+            MagicMock(),
+            {"name": "fun_fact", "type": "fun_fact"},
+            {"name": "Sam"},
+            creds={
+                "platform": "gemini",
+                "api_key": "k",
+                "text_model": "gemini-3.5-flash",
+            },
+        )
+    assert query.await_args.kwargs["model"] == "gemini-3.5-flash"
+
+
+@pytest.mark.asyncio
+async def test_images_use_the_configured_model(tmp_path: Path) -> None:
+    from custom_components.cast_studio.ai_client import (
+        async_generate_ai_image,
+    )
+
+    with patch(
+        "custom_components.cast_studio.ai_client._query_gemini_image_api",
+        new=AsyncMock(return_value={"candidates": []}),
+    ) as query:
+        await async_generate_ai_image(
+            MagicMock(),
+            "a sunrise",
+            str(tmp_path / "x.png"),
+            {"platform": "gemini", "api_key": "k", "image_model": "gemini-img"},
+        )
+    assert query.await_args.kwargs["model"] == "gemini-img"

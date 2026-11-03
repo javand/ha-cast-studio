@@ -56,7 +56,7 @@ Instead of a plain text-to-speech readout, each person in the house gets their o
 - **Multiple Calendars and To-do Lists:** The agenda merges any number of calendars (personal, Family, work) into one timeline, then moves on to the tasks from any number of to-do lists. The narration says "your calendar" and "your to-do list" and never reads out a calendar's or list's name.
 - **Daily Encouragement:** With a daily text it gives 2 practical takeaways in plain language; with none, a short general good-day remark. It is drawn locally as a frosted card on a dawn gradient.
 - **Selective Dynamic AI Backgrounds:** AI images are generated only for `greeting`, `fun_fact` (illustrating the fact), `national_day` (the day's observance) and `closing` (themed to the weekday and season). Other slides use bundled artwork or local renderers, and a failed image falls back to bundled art.
-- **Dual-Voice TTS & Style Conditioning:** Separate host and scripture voices (e.g. `Pulcherrima` and `Enceladus`) and delivery personalities (e.g. `news_anchor`, `life_coach`, `calm_reassuring`) per person.
+- **Personas & Voice Changes:** One voice per person (or a daily rotation), with any segment of a routine voiced by a different persona.
 - **Strict Identity Contract:** Slides show the real name ("Alex"); the phonetic spelling ("Al-ex") and each person's pronunciation list only change what is spoken.
 - **Display Wake-Up & Audio Safety:** Turns the target display on, unmutes it and sets the volume before playback, so a briefing is never silent.
 - **Dashboard Hand-Off or Release:** A routine can show a Lovelace dashboard on the display when it finishes; without one, the Cast display is turned off and returns to its home screen.
@@ -82,28 +82,32 @@ Use **Add person** on the CastStudio entry. Fields:
 | Daily reset time | When the person's briefing day starts (default 03:00). Anything built or played before it counts as the previous day. |
 | Maximum content age (minutes) | Stored content older than this is rebuilt before it plays. `0` (default) turns the age check off. |
 
-The **Advanced** section holds the entities and voices used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; host and scripture voices and personalities; conversation agent; greeting title, subtitle and image; and the person's **Pronunciations** list.
+The **Advanced** section holds the entities used to build segments: weather, calendars, to-do and daily text entities; the commute drive-time and transit-time sensors; **Fallback AI** (the Home Assistant assistant that writes the briefing if Gemini isn't set up or fails); the greeting title, subtitle and image; and the person's **Pronunciations** list. Each field says what it does and what leaving it empty means. **Greeting image** is an image picker: choose a picture from your media or upload one, and it replaces the daily AI-generated greeting background.
 
 **Daily text** lists JW Library daily text sensors and text helpers; use a text helper to feed in any other source. **Fun fact** and **National Day** need no entity: the AI writes them from today's date.
 
 **Calendars** takes any number of calendars, for example a personal calendar and a shared Family calendar. The agenda merges their events into one timeline, and the narration calls them all "your calendar". **To-do lists** works the same way, for example your own list plus a Chores list. A person saved with a single calendar or to-do list keeps it.
 
-**Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. In **Advanced**, pick **Host personas** for the greeting, weather, agenda, commute, fun fact and closing, and **Reader personas** for the daily text and daily encouragement. Each picker lists only the personas suited to that role. Pick one to always hear it, or several to get one at random each briefing day; every part of that day's briefing keeps the same speaker. Leave a picker empty to keep the host or scripture voice and personality fields, exactly as before.
+**Personas.** CastStudio ships a cast of speakers. Each one shapes both the voice and the wording of the parts it speaks, but never names itself. Any persona can speak any segment. Each dropdown option shows the persona's name and a one-line summary.
 
-| Persona | Roles | Character |
-| :--- | :--- | :--- |
-| Default Host | Host | The original clear, friendly news-anchor host |
-| Default Reader | Reader | The original calm, warm life-coach reader |
-| Elena | Host, Reader | Warm, grounded young Saint Lucian woman |
-| Malenfant | Reader | Mature, pastoral mentor |
-| Della | Host, Reader | Joyful, soothing Southern auntie |
-| Cole | Host | Cultured, composed Brooklyn gentleman |
-| Arthur | Host | Crisp British butler with a dry wit |
-| Theo | Host | Upbeat morning-radio host |
-| Nana Rose | Host, Reader | Gentle, unhurried grandmother |
-| Sage | Reader | Calm meditation guide |
-| Ray | Host | No-nonsense news and traffic anchor |
-| Pip | Host | Playful, kid-friendly guide |
+**Voice.** On the person form, **Voice** picks who speaks every segment of that person's routines. Pick one to always hear it, or several to get a different one each briefing day; every segment that day keeps the same speaker. With nothing picked, the form shows **News Anchor**, the voice used when the picker is empty.
+
+**Voice changes.** A routine can give individual segments a different voice. In the routine's **Advanced** section, add a row to **Voice changes**, pick one of the routine's segments and one or more personas (several rotate daily, like the person's voice). Segments not listed use the person's voice. A segment voiced by a different persona is written in that persona's character, so it is built separately from the person-voice copy other routines share. The daily text is always read word for word; a persona only changes how it sounds. When editing a routine, the segment list shows the segments the routine had when the form opened: add a segment, save, then edit again to give it a voice change. Removing a segment from a routine drops its voice change.
+
+| Persona | Style | Voice |
+|---|---|---|
+| News Anchor | Polished, clear and steady on air | Pulcherrima |
+| Life Coach | Calm, warm and encouraging | Enceladus |
+| Elena | Warm Saint Lucian friend, calm and unhurried | Kore |
+| Malenfant | Deep-voiced pastoral mentor, slow and earnest | Charon |
+| Della | Joyful Southern auntie, soothing and homey | Kore |
+| Cole | Smooth, classy Brooklyn gentleman with dry wit | Charon |
+| Arthur | Polite British butler with a bone-dry wit | Iapetus |
+| Theo | Upbeat morning-radio host, bright and playful | Puck |
+| Nana Rose | Gentle, patient grandmother | Sulafat |
+| Sage | Calm meditation guide, slow and spacious | Achernar |
+| Ray | Brisk news and traffic anchor, facts first | Alnilam |
+| Pip | Playful, kind guide for children | Leda |
 
 A persona change takes effect on the next pre-build or briefing day.
 
@@ -116,18 +120,19 @@ Use **Add routine**: pick the person, a routine name (unique for that person) an
 
 Pick an **Output format** for the routine. **Visual** (the default) builds slides and video. It plays the video on a device with a screen (a Nest Hub, Chromecast or Google TV) and the audio on a speaker, so one routine can serve both, for example a bathroom routine that your automation sends to whichever room you walk into. **Audio** builds sound only, with no slides or video, for routines that only ever play on speakers, such as a night-time routine. A Cast group always gets audio. A player whose model isn't reported counts as a screen when its name contains "display".
 
-Optionally pick a **Dashboard to show afterwards** and a **Dashboard display**: the dropdown lists every dashboard and its views (for example "Nest Display › Morning"), and the chosen view is shown on a Cast display (`cast.show_lovelace_view`) when the briefing finishes. You can also type a path such as `dashboard-home/morning`. The **Dashboard display** picker lists only Google Cast players, because only Cast can show a dashboard. It defaults to the person's output device, which must also be a Cast player (a Squeezebox or other non-Cast player cannot show a dashboard); otherwise the dashboard is skipped with a warning, so set a Cast display when the routine plays on another kind of player. Without a dashboard, a Cast player is turned off once it finishes the briefing, so a display leaves the cast screen and returns to its home screen; it is left alone if it is still playing something a minute later.
+Optionally pick a **Dashboard to show afterwards** and a **Dashboard display**: the dropdown lists every dashboard and its views (for example "Nest Display › Morning"), and the chosen view is shown on a Cast display (`cast.show_lovelace_view`) when the briefing finishes. You can also type a path such as `dashboard-home/morning`. The **Dashboard display** picker lists only Google Cast players, because only Cast can show a dashboard. It defaults to the person's output device, which must also be a Cast player (a Squeezebox or other non-Cast player cannot show a dashboard); otherwise the dashboard is skipped with a warning, so set a Cast display when the routine plays on another kind of player. When you play the routine on a different screen with **Play on** (or a play `target`), the dashboard shows on that screen instead; playing on a speaker keeps it on the **Dashboard display**. Without a dashboard, a Cast player is turned off once it finishes the briefing, so a display leaves the cast screen and returns to its home screen; it is left alone if it is still playing something a minute later.
 
-Each routine gets a status sensor named `sensor.cast_studio_<person>_<routine>` (states `idle`, `generating`, `ready`, `playing`, `error`). Routines added later work at once; their sensor may appear only after the first play or prebuild, or after the next integration reload.
+Each routine gets a status sensor named `sensor.cast_studio_<person>_<routine>` (states `idle`, `generating`, `ready`, `playing`, `error`). A play shows `generating` only while it builds missing or stale segments; a routine that is already built goes straight from `ready` to `playing`. Routines added later work at once; their sensor may appear only after the first play or prebuild, or after the next integration reload.
 
 Each routine also has a device page, named like its row in the CastStudio list, for trying it out. Open it from **Settings → Devices & services → CastStudio**:
 
 | Control | Entity | What it does |
 |---|---|---|
-| **Play** | `button.cast_studio_play_<person>_<routine>` | Plays the routine on the player shown in **Play on**. |
-| **Rebuild** | `button.cast_studio_rebuild_<person>_<routine>` | Builds the routine's segments again and plays nothing. |
-| **Regenerate and play** | `button.cast_studio_regenerate_and_play_<person>_<routine>` | Rebuilds, then plays, in one press. |
-| **Play on** | `select.cast_studio_play_on_<person>_<routine>` | The player the two play buttons use. It starts at the person's output device; pick another to test on it. The choice lasts until the output device changes or Home Assistant restarts. |
+| **Play** | `button.cast_studio_play_<person>_<routine>` | Plays the routine on the player shown in **Play on**, straight away. It uses what is already built and builds only segments that are missing or out of date, so weather and commute are as of their last build. |
+| **Refresh** | `button.cast_studio_refresh_<person>_<routine>` | Rebuilds only the routine's **Refresh segments** (weather and commute unless you chose others in **Advanced**), so they reflect this moment, and plays nothing. The same as the `cast_studio.refresh` action. |
+| **Rebuild** | `button.cast_studio_rebuild_<person>_<routine>` | Builds every segment of the routine again from scratch (new words, images and voice) and plays nothing. Takes a few minutes; the same as the `cast_studio.prebuild` action. |
+| **Rebuild and play** | `button.cast_studio_regenerate_and_play_<person>_<routine>` | Rebuild, then Play, in one press. (Named **Regenerate and play** before 0.7.0; its entity id is unchanged.) |
+| **Play on** | `select.cast_studio_play_on_<person>_<routine>` | The player the two play buttons use. It starts at the person's output device; pick another to test on it. It lists Google Cast speakers and displays plus any player a person or routine already uses (a Squeezebox output device, say); other players, such as Plex apps or receiver zones, and unavailable players are left out. The choice lasts until the output device changes or Home Assistant restarts. |
 
 A failed press shows the reason as an error message. To set a volume, use the `volume` field of `cast_studio.play`.
 
@@ -140,24 +145,24 @@ Builds and stores segments without playing anything. For Visual routines the sti
 | `routine` | no | Routine to pre-build. At least one of `person` or `routine` is required. |
 
 ### `cast_studio.refresh`
-Rebuilds only the **dynamic segments**, weather and commute, so they reflect this moment. Other segments are left as they are, so a refresh is much faster than a prebuild. Call it from your own automation at a moment that predicts the play, for example when you get out of bed. A play started while a refresh is still running waits up to 10 seconds for it, then plays the stored segments. If only one of weather or commute rebuilds, the fresh one is kept and the other keeps its stored copy. During a refresh the commute sensors get at most 5 seconds to update before their last value is used.
+Rebuilds only each routine's **refresh segments** so they reflect this moment: weather and commute unless you choose others under **Refresh segments** in the routine's **Advanced** section (for example Agenda, to pick up a meeting booked after the prebuild). Other segments are left as they are, so a refresh is much faster than a prebuild. Weather and commute mostly re-read sensors and take seconds; any other segment is written again by the AI and takes longer. Call it from your own automation at a moment that predicts the play, for example when you get out of bed. A play started while a refresh is still running waits up to 10 seconds for it, then plays the stored segments; a slower refresh (an agenda rewrite, say) keeps going and the next play gets its result. If only some segments rebuild, the fresh ones are kept and the others keep their stored copies. During a refresh the commute sensors get at most 5 seconds to update before their last value is used.
 
 | Field | Required | Meaning |
 | :--- | :--- | :--- |
-| `person` | no | At least one of `person` or `routine` is required. Alone: refreshes every routine of that person that has a weather or commute segment. With `routine`: picks whose routine is meant. |
-| `routine` | no | Routine whose weather and commute to refresh. At least one of `person` or `routine` is required. |
-| `segments` | no | Only these dynamic segment types are refreshed, for example `[weather]`. Without it, every dynamic type is refreshed. A type that is not dynamic is rejected with an error that lists the allowed ones. |
+| `person` | no | At least one of `person` or `routine` is required. Alone: refreshes the refresh segments of all of that person's routines, each segment once. With `routine`: picks whose routine is meant. |
+| `routine` | no | Routine whose refresh segments to refresh. At least one of `person` or `routine` is required. |
+| `segments` | no | Refresh these segment types instead of the routines' own lists, for example `[weather]` or `[agenda]`. Only types the routine has are rebuilt. An unknown type is rejected with an error that lists the valid ones. |
 
-**Dynamic segment types** are the ones that change through the day:
+**Default refresh segments** are the ones that change through the day:
 
 | Type | Why it is dynamic |
 | :--- | :--- |
 | `weather` | Current conditions, temperature and the chance of rain change through the morning. |
 | `commute` | Travel times change with traffic. |
 
-Each routine's status sensor shows which of its own segments are dynamic in its `dynamic_segments` attribute (for example `[weather, commute]`), so you can see what a refresh of that routine rebuilds.
+Each routine's status sensor shows its refresh segments in its `dynamic_segments` attribute (for example `[weather, commute]`), so you can see what a refresh of that routine rebuilds.
 
-Stored segments belong to the person, not to one routine, so a refresh for one routine also gives the person's other routines the fresh weather and commute. Nothing refreshes on its own schedule: a routine played later in the day (for example a night routine) needs its own `refresh` (or a routine-scoped `prebuild`) at that time. The person's **max age** setting (`max_age_minutes`) is the safety net: a segment older than that is rebuilt when the routine plays.
+Stored segments belong to the person, not to one routine, so a refresh for one routine also gives the person's other routines the fresh copies of those segments. Nothing refreshes on its own schedule: a routine played later in the day (for example a night routine) needs its own `refresh` (or a routine-scoped `prebuild`) at that time. The person's **max age** setting (`max_age_minutes`) is the safety net: a segment older than that is rebuilt when the routine plays.
 
 Every segment build logs how long it took at INFO level (`Built segment 'weather' for Sam in 6.2s (refresh)`), as does each refresh in total and any wait a play had for a refresh.
 
@@ -176,6 +181,9 @@ Plays a routine now from fresh stored segments. Missing or stale segments are bu
 - A person's **briefing day** rolls over at their daily reset time. Stored segments from earlier days are not used, and are removed on the next prebuild.
 - With a **maximum content age**, stored segments older than that are rebuilt before playing.
 - Played segment types are recorded per routine when playback starts. `skip_played: true` relies on that routine's record, which resets with the briefing day.
+
+### Gemini models
+CastStudio's options (**Settings → Devices & services → CastStudio → Configure**) pick the Gemini model for each job: **Writing model** (default `gemini-2.5-flash`), **Image model** (default `gemini-2.5-flash-image`) and **Voice model** (default `gemini-3.8-flash-lite-tts`). Each list offers known models, and you can type any other Gemini model name. Each model has its own daily request limit, so switching the voice model is a way out when one model's quota is used up. A change applies to the next build; run `cast_studio.prebuild` to rebuild today's segments with it.
 
 ### AI account problems
 When Gemini or OpenAI rejects a request because of the account (key rejected, billing or credits, access denied, or quota used up), briefings still play with the fallback voice and text, and CastStudio tells you:

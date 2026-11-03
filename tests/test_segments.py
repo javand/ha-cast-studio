@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 from datetime import date, datetime, time, timedelta
@@ -32,11 +33,14 @@ from custom_components.cast_studio.segments import (
     SegmentStore,
     StoredSegment,
     _all_heard_step,
+    _remove_superseded_day_files,
     async_build_segments,
     build_segment_step,
+    persona_of,
     routine_segment_keys,
     segment_key,
     segment_type_of,
+    unvoiced_key,
 )
 from custom_components.cast_studio.tts_client import _mark_voice_fallback
 
@@ -50,13 +54,17 @@ SAM_SETTINGS = {
     "scripture_entity": "sensor.daily_text",
     "commute_drive_sensor": "sensor.sam_commute_drive",
     "commute_transit_sensor": "sensor.sam_commute_transit",
+    # Removed from the form; a person saved before keeps them, unused.
     "host_voice": "VoiceA",
     "scripture_voice": "VoiceB",
     "host_personality": "calm_host",
     "scripture_personality": "warm_reader",
     "greeting_title": "Morning, Sam",
     "greeting_subtitle": "Rise and shine",
-    "greeting_image": "sam_avatar.png",
+    "greeting_image": {
+        "media_content_id": "media-source://media_source/local/sam.jpg",
+        "media_content_type": "image/jpeg",
+    },
 }
 
 
@@ -77,7 +85,10 @@ def make_person(**overrides: Any) -> Person:
     return Person(**values)
 
 
-def make_routine(segments: tuple[str, ...]) -> Routine:
+def make_routine(
+    segments: tuple[str, ...],
+    voice_changes: tuple[tuple[str, tuple[str, ...]], ...] = (),
+) -> Routine:
     return Routine(
         routine_id="r_sam_full",
         person_id="person_sam",
@@ -86,6 +97,7 @@ def make_routine(segments: tuple[str, ...]) -> Routine:
         dashboard_path=None,
         dashboard_view=None,
         dashboard_display=None,
+        voice_changes=voice_changes,
     )
 
 
@@ -115,17 +127,73 @@ def test_segment_type_of_maps_keys_back_to_types() -> None:
 
 
 def test_routine_segment_keys_drops_signoff_when_closing_present() -> None:
+    person = make_person()
     with_closing = make_routine(("scripture", "daily_encouragement", "closing"))
-    assert routine_segment_keys(with_closing) == [
+    assert routine_segment_keys(person, with_closing, PERSONA_DAY) == [
         "scripture",
         "daily_encouragement_nosignoff",
         "closing",
     ]
     without_closing = make_routine(("scripture", "daily_encouragement"))
-    assert routine_segment_keys(without_closing) == [
+    assert routine_segment_keys(person, without_closing, PERSONA_DAY) == [
         "scripture",
         "daily_encouragement",
     ]
+
+
+def _theo() -> Person:
+    return make_person(settings={**SAM_SETTINGS, "voice_personas": ["theo"]})
+
+
+def test_keys_stay_plain_in_the_person_voice() -> None:
+    routine = make_routine(("weather", "scripture"))
+    assert routine_segment_keys(_theo(), routine, PERSONA_DAY) == [
+        "weather",
+        "scripture",
+    ]
+
+
+def test_voice_change_only_changes_its_segment() -> None:
+    routine = make_routine(("weather", "scripture"), (("scripture", ("malenfant",)),))
+    assert routine_segment_keys(_theo(), routine, PERSONA_DAY) == [
+        "weather",
+        "scripture--malenfant",
+    ]
+
+
+def test_change_equal_to_person_voice_shares_the_key() -> None:
+    """The same personas in any order land on the person's own build."""
+    person = make_person(settings={**SAM_SETTINGS, "voice_personas": ["theo", "ray"]})
+    plain = make_routine(("weather",))
+    changed = make_routine(("weather",), (("weather", ("ray", "theo")),))
+    assert routine_segment_keys(person, changed, PERSONA_DAY) == (
+        routine_segment_keys(person, plain, PERSONA_DAY)
+    )
+
+
+def test_unknown_change_persona_falls_back_to_person_voice() -> None:
+    routine = make_routine(("weather",), (("weather", ("gone_persona",)),))
+    assert routine_segment_keys(_theo(), routine, PERSONA_DAY) == ["weather"]
+
+
+def test_voiced_keys_map_back_to_types_and_personas() -> None:
+    key = "daily_encouragement_nosignoff--nana_rose"
+    assert segment_type_of(key) == "daily_encouragement"
+    assert unvoiced_key(key) == "daily_encouragement_nosignoff"
+    assert persona_of(key) == "nana_rose"
+    assert persona_of("weather") is None
+
+
+def test_build_step_uses_the_key_persona() -> None:
+    person = _theo()
+    step = build_segment_step(person, "scripture--malenfant", PERSONA_DAY)
+    assert (step["voice"], step["type"]) == ("Charon", "scripture")
+    assert build_segment_step(person, "weather--gone", PERSONA_DAY)["voice"] == "Puck"
+    assert build_segment_step(person, "closing", PERSONA_DAY)["voice"] == "Puck"
+    nosignoff = build_segment_step(
+        person, "daily_encouragement_nosignoff--sage", PERSONA_DAY
+    )
+    assert nosignoff["include_signoff"] is False
 
 
 # --- step construction ------------------------------------------------------
@@ -153,13 +221,15 @@ def test_build_segment_step_uses_person_settings_and_name_rule() -> None:
     assert greeting["is_first_step"] is True
     assert greeting["title"] == "Morning, Sam"
     assert greeting["subtitle"] == "Rise and shine"
-    assert greeting["image_path"] == "sam_avatar.png"
+    assert greeting["image_media_id"] == "media-source://media_source/local/sam.jpg"
+    assert "image_path" not in greeting
 
     weather = steps["weather"]
     assert weather["entity_id"] == person.settings["weather_entity"]
     assert "is_first_step" not in weather
-    assert weather["voice"] == "VoiceA"
-    assert weather["voice_personality"] == "calm_host"
+    # Old typed voice fields are ignored: no persona means the default host.
+    assert weather["voice"] == "Pulcherrima"
+    assert weather["voice_personality"] == "news_anchor"
 
     for key, step in steps.items():
         assert step["standalone_segment"] is True, key
@@ -180,8 +250,9 @@ def test_build_segment_step_uses_person_settings_and_name_rule() -> None:
 
     scripture = steps["scripture"]
     assert scripture["entity_id"] == "sensor.daily_text"
-    assert scripture["voice"] == "VoiceB"
-    assert scripture["voice_personality"] == "warm_reader"
+    # One voice for everything: the daily text has no separate reader.
+    assert scripture["voice"] == "Pulcherrima"
+    assert scripture["voice_personality"] == "news_anchor"
 
     assert steps["daily_encouragement"]["include_signoff"] is True
     assert steps["daily_encouragement_nosignoff"]["include_signoff"] is False
@@ -987,77 +1058,203 @@ def _with_settings(**settings: Any) -> Person:
     return make_person(settings=dict(settings))
 
 
-def test_no_personas_keeps_todays_step() -> None:
-    """With no persona picked, the default voices and styles are unchanged."""
-    person = _with_settings()
-    greeting = build_segment_step(person, "greeting", PERSONA_DAY)
-    scripture = build_segment_step(person, "scripture", PERSONA_DAY)
-    assert (greeting["voice"], greeting["voice_personality"]) == (
-        "Pulcherrima",
-        "news_anchor",
-    )
-    assert (scripture["voice"], scripture["voice_personality"]) == (
-        "Enceladus",
-        "life_coach",
-    )
-    assert "voice_profile" not in greeting
-    assert "openai_voice" not in scripture
+def test_no_voice_means_news_anchor() -> None:
+    """With no voice picked, every segment is the News Anchor persona."""
+    anchor = get_persona("default_host")
+    for key in ("greeting", "scripture"):
+        step = build_segment_step(_with_settings(), key, PERSONA_DAY)
+        assert step["voice"] == "Pulcherrima"
+        assert step["voice_personality"] == anchor.character
+        assert step["voice_profile"] == anchor.delivery
 
 
-def test_host_persona_applies_to_host_segments() -> None:
-    """A host persona speaks the host segments and leaves the reading alone."""
-    person = _with_settings(host_personas=["arthur"])
-    arthur = get_persona("arthur")
-    for key in ("greeting", "weather", "closing"):
-        step = build_segment_step(person, key, PERSONA_DAY)
-        assert step["voice"] == "Iapetus"
-        assert step["voice_personality"] == arthur.character
-        assert step["voice_profile"] == arthur.delivery
-        assert step["openai_voice"] == "fable"
-    scripture = build_segment_step(person, "scripture", PERSONA_DAY)
-    assert scripture["voice"] == "Enceladus"
-    assert "voice_profile" not in scripture
+def test_every_segment_uses_the_person_voice() -> None:
+    """One voice for everything: the daily text gets no special reader."""
+    person = _with_settings(voice_personas=["theo"])
+    for key in ("greeting", "weather", "scripture", "daily_encouragement", "closing"):
+        assert build_segment_step(person, key, PERSONA_DAY)["voice"] == "Puck"
 
 
-def test_reader_persona_applies_to_reading_segments() -> None:
-    """A reader persona reads the daily text and the encouragement."""
-    person = _with_settings(reader_personas=["malenfant"])
-    for key in ("scripture", "daily_encouragement"):
-        assert build_segment_step(person, key, PERSONA_DAY)["voice"] == "Charon"
-    assert build_segment_step(person, "greeting", PERSONA_DAY)["voice"] == (
-        "Pulcherrima"
-    )
+def test_legacy_host_persona_becomes_the_voice() -> None:
+    """A host persona saved before the single voice is the person's voice."""
+    person = _with_settings(host_personas=["elena"], reader_personas=["sage"])
+    for key in ("weather", "scripture"):
+        assert build_segment_step(person, key, PERSONA_DAY)["voice"] == "Kore"
 
 
-def test_persona_overrides_advanced_fields() -> None:
-    """A picked persona wins over a typed host voice and personality."""
-    person = _with_settings(
-        host_voice="Zephyr", host_personality="cheerful", host_personas=["theo"]
-    )
+def test_unknown_voice_ids_fall_back_to_news_anchor() -> None:
+    """A persona no longer in the catalog leaves the News Anchor in charge."""
+    person = _with_settings(voice_personas=["gone_persona"])
+    assert build_segment_step(person, "weather", PERSONA_DAY)["voice"] == "Pulcherrima"
+
+
+def test_greeting_image_saved_as_text_is_still_used() -> None:
+    """A greeting image typed before the picker existed keeps working."""
+    person = _with_settings(greeting_image="/local/sam.jpg")
     step = build_segment_step(person, "greeting", PERSONA_DAY)
-    assert step["voice"] == "Puck"
-    assert step["voice_personality"] == get_persona("theo").character
-
-
-def test_unknown_persona_falls_back_to_today() -> None:
-    """A persona no longer in the catalog leaves the typed settings in charge."""
-    person = _with_settings(host_personas=["gone_persona"], host_voice="Zephyr")
-    step = build_segment_step(person, "greeting", PERSONA_DAY)
-    assert step["voice"] == "Zephyr"
-    assert "voice_profile" not in step
+    assert step["image_path"] == "/local/sam.jpg"
+    assert "image_media_id" not in step
 
 
 def test_random_pick_is_stable_for_the_day() -> None:
-    """Every host segment on a day gets the same randomly picked persona."""
-    person = _with_settings(host_personas=["arthur", "theo", "ray"])
+    """Every segment on a day gets the same randomly picked persona."""
+    person = _with_settings(voice_personas=["arthur", "theo", "ray"])
     voices = {
         build_segment_step(person, key, PERSONA_DAY)["voice"]
-        for key in ("greeting", "weather", "agenda", "closing")
+        for key in ("greeting", "weather", "scripture", "closing")
     }
     assert len(voices) == 1
 
 
-def test_all_heard_uses_host_persona() -> None:
-    """The that's-everything clip is spoken by the host persona."""
-    person = _with_settings(host_personas=["arthur"])
+def test_all_heard_uses_the_person_voice() -> None:
+    """The that's-everything clip is spoken in the person's voice."""
+    person = _with_settings(voice_personas=["arthur"])
     assert _all_heard_step(person, PERSONA_DAY)["voice"] == "Iapetus"
+
+
+# --- Superseded files within the day ------------------------------------------
+
+
+def _day_with_superseded_files(tmp_path: Path, json_age: timedelta) -> Path:
+    day = tmp_path / "2026-11-03"
+    day.mkdir()
+    (day / "manifest.json").write_text(
+        json.dumps({"segments": {"weather--theo": {"audio": "weather--theo.new.mp3"}}})
+    )
+    (day / "routine_x.json").write_text(json.dumps({"video": "routine_x.new.mp4"}))
+    names = [
+        "weather--theo.new.mp3",
+        "routine_x.new.mp4",
+        "weather--theo.old.mp3",
+        "routine_x.old.mp4",
+        "play_x.old.mp3",
+    ]
+    for name in names:
+        (day / name).write_bytes(b"x")
+    old = (PRUNE_NOW - timedelta(hours=2)).timestamp()
+    for name in names:
+        os.utime(day / name, (old, old))
+    json_time = (PRUNE_NOW - json_age).timestamp()
+    for name in ("manifest.json", "routine_x.json"):
+        os.utime(day / name, (json_time, json_time))
+    return day
+
+
+PRUNE_NOW = datetime(2026, 11, 3, 12, 0, tzinfo=dt_util.UTC)
+
+
+def test_superseded_day_files_removed_after_grace(tmp_path: Path) -> None:
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(hours=2))
+    removed = _remove_superseded_day_files(day, PRUNE_NOW)
+    assert sorted(Path(p).name for p in removed) == [
+        "play_x.old.mp3",
+        "routine_x.old.mp4",
+        "weather--theo.old.mp3",
+    ]
+    assert (day / "weather--theo.new.mp3").exists()
+    assert (day / "routine_x.new.mp4").exists()
+    assert (day / "manifest.json").exists()
+    assert (day / "routine_x.json").exists()
+
+
+def test_file_superseded_within_grace_is_kept(tmp_path: Path) -> None:
+    # Superseded ten minutes ago: a play may still be streaming it.
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(hours=2))
+    recent = (PRUNE_NOW - timedelta(minutes=10)).timestamp()
+    os.utime(day / "weather--theo.old.mp3", (recent, recent))
+    removed = {Path(p).name for p in _remove_superseded_day_files(day, PRUNE_NOW)}
+    assert "weather--theo.old.mp3" not in removed
+    assert "routine_x.old.mp4" in removed
+
+
+def test_busy_folder_still_cleaned(tmp_path: Path) -> None:
+    # Refreshes every few minutes keep some record new; old files still go.
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(minutes=5))
+    removed = {Path(p).name for p in _remove_superseded_day_files(day, PRUNE_NOW)}
+    assert removed == {"play_x.old.mp3", "routine_x.old.mp4", "weather--theo.old.mp3"}
+
+
+def test_file_vanishing_during_cleanup_is_ignored(tmp_path: Path) -> None:
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(hours=2))
+    real_stat = Path.stat
+
+    def _stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self.name == "play_x.old.mp3":
+            raise FileNotFoundError(self)
+        return real_stat(self, *args, **kwargs)
+
+    with patch.object(Path, "stat", _stat):
+        removed = {Path(p).name for p in _remove_superseded_day_files(day, PRUNE_NOW)}
+    assert "routine_x.old.mp4" in removed
+
+
+async def test_store_marks_the_replaced_files_superseded_now(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """Replacing a segment stamps its old files, starting their grace period."""
+    _set_fake_states(hass)
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    await _build_greeting(hass, store, person)
+    old = store.get_fresh(person, "greeting", at(8))
+    long_ago = (dt_util.utcnow() - timedelta(hours=3)).timestamp()
+    os.utime(old.audio_path, (long_ago, long_ago))
+
+    await _build_greeting(hass, store, person)
+    assert Path(old.audio_path).stat().st_mtime > long_ago + 3600
+
+
+def test_recent_unreferenced_file_kept(tmp_path: Path) -> None:
+    day = _day_with_superseded_files(tmp_path, json_age=timedelta(hours=2))
+    fresh = (PRUNE_NOW - timedelta(minutes=5)).timestamp()
+    os.utime(day / "play_x.old.mp3", (fresh, fresh))
+    removed = _remove_superseded_day_files(day, PRUNE_NOW)
+    assert "play_x.old.mp3" not in {Path(p).name for p in removed}
+
+
+# --- A stored segment remembers its persona -------------------------------------
+
+
+async def _build_greeting(hass: HomeAssistant, store: SegmentStore, person: Person):
+    with _Patched(_build_patches()):
+        await async_build_segments(
+            hass,
+            store,
+            person,
+            ["greeting"],
+            {"platform": "gemini", "api_key": "k"},
+            now=at(8),
+        )
+
+
+async def test_segment_in_another_persona_is_stale(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """A mid-day voice edit must not play the copy built in the old voice."""
+    _set_fake_states(hass)
+    theo = make_person(settings={**SAM_SETTINGS, "voice_personas": ["theo"]})
+    arthur = make_person(settings={**SAM_SETTINGS, "voice_personas": ["arthur"]})
+    store = SegmentStore(hass, str(tmp_path))
+    await _build_greeting(hass, store, theo)
+
+    assert _manifest(store, theo, at(8))["segments"]["greeting"]["persona"] == "theo"
+    assert store.get_fresh(theo, "greeting", at(8)) is not None
+    assert store.get_fresh(arthur, "greeting", at(8)) is None
+
+
+async def test_manifest_without_persona_is_rebuilt(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """A day built before personas were recorded may be in the old reader voice."""
+    _set_fake_states(hass)
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    await _build_greeting(hass, store, person)
+    manifest_path = store.person_dir(person) / "2026-10-20" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["segments"]["greeting"]["persona"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    reloaded = SegmentStore(hass, str(tmp_path))
+    await reloaded.async_load(person, at(8))
+    assert reloaded.get_fresh(person, "greeting", at(8)) is None

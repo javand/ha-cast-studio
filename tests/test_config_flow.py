@@ -24,13 +24,19 @@ from custom_components.cast_studio.const import (
     CONF_API_KEY,
     CONF_COMMUTE_DESTINATION,
     CONF_DEFAULT_TRANSPORTATION_MODE,
+    CONF_IMAGE_MODEL,
     CONF_MAPS_API_KEY,
     CONF_OUTPUT_DIR,
     CONF_PHONETIC_NAME,
     CONF_RECIPIENT_NAME,
+    CONF_TEXT_MODEL,
+    CONF_VOICE_MODEL,
+    DEFAULT_IMAGE_MODEL,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PHONETIC_NAME,
     DEFAULT_RECIPIENT_NAME,
+    DEFAULT_TEXT_MODEL,
+    DEFAULT_VOICE_MODEL,
     DOMAIN,
 )
 from custom_components.cast_studio.people import (
@@ -39,6 +45,7 @@ from custom_components.cast_studio.people import (
     get_people,
     get_routines,
 )
+from custom_components.cast_studio.personas import get_persona
 from custom_components.cast_studio.pronunciation import (
     apply_pronunciations,
     build_lexicon,
@@ -224,6 +231,51 @@ async def test_options_flow_updates_options_and_reloads(
         mock_reload.assert_awaited_once_with(entry.entry_id)
 
 
+def _suggested(result: Any, key: str) -> Any:
+    for marker in result["data_schema"].schema:
+        if marker == key:
+            return (marker.description or {}).get("suggested_value")
+    msg = f"{key} not in form"
+    raise AssertionError(msg)
+
+
+@pytest.mark.asyncio
+async def test_options_form_offers_the_three_models(hass: HomeAssistant) -> None:
+    """Writing, image and voice models start at the defaults."""
+    entry = MockConfigEntry(domain=DOMAIN, entry_id="m", data={}, options={})
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert _suggested(result, CONF_TEXT_MODEL) == DEFAULT_TEXT_MODEL
+    assert _suggested(result, CONF_IMAGE_MODEL) == DEFAULT_IMAGE_MODEL
+    assert _suggested(result, CONF_VOICE_MODEL) == DEFAULT_VOICE_MODEL
+
+
+@pytest.mark.asyncio
+async def test_options_form_shows_the_chosen_models(hass: HomeAssistant) -> None:
+    """A saved model, even one typed in, is shown and kept."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="m",
+        data={},
+        options={CONF_TEXT_MODEL: "gemini-9-pro", CONF_VOICE_MODEL: "my-tts"},
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert _suggested(result, CONF_TEXT_MODEL) == "gemini-9-pro"
+    assert _suggested(result, CONF_VOICE_MODEL) == "my-tts"
+    with patch("homeassistant.config_entries.ConfigEntries.async_reload", AsyncMock()):
+        done = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_OUTPUT_DIR: "/x", CONF_VOICE_MODEL: "other-tts"},
+        )
+    assert entry.options[CONF_VOICE_MODEL] == "other-tts"
+    assert done["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+
+
 def test_translations_en_structure() -> None:
     """Test translations en.json schema."""
     en_path = (
@@ -308,6 +360,9 @@ async def test_commute_destination_zone_in_user_and_options_flows(
         CONF_MAPS_API_KEY,
         CONF_DEFAULT_TRANSPORTATION_MODE,
         CONF_OUTPUT_DIR,
+        CONF_TEXT_MODEL,
+        CONF_IMAGE_MODEL,
+        CONF_VOICE_MODEL,
     }
 
 
@@ -366,10 +421,11 @@ async def test_add_person_subentry_creates_person(
     assert result["type"] == data_entry_flow.FlowResultType.FORM
     assert result["step_id"] == "user"
     keys = [str(k) for k in result["data_schema"].schema]
-    assert keys[:4] == [
+    assert keys[:5] == [
         "name",
         "phonetic_name",
         "media_player",
+        "voice_personas",
         "commute_destination_zone",
     ]
     assert "output_format" not in keys
@@ -414,8 +470,11 @@ async def test_add_person_flattens_advanced_section(
             "max_age_minutes": 45,
             "advanced": {
                 "weather_entity": "weather.home",
-                "host_voice": "Puck",
                 "greeting_title": "Morning, Alex",
+                "greeting_image": {
+                    "media_content_id": "media-source://image_upload/abc123",
+                    "media_content_type": "image/png",
+                },
             },
         },
     )
@@ -430,8 +489,11 @@ async def test_add_person_flattens_advanced_section(
     assert alex.max_age_minutes == 45
     assert alex.settings == {
         "weather_entity": "weather.home",
-        "host_voice": "Puck",
         "greeting_title": "Morning, Alex",
+        "greeting_image": {
+            "media_content_id": "media-source://image_upload/abc123",
+            "media_content_type": "image/png",
+        },
     }
 
 
@@ -1159,52 +1221,43 @@ def _advanced_selectors(schema: vol.Schema) -> dict[str, Any]:
     return {str(key): value for key, value in advanced.schema.schema.items()}
 
 
+def _main_selectors(schema: vol.Schema) -> dict[str, Any]:
+    """Return the form's top-level selectors keyed by field name."""
+    return {str(key): value for key, value in schema.schema.items()}
+
+
 def _option_values(sel: Any) -> set[str]:
     return {option["value"] for option in sel.config["options"]}
 
 
 @pytest.mark.asyncio
-async def test_person_form_offers_role_personas(
+async def test_person_form_drops_typed_voice_fields(
     hass: HomeAssistant, config_entry: MockConfigEntry
 ) -> None:
-    """Each persona picker lists only the personas suited to its role."""
+    """Personas replaced the typed voice and personality fields."""
     result = await _start_subentry(hass, config_entry, "person")
     selectors = _advanced_selectors(result["data_schema"])
-    host = selectors["host_personas"]
-    reader = selectors["reader_personas"]
-    assert host.config["multiple"] is True
-    assert "arthur" in _option_values(host)
-    assert "malenfant" not in _option_values(host)
-    assert "malenfant" in _option_values(reader)
-    assert "theo" not in _option_values(reader)
+    for key in (
+        "host_voice",
+        "scripture_voice",
+        "host_personality",
+        "scripture_personality",
+    ):
+        assert key not in selectors
 
 
 @pytest.mark.asyncio
-async def test_add_person_saves_persona_picks(
+async def test_person_form_greeting_image_is_an_image_picker(
     hass: HomeAssistant, config_entry: MockConfigEntry
 ) -> None:
-    """The picked personas are stored as the person's settings."""
+    """The greeting image is picked from media or uploaded, not typed."""
     result = await _start_subentry(hass, config_entry, "person")
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={
-            "name": "Sam",
-            "phonetic_name": "Sam",
-            "transportation_mode": "driving",
-            "advanced": {
-                "host_personas": ["arthur", "theo"],
-                "reader_personas": ["sage"],
-            },
-        },
-    )
-    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-    (sam,) = get_people(config_entry)
-    assert sam.settings["host_personas"] == ["arthur", "theo"]
-    assert sam.settings["reader_personas"] == ["sage"]
+    sel = _advanced_selectors(result["data_schema"])["greeting_image"]
+    assert sel.config["accept"] == ["image/*"]
 
 
-def test_strings_cover_persona_fields() -> None:
-    """Both translation files label and describe the persona pickers."""
+def test_person_settings_fields_have_help_text() -> None:
+    """Every advanced field that can look blank says what it does."""
     base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
     for path in (base / "strings.json", base / "translations" / "en.json"):
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -1212,9 +1265,96 @@ def test_strings_cover_persona_fields() -> None:
             advanced = data["config_subentries"]["person"]["step"][step]["sections"][
                 "advanced"
             ]
-            for key in ("host_personas", "reader_personas"):
-                assert advanced["data"][key]
-                assert advanced["data_description"][key]
+            for key in (
+                "conversation_agent",
+                "greeting_title",
+                "greeting_subtitle",
+                "greeting_image",
+            ):
+                assert advanced["data_description"][key], (path.name, step, key)
+
+
+def _advanced_suggestions(schema: vol.Schema) -> dict[str, Any]:
+    """Return the advanced section's suggested values keyed by field name."""
+    advanced = next(
+        value for key, value in schema.schema.items() if str(key) == "advanced"
+    )
+    return {
+        str(key): (key.description or {}).get("suggested_value")
+        for key in advanced.schema.schema
+    }
+
+
+@pytest.mark.asyncio
+async def test_person_form_persona_options_show_summaries(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """Each persona option reads 'Name: summary' so it says who it is."""
+    result = await _start_subentry(hass, config_entry, "person")
+    voice = _main_selectors(result["data_schema"])["voice_personas"]
+    labels = {opt["value"]: opt["label"] for opt in voice.config["options"]}
+    elena = get_persona("elena")
+    assert labels["elena"] == f"Elena: {elena.summary}"
+
+
+@pytest.mark.asyncio
+async def test_person_form_has_one_voice_picker(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """One Voice picker in the main form, showing News Anchor when empty."""
+    result = await _start_subentry(hass, config_entry, "person")
+    advanced = _advanced_selectors(result["data_schema"])
+    for key in ("host_personas", "reader_personas", "voice_personas"):
+        assert key not in advanced
+    voice = _main_selectors(result["data_schema"])["voice_personas"]
+    assert voice.config["multiple"] is True
+    assert {"malenfant", "theo", "default_reader"} <= _option_values(voice)
+    field = next(
+        key for key in result["data_schema"].schema if str(key) == "voice_personas"
+    )
+    assert field.description == {"suggested_value": ["default_host"]}
+
+
+VOICE_HELP = (
+    "Who speaks every segment of this person's routines. Pick several to get "
+    "a different one each day. A routine can give individual segments a "
+    "different voice in its own Advanced section."
+)
+
+
+def test_voice_strings() -> None:
+    """Both translation files label and describe the one Voice picker."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for step in ("user", "reconfigure"):
+            form = data["config_subentries"]["person"]["step"][step]
+            assert form["data"]["voice_personas"] == "Voice"
+            assert form["data_description"]["voice_personas"] == VOICE_HELP
+            advanced = form["sections"]["advanced"]
+            for key in ("host_personas", "reader_personas", "voice_personas"):
+                assert key not in advanced["data"]
+                assert key not in advanced["data_description"]
+
+
+@pytest.mark.asyncio
+async def test_add_person_saves_voice(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """The picked voice is stored as the person's settings."""
+    result = await _start_subentry(hass, config_entry, "person")
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "name": "Sam",
+            "phonetic_name": "Sam",
+            "transportation_mode": "driving",
+            "voice_personas": ["arthur", "theo"],
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    (sam,) = get_people(config_entry)
+    assert sam.settings["voice_personas"] == ["arthur", "theo"]
 
 
 @pytest.mark.asyncio
@@ -1226,15 +1366,12 @@ async def test_reconfigure_person_drops_removed_personas(
     hass.config_entries.async_update_subentry(
         entry_with_sam,
         subentry,
-        data={**subentry.data, "host_personas": ["gone_persona", "arthur"]},
+        data={**subentry.data, "voice_personas": ["gone_persona", "arthur"]},
     )
     result = await entry_with_sam.start_subentry_reconfigure_flow(hass, SAM_ID)
-    advanced = next(
-        value
-        for key, value in result["data_schema"].schema.items()
-        if str(key) == "advanced"
+    field = next(
+        key for key in result["data_schema"].schema if str(key) == "voice_personas"
     )
-    field = next(key for key in advanced.schema.schema if str(key) == "host_personas")
     assert field.description["suggested_value"] == ["arthur"]
 
 
@@ -1416,3 +1553,343 @@ def test_announcement_translations_present() -> None:
             "static",
             "daily",
         }
+
+
+# --- Voice changes per routine ----------------------------------------------
+
+
+def _voice_change_segments(schema: vol.Schema) -> list[str]:
+    row = _advanced_selectors(schema)["voice_changes"]
+    return row.config["fields"]["segment"]["selector"]["select"]["options"]
+
+
+async def _sam_routine(
+    hass: HomeAssistant, entry: MockConfigEntry, **extra: Any
+) -> dict[str, Any]:
+    return await _add_routine(
+        hass,
+        entry,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting", "weather", "daily_encouragement", "closing"],
+            **extra,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_edit_routine_lists_only_its_segments(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    await _sam_routine(hass, entry_with_sam)
+    routine = find_routine(entry_with_sam, "Morning")
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    assert _voice_change_segments(result["data_schema"]) == [
+        "greeting",
+        "weather",
+        "daily_encouragement",
+        "closing",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_routine_lists_every_segment(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    result = await _start_subentry(hass, entry_with_sam, "routine")
+    assert _voice_change_segments(result["data_schema"]) == list(SEGMENT_TYPES)
+
+
+@pytest.mark.asyncio
+async def test_add_routine_rejects_change_for_unpicked_segment(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    result = await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting"],
+            "advanced": {
+                "voice_changes": [{"segment": "weather", "personas": ["theo"]}]
+            },
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["errors"] == {"base": "voice_change_not_in_routine"}
+    assert get_routines(entry_with_sam) == []
+
+
+@pytest.mark.asyncio
+async def test_edit_routine_drops_change_for_removed_segment(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    change = {"segment": "weather", "personas": ["theo"]}
+    await _sam_routine(hass, entry_with_sam, advanced={"voice_changes": [change]})
+    routine = find_routine(entry_with_sam, "Morning")
+    assert routine.voice_changes == (("weather", ("theo",)),)
+
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting", "closing"],
+            "advanced": {"voice_changes": [change]},
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    subentry = entry_with_sam.subentries[routine.routine_id]
+    assert subentry.data.get("voice_changes", []) == []
+
+
+@pytest.mark.asyncio
+async def test_routine_voice_changes_saved_flat(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    result = await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting", "scripture"],
+            "advanced": {
+                "voice_changes": [
+                    {"segment": "scripture", "personas": ["malenfant"]},
+                    {"segment": "greeting", "personas": []},
+                ]
+            },
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    routine = find_routine(entry_with_sam, "Morning")
+    data = entry_with_sam.subentries[routine.routine_id].data
+    assert data["voice_changes"] == [
+        {"segment": "scripture", "personas": ["malenfant"]}
+    ]
+    assert "advanced" not in data
+
+
+@pytest.mark.asyncio
+async def test_edit_routine_suggests_saved_voice_changes(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    change = {"segment": "weather", "personas": ["theo"]}
+    await _sam_routine(hass, entry_with_sam, advanced={"voice_changes": [change]})
+    routine = find_routine(entry_with_sam, "Morning")
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    advanced = next(
+        value
+        for key, value in result["data_schema"].schema.items()
+        if str(key) == "advanced"
+    )
+    key = next(k for k in advanced.schema.schema if str(k) == "voice_changes")
+    assert key.description == {"suggested_value": [change]}
+
+
+def test_routine_voice_change_strings() -> None:
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        routine = data["config_subentries"]["routine"]
+        for step in ("user", "reconfigure"):
+            advanced = routine["step"][step]["sections"]["advanced"]
+            assert advanced["name"] == "Advanced"
+            assert advanced["data"]["voice_changes"] == "Voice changes"
+            assert "word for word" in advanced["data_description"]["voice_changes"]
+        assert "voice_change_not_in_routine" in routine["error"]
+        fields = data["selector"]["voice_changes"]["fields"]
+        assert fields["segment"]["name"] == "Segment"
+        assert fields["personas"]["name"] == "Voice"
+
+
+def test_every_form_field_has_help_text() -> None:
+    """Each field and section says what it does, in both translation files."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        steps = {
+            **{f"config.{k}": v for k, v in data["config"]["step"].items()},
+            **{f"options.{k}": v for k, v in data["options"]["step"].items()},
+            **{
+                f"{kind}.{k}": v
+                for kind, sub in data["config_subentries"].items()
+                for k, v in sub["step"].items()
+            },
+        }
+        missing = []
+        for name, step in steps.items():
+            missing += [
+                f"{name}.{key}"
+                for key in step.get("data", {})
+                if not step.get("data_description", {}).get(key)
+            ]
+            for section_name, section in step.get("sections", {}).items():
+                if not section.get("description"):
+                    missing.append(f"{name}.{section_name}")
+                missing += [
+                    f"{name}.{section_name}.{key}"
+                    for key in section.get("data", {})
+                    if not section.get("data_description", {}).get(key)
+                ]
+        assert missing == []
+        person = data["config_subentries"]["person"]["step"]["user"]
+        assert "voice" not in person["sections"]["advanced"]["description"].lower()
+
+
+def test_fallback_ai_is_named_and_explained_in_the_section() -> None:
+    """The agent picker shows no help text, so its label and section explain it."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for step in ("user", "reconfigure"):
+            advanced = data["config_subentries"]["person"]["step"][step]["sections"][
+                "advanced"
+            ]
+            assert advanced["data"]["conversation_agent"] == (
+                "Fallback AI (conversation agent)"
+            )
+            assert "Fallback AI" in advanced["description"]
+            assert "Gemini" in advanced["description"]
+            assert "backup writer" not in advanced["description"]
+
+
+# --- Refresh segments per routine ---------------------------------------------
+
+
+def _refresh_field(schema: vol.Schema) -> tuple[Any, Any]:
+    advanced = next(
+        value for key, value in schema.schema.items() if str(key) == "advanced"
+    )
+    return next(
+        (key, value)
+        for key, value in advanced.schema.schema.items()
+        if str(key) == "refresh_segments"
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_segments_offer_the_routines_segments_and_default(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """Editing lists the routine's segments; unset shows weather and commute."""
+    await _add_routine(
+        hass,
+        entry_with_sam,
+        {"person_id": SAM_ID, "name": "Morning", "segments": ["agenda", "weather"]},
+    )
+    routine = find_routine(entry_with_sam, "Morning")
+    data = entry_with_sam.subentries[routine.routine_id].data
+    assert data["refresh_segments"] == ["weather"]
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    key, sel = _refresh_field(result["data_schema"])
+    assert sel.config["options"] == ["agenda", "weather"]
+    assert sel.config["multiple"] is True
+    assert key.description == {"suggested_value": ["weather"]}
+
+
+@pytest.mark.asyncio
+async def test_add_routine_rejects_refresh_of_an_unpicked_segment(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    result = await _start_subentry(hass, entry_with_sam, "routine")
+    _, sel = _refresh_field(result["data_schema"])
+    assert sel.config["options"] == list(SEGMENT_TYPES)
+    result = await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting"],
+            "advanced": {"refresh_segments": ["agenda"]},
+        },
+    )
+    assert result["errors"] == {"base": "refresh_not_in_routine"}
+
+
+@pytest.mark.asyncio
+async def test_routine_refresh_segments_saved_and_trimmed_on_edit(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["weather", "agenda", "fun_fact"],
+            "advanced": {"refresh_segments": ["fun_fact", "agenda"]},
+        },
+    )
+    routine = find_routine(entry_with_sam, "Morning")
+    data = entry_with_sam.subentries[routine.routine_id].data
+    assert data["refresh_segments"] == ["agenda", "fun_fact"]
+    assert "advanced" not in data
+
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["weather", "agenda"],
+            "advanced": {"refresh_segments": ["fun_fact", "agenda"]},
+        },
+    )
+    data = entry_with_sam.subentries[routine.routine_id].data
+    assert data["refresh_segments"] == ["agenda"]
+
+
+@pytest.mark.asyncio
+async def test_routine_refresh_segments_can_be_cleared(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["weather"],
+            "advanced": {"refresh_segments": []},
+        },
+    )
+    routine = find_routine(entry_with_sam, "Morning")
+    assert entry_with_sam.subentries[routine.routine_id].data["refresh_segments"] == []
+
+
+def test_refresh_segments_strings() -> None:
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        routine = data["config_subentries"]["routine"]
+        for step in ("user", "reconfigure"):
+            advanced = routine["step"][step]["sections"]["advanced"]
+            assert advanced["data"]["refresh_segments"] == "Refresh segments"
+            assert "Refresh button" in advanced["data_description"]["refresh_segments"]
+        assert "refresh_not_in_routine" in routine["error"]
+
+
+@pytest.mark.asyncio
+async def test_new_routine_refresh_has_no_empty_suggestion(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """An empty suggestion could save "refresh nothing"; leave it unset."""
+    result = await _start_subentry(hass, entry_with_sam, "routine")
+    key, _ = _refresh_field(result["data_schema"])
+    assert not key.description

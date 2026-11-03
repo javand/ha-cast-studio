@@ -21,8 +21,10 @@ daily prune, and old all-heard files are deleted once safely out of use.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
+import os
 import secrets
 import shutil
 import tempfile
@@ -35,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_HOST_VOICE, DEFAULT_SCRIPTURE_VOICE, LOGGER
+from .const import LOGGER
 from .ffmpeg_runner import async_run_ffmpeg, build_slide_clip_command
 from .generator import (
     DEFAULT_SLIDE_PAD_SECONDS,
@@ -51,20 +53,25 @@ from .people import (
     PERSON_COMMUTE_DRIVE_SENSOR,
     PERSON_COMMUTE_TRANSIT_RETURN_SENSOR,
     PERSON_COMMUTE_TRANSIT_SENSOR,
-    PERSON_HOST_PERSONAS,
-    PERSON_READER_PERSONAS,
     SEGMENT_TYPES,
     briefing_day,
     is_content_fresh,
     person_calendars,
     person_todos,
+    person_voice,
 )
-from .personas import ROLE_HOST, ROLE_READER, pick_persona
+from .personas import (
+    DEFAULT_VOICE_PERSONA,
+    PERSONAS,
+    Persona,
+    get_persona,
+    pick_persona,
+)
 from .slide_renderer import CANVAS_HEIGHT, CANVAS_WIDTH
 from .tts_client import track_voice_fallback
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterable
+    from collections.abc import Collection, Iterable, Iterator
 
     from homeassistant.core import HomeAssistant
 
@@ -81,8 +88,6 @@ MANIFEST_FILE = "manifest.json"
 # An all-heard clip superseded this long ago can no longer be playing.
 ALL_HEARD_KEEP_SUPERSEDED = timedelta(hours=1)
 
-DEFAULT_HOST_PERSONALITY = "news_anchor"
-DEFAULT_SCRIPTURE_PERSONALITY = "life_coach"
 
 # One fixed encode for every segment so the concat demuxer can ``-c copy``.
 # Audio is MP3; clips reuse the slide clip
@@ -156,73 +161,101 @@ def segment_key(segment_type: str, *, include_signoff: bool = True) -> str:
     return segment_type
 
 
+# A key voiced by someone other than the person's voice: ``<key>--<persona id>``.
+PERSONA_SEPARATOR = "--"
+
+
+def voiced_key(key: str, persona_id: str) -> str:
+    """Return the storage key for ``key`` voiced by ``persona_id``."""
+    return f"{key}{PERSONA_SEPARATOR}{persona_id}"
+
+
+def persona_of(key: str) -> str | None:
+    """Return the persona a storage key is voiced by, or None for the person's."""
+    _, sep, persona_id = key.partition(PERSONA_SEPARATOR)
+    return persona_id if sep else None
+
+
+def unvoiced_key(key: str) -> str:
+    """Return a storage key without its persona."""
+    return key.partition(PERSONA_SEPARATOR)[0]
+
+
 def segment_type_of(key: str) -> str:
     """Return the segment type a storage key was built from."""
-    return key.removesuffix(NOSIGNOFF_SUFFIX)
+    return unvoiced_key(key).removesuffix(NOSIGNOFF_SUFFIX)
 
 
 # Segment types that change through the day; ``cast_studio.refresh`` rebuilds them.
 DYNAMIC_SEGMENT_TYPES = frozenset({"weather", "commute"})
 
 
+def default_refresh_segments(segments: Iterable[str]) -> list[str]:
+    """Return the segment types a routine refreshes unless told otherwise."""
+    return [t for t in dict.fromkeys(segments) if t in DYNAMIC_SEGMENT_TYPES]
+
+
 def dynamic_segment_types(routine: Routine) -> list[str]:
-    """Return the routine's dynamic segment types, in routine order."""
-    return [t for t in routine.segments if t in DYNAMIC_SEGMENT_TYPES]
+    """Return the segment types Refresh rebuilds for the routine, in its order."""
+    if routine.refresh_segments is None:
+        return default_refresh_segments(routine.segments)
+    return list(routine.refresh_segments)
 
 
-def routine_segment_keys(routine: Routine) -> list[str]:
+def routine_segment_keys(person: Person, routine: Routine, day: date) -> list[str]:
     """
-    Return the routine's segment keys in order.
+    Return the routine's segment keys in order for the briefing day ``day``.
 
     With a ``closing`` segment, the encouragement is built without its own
-    sign-off so the name is never said twice (spec §5.2).
+    sign-off so the name is never said twice (spec §5.2). A segment the
+    routine voices with someone other than the person's voice that day gets a
+    voiced key, so it is built and stored apart; any other routine asking for
+    the same segment and persona shares it.
     """
     include_signoff = "closing" not in routine.segments
-    return [
-        segment_key(segment_type, include_signoff=include_signoff)
-        for segment_type in routine.segments
-    ]
+    default = person_default_persona(person, day)
+    keys: list[str] = []
+    for segment_type in routine.segments:
+        key = segment_key(segment_type, include_signoff=include_signoff)
+        persona = segment_persona(person, routine, segment_type, day)
+        keys.append(key if persona == default else voiced_key(key, persona.persona_id))
+    return keys
 
 
-# Each role's settings: persona picks, typed voice and style, and defaults.
-_ROLE_SETTINGS: dict[str, tuple[str, str, str, str, str]] = {
-    ROLE_HOST: (
-        PERSON_HOST_PERSONAS,
-        "host_voice",
-        "host_personality",
-        DEFAULT_HOST_VOICE,
-        DEFAULT_HOST_PERSONALITY,
-    ),
-    ROLE_READER: (
-        PERSON_READER_PERSONAS,
-        "scripture_voice",
-        "scripture_personality",
-        DEFAULT_SCRIPTURE_VOICE,
-        DEFAULT_SCRIPTURE_PERSONALITY,
-    ),
-}
+_DEFAULT_PERSONA = next(p for p in PERSONAS if p.persona_id == DEFAULT_VOICE_PERSONA)
 
 
-def _role_voice(person: Person, role: str, day: date) -> dict[str, Any]:
-    """
-    Return the step keys for whoever speaks a role on ``day``.
-
-    A picked persona wins; with none, the typed voice and style (or the
-    defaults) are used exactly as before personas existed.
-    """
-    personas_key, voice_key, personality_key, voice, personality = _ROLE_SETTINGS[role]
-    settings = person.settings
-    if persona := pick_persona(settings.get(personas_key), role, person.person_id, day):
-        return {
-            "voice": persona.gemini_voice,
-            "voice_personality": persona.character,
-            "voice_profile": persona.delivery,
-            "openai_voice": persona.openai_voice,
-        }
+def persona_voice(persona: Persona) -> dict[str, Any]:
+    """Return the step keys that make ``persona`` write and speak a segment."""
     return {
-        "voice": settings.get(voice_key) or voice,
-        "voice_personality": settings.get(personality_key) or personality,
+        "voice": persona.gemini_voice,
+        "voice_personality": persona.character,
+        "voice_profile": persona.delivery,
+        "openai_voice": persona.openai_voice,
     }
+
+
+def person_default_persona(person: Person, day: date) -> Persona:
+    """Return who speaks the person's segments on ``day`` without a voice change."""
+    picked = pick_persona(person_voice(person.settings), person.person_id, day)
+    return picked or _DEFAULT_PERSONA
+
+
+def segment_persona(
+    person: Person, routine: Routine | None, segment_type: str, day: date
+) -> Persona:
+    """Return who voices a routine's segment on ``day``."""
+    changes = dict(routine.voice_changes) if routine else {}
+    picked = pick_persona(changes.get(segment_type), person.person_id, day)
+    return picked or person_default_persona(person, day)
+
+
+def key_persona(person: Person, key: str, day: date) -> Persona:
+    """Return who voices a stored key: its own persona, else the person's."""
+    persona_id = persona_of(key)
+    return (persona_id and get_persona(persona_id)) or person_default_persona(
+        person, day
+    )
 
 
 def build_segment_step(
@@ -236,8 +269,9 @@ def build_segment_step(
     Return the generator step for one of the person's segments.
 
     ``day`` is the briefing day the segment is built for; it decides which of
-    the person's personas speaks when they picked several. ``visual`` builds
-    a slide and clip as well as the audio.
+    the person's personas speaks when they picked several. A voiced key names
+    its persona instead; an unknown one falls back to the person's voice.
+    ``visual`` builds a slide and clip as well as the audio.
     """
     segment_type = segment_type_of(segment_key)
     if segment_type not in SEGMENT_TYPES:
@@ -247,8 +281,6 @@ def build_segment_step(
     settings = person.settings
     if day is None:
         day = briefing_day(person, dt_util.now())
-    host = _role_voice(person, ROLE_HOST, day)
-    reader = _role_voice(person, ROLE_READER, day)
     scripture_entity = settings.get("scripture_entity") or ""
 
     step: dict[str, Any] = {
@@ -256,7 +288,7 @@ def build_segment_step(
         "type": segment_type,
         "visual": visual,
         "standalone_segment": True,
-        **(reader if segment_type in ("scripture", "daily_encouragement") else host),
+        **persona_voice(key_persona(person, segment_key, day)),
     }
     if settings.get("conversation_agent"):
         step["conversation_agent"] = settings["conversation_agent"]
@@ -268,8 +300,13 @@ def build_segment_step(
             subtitle=settings.get("greeting_subtitle") or "Good Morning",
             context=f"A cheerful, energizing morning greeting for {person.name}.",
         )
-        if settings.get("greeting_image"):
-            step["image_path"] = settings["greeting_image"]
+        image = settings.get("greeting_image")
+        if isinstance(image, dict) and image.get("media_content_id"):
+            # Resolved to a file at build time; see the generator.
+            step["image_media_id"] = image["media_content_id"]
+        elif isinstance(image, str) and image:
+            # Typed as a path before the image picker existed.
+            step["image_path"] = image
     elif segment_type == "weather":
         step["entity_id"] = settings.get("weather_entity") or ""
     elif segment_type == "agenda":
@@ -309,7 +346,7 @@ def build_segment_step(
         step.update(
             title="Today's Takeaway",
             subtitle="Daily Encouragement",
-            include_signoff=not segment_key.endswith(NOSIGNOFF_SUFFIX),
+            include_signoff=not unvoiced_key(segment_key).endswith(NOSIGNOFF_SUFFIX),
         )
         if scripture_entity:
             step["entity_id"] = scripture_entity
@@ -349,6 +386,9 @@ class StoredSegment:
     built_at: datetime
     built_day: date
     degraded: bool = False
+    # The persona that voiced and wrote it; None for one built before this
+    # was recorded.
+    persona_id: str | None = None
 
 
 def _segment_to_json(segment: StoredSegment) -> dict[str, Any]:
@@ -360,6 +400,7 @@ def _segment_to_json(segment: StoredSegment) -> dict[str, Any]:
         "built_at": segment.built_at.isoformat(),
         "built_day": segment.built_day.isoformat(),
         "degraded": segment.degraded,
+        "persona": segment.persona_id,
     }
 
 
@@ -373,6 +414,7 @@ def _segment_from_json(key: str, data: dict[str, Any], base: Path) -> StoredSegm
         built_at=datetime.fromisoformat(data["built_at"]),
         built_day=date.fromisoformat(data["built_day"]),
         degraded=bool(data.get("degraded", False)),
+        persona_id=data.get("persona"),
     )
 
 
@@ -431,11 +473,14 @@ def _commit_segment(
         ),
     )
     segments = _read_manifest(directory)
+    replaced = segments.get(segment.key)
     segments[segment.key] = segment
     payload = {
         "segments": {key: _segment_to_json(seg) for key, seg in segments.items()}
     }
     write_json_atomic(directory / MANIFEST_FILE, payload)
+    if replaced is not None:
+        mark_superseded(replaced.audio_path, replaced.clip_path)
     return segments
 
 
@@ -473,6 +518,66 @@ def _remove_superseded_all_heard(directory: Path, now: datetime) -> list[str]:
         if child.is_file() and child.name not in keep:
             child.unlink(missing_ok=True)
             removed.append(str(child))
+    return removed
+
+
+def _json_strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _json_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _json_strings(item)
+
+
+def mark_superseded(*paths: str | Path | None) -> None:
+    """
+    Stamp files a newer build just replaced with the current time.
+
+    Their modification time then says when they were superseded, which starts
+    the grace period ``_remove_superseded_day_files`` gives a play that may
+    still be streaming them.
+    """
+    for path in paths:
+        if path:
+            with contextlib.suppress(FileNotFoundError):
+                os.utime(path)
+
+
+def _remove_superseded_day_files(directory: Path, now: datetime) -> list[str]:
+    """
+    Delete files in a day folder that no manifest or routine file points to.
+
+    Every rebuild writes new versioned files and leaves the old ones for any
+    play still streaming them. A file goes once nothing points to it and it
+    was neither written nor superseded (see ``mark_superseded``) within
+    ``ALL_HEARD_KEEP_SUPERSEDED``.
+    """
+    cutoff = (now - ALL_HEARD_KEEP_SUPERSEDED).timestamp()
+    keep: set[str] = set()
+    for record in directory.glob("*.json"):
+        try:
+            payload = json.loads(record.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            # Unreadable: can't tell what it points to, so delete nothing.
+            return []
+        keep.update(Path(value).name for value in _json_strings(payload))
+    removed: list[str] = []
+    for child in directory.iterdir():
+        if child.suffix == ".json" or child.name in keep:
+            continue
+        # A file may vanish mid-scan (a build renaming or removing its own).
+        try:
+            if not child.is_file() or child.stat().st_mtime > cutoff:
+                continue
+            child.unlink()
+        except FileNotFoundError:
+            continue
+        removed.append(str(child))
     return removed
 
 
@@ -517,6 +622,9 @@ class SegmentStore:
             person, segment.built_at, segment.built_day, now
         ):
             return None
+        # Built in another voice (the person's voice was edited since).
+        if segment.persona_id != key_persona(person, key, cached[0]).persona_id:
+            return None
         return segment
 
     def all_heard_clip(self, person: Person) -> StoredSegment | None:
@@ -549,6 +657,11 @@ class SegmentStore:
         if await async_run_in_executor(self._hass, all_heard_dir.is_dir):
             removed += await async_run_in_executor(
                 self._hass, _remove_superseded_all_heard, all_heard_dir, now
+            )
+        day_dir = self.day_dir(person, today)
+        if await async_run_in_executor(self._hass, day_dir.is_dir):
+            removed += await async_run_in_executor(
+                self._hass, _remove_superseded_day_files, day_dir, now
             )
         if removed:
             LOGGER.debug("Pruned stale segment folders: %s", removed)
@@ -657,6 +770,7 @@ async def _async_build_one(  # noqa: PLR0913
         built_at=now,
         built_day=briefing_day(person, now),
         degraded=voice.used,
+        persona_id=key_persona(person, key, briefing_day(person, now)).persona_id,
     )
     return segment, staged
 

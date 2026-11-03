@@ -20,7 +20,12 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from . import ffmpeg_runner
 from .ai_health import async_report_ai_failure, async_report_ai_success
-from .const import DEFAULT_HOST_VOICE, LOGGER
+from .const import (
+    CONF_VOICE_MODEL,
+    DEFAULT_HOST_VOICE,
+    DEFAULT_VOICE_MODEL,
+    LOGGER,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -367,7 +372,7 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
     output_wav_path: str,
     api_key: str,
     session: aiohttp.ClientSession | None = None,
-    model: str = "gemini-2.5-flash-preview-tts",
+    model: str = DEFAULT_VOICE_MODEL,
     profile: str | None = None,
 ) -> str:
     """Synthesize speech using Gemini audio generation API with conditioning."""
@@ -626,6 +631,7 @@ async def async_synthesize_speech(  # noqa: PLR0913
                 output_wav_path,
                 api_key,
                 session=session,
+                model=safe_creds.get(CONF_VOICE_MODEL) or DEFAULT_VOICE_MODEL,
                 profile=voice_profile,
             ),
         )

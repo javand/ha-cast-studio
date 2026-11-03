@@ -18,6 +18,7 @@ from .routine_entity import (
     RoutineEntity,
     async_play_routine,
     async_rebuild_routine,
+    async_refresh_routine,
     async_setup_routine_platform,
 )
 
@@ -110,7 +111,8 @@ class CastStudioRoutineRebuildButton(RoutineEntity, ButtonEntity):
 class CastStudioRoutineRegenerateAndPlayButton(RoutineEntity, ButtonEntity):
     """Builds the routine again, then plays it on the Play on player."""
 
-    _attr_name = "Regenerate and play"
+    # Was "Regenerate and play"; the entity id keeps that name for automations.
+    _attr_name = "Rebuild and play"
     _attr_icon = "mdi:play-circle-outline"
 
     def __init__(self, person: Person, routine: Routine) -> None:
@@ -124,6 +126,23 @@ class CastStudioRoutineRegenerateAndPlayButton(RoutineEntity, ButtonEntity):
     async def async_press(self) -> None:
         """Rebuild, then play."""
         await async_play_routine(self.hass, self.routine_id, rebuild=True)
+
+
+class CastStudioRoutineRefreshButton(RoutineEntity, ButtonEntity):
+    """Rebuilds only the routine's weather and commute, playing nothing."""
+
+    _attr_name = "Refresh"
+    _attr_icon = "mdi:weather-partly-cloudy"
+
+    def __init__(self, person: Person, routine: Routine) -> None:
+        """Initialise as ``button.cast_studio_refresh_<person>_<routine>``."""
+        super().__init__(person, routine)
+        self.entity_id = f"button.cast_studio_refresh_{self.routine_slug}"
+        self._attr_unique_id = f"cast_studio_routine_refresh_{routine.routine_id}"
+
+    async def async_press(self) -> None:
+        """Refresh now."""
+        await async_refresh_routine(self.hass, self.routine_id)
 
 
 async def async_setup_entry(
@@ -142,5 +161,6 @@ async def async_setup_entry(
         CastStudioRoutinePlayButton,
         CastStudioRoutineRebuildButton,
         CastStudioRoutineRegenerateAndPlayButton,
+        CastStudioRoutineRefreshButton,
     ):
         async_setup_routine_platform(hass, entry, async_add_entities, factory)

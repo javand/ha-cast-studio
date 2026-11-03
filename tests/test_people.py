@@ -35,8 +35,10 @@ from custom_components.cast_studio.people import (
     is_content_fresh,
     person_calendars,
     person_todos,
+    person_voice,
     slugify_name,
 )
+from custom_components.cast_studio.segments import dynamic_segment_types
 
 from .conftest import ALEX_ID, SAM_ID, make_entry, person_subentry, routine_subentry
 
@@ -196,7 +198,7 @@ def test_get_people_parses_fields_and_settings() -> None:
                 reset_time="04:30:00",
                 max_age_minutes=90.0,
                 weather_entity="weather.home",
-                host_voice="Puck",
+                greeting_title="Morning, Sam",
             )
         ]
     )
@@ -212,7 +214,7 @@ def test_get_people_parses_fields_and_settings() -> None:
         transportation_mode="transit",
         reset_time=time(4, 30),
         max_age_minutes=90,
-        settings={"weather_entity": "weather.home", "host_voice": "Puck"},
+        settings={"weather_entity": "weather.home", "greeting_title": "Morning, Sam"},
     )
     assert isinstance(sam.max_age_minutes, int)
 
@@ -432,3 +434,84 @@ def test_routine_output_format_parsed_with_default() -> None:
     night, quick = get_routines(entry)
     assert night.output_format == "audio"
     assert quick.output_format == "visual"
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        ({"voice_personas": ["theo"]}, ["theo"]),
+        ({"host_personas": ["elena"]}, ["elena"]),
+        ({"voice_personas": ["theo"], "host_personas": ["elena"]}, ["theo"]),
+        ({"reader_personas": ["sage"]}, []),
+        ({}, []),
+    ],
+)
+def test_person_voice_reads_new_and_legacy_keys(
+    settings: dict[str, object], expected: list[str]
+) -> None:
+    """The voice list wins; a host persona saved before it still counts."""
+    assert person_voice(settings) == expected
+
+
+def test_routine_voice_changes_parsed_and_cleaned() -> None:
+    """Rows for segments not in the routine or without personas are dropped."""
+    entry = make_entry(
+        [
+            person_subentry(SAM_ID, "Sam"),
+            routine_subentry(
+                "r1",
+                SAM_ID,
+                "Quick",
+                ["weather", "scripture"],
+                voice_changes=[
+                    {"segment": "scripture", "personas": ["sage"]},
+                    {"segment": "scripture", "personas": ["malenfant"]},
+                    {"segment": "agenda", "personas": ["theo"]},
+                    {"segment": "weather", "personas": []},
+                ],
+            ),
+        ]
+    )
+    (routine,) = get_routines(entry)
+    assert routine.voice_changes == (("scripture", ("malenfant",)),)
+
+
+def test_routine_without_voice_changes_has_none() -> None:
+    entry = make_entry(
+        [
+            person_subentry(SAM_ID, "Sam"),
+            routine_subentry("r1", SAM_ID, "Q", ["weather"]),
+        ]
+    )
+    assert get_routines(entry)[0].voice_changes == ()
+
+
+def test_routine_refresh_segments_default_to_weather_and_commute() -> None:
+    entry = make_entry(
+        [
+            person_subentry(SAM_ID, "Sam"),
+            routine_subentry("r1", SAM_ID, "Q", ["commute", "agenda", "weather"]),
+        ]
+    )
+    (routine,) = get_routines(entry)
+    assert dynamic_segment_types(routine) == ["commute", "weather"]
+
+
+def test_routine_refresh_segments_follow_the_routine() -> None:
+    """Saved choices keep routine order; ones not in the routine are dropped."""
+    entry = make_entry(
+        [
+            person_subentry(SAM_ID, "Sam"),
+            routine_subentry(
+                "r1",
+                SAM_ID,
+                "Q",
+                ["weather", "fun_fact", "agenda"],
+                refresh_segments=["agenda", "commute", "weather"],
+            ),
+            routine_subentry("r2", SAM_ID, "R", ["weather"], refresh_segments=[]),
+        ]
+    )
+    first, second = get_routines(entry)
+    assert dynamic_segment_types(first) == ["weather", "agenda"]
+    assert dynamic_segment_types(second) == []

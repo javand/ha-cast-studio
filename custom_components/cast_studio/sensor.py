@@ -9,6 +9,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
+from . import briefing
 from .ai_health import SIGNAL_AI_ACCOUNT_ISSUE, get_ai_account_issue
 from .const import DOMAIN, LOGGER
 from .people import get_people, get_routines, slugify_name
@@ -85,6 +86,20 @@ class CastStudioBriefingSensor(SensorEntity):
     def _async_ai_issue_changed(self) -> None:
         self.async_write_ha_state()
 
+    def prime(
+        self,
+        state: str,
+        *,
+        briefing_day: str,
+        ready_segments: list[str],
+        dynamic_segments: list[str],
+    ) -> None:
+        """Set the starting state without writing it (before it is added)."""
+        self._state = state
+        self._briefing_day = briefing_day
+        self._ready_segments = list(ready_segments)
+        self._dynamic_segments = list(dynamic_segments)
+
     def set_briefing_state(
         self,
         state: str,
@@ -152,7 +167,11 @@ def _briefing_sensors_for_entry(
     for routine in get_routines(entry):
         if routine.routine_id in sensors:
             continue
-        sensor = CastStudioBriefingSensor(hass, people[routine.person_id], routine)
+        person = people[routine.person_id]
+        sensor = CastStudioBriefingSensor(hass, person, routine)
+        # The status at startup is written once, already right: an "idle"
+        # first would log a change to "ready" every time HA starts.
+        briefing.prime_sensor(hass, entry, sensor, person, routine)
         sensors[routine.routine_id] = sensor
         created.append(sensor)
     return created
