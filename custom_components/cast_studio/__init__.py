@@ -81,6 +81,17 @@ PREBUILD_SCHEMA = vol.All(
     ),
     cv.has_at_least_one_key(ATTR_PERSON, ATTR_ROUTINE),
 )
+ATTR_SEGMENTS = "segments"
+REFRESH_SCHEMA = vol.All(
+    vol.Schema(
+        {
+            vol.Optional(ATTR_PERSON): cv.string,
+            vol.Optional(ATTR_ROUTINE): cv.string,
+            vol.Optional(ATTR_SEGMENTS): vol.All(cv.ensure_list, [cv.string]),
+        }
+    ),
+    cv.has_at_least_one_key(ATTR_PERSON, ATTR_ROUTINE),
+)
 PLAY_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_PERSON): cv.string,
@@ -108,19 +119,27 @@ def _require_loaded_entry(hass: HomeAssistant) -> ConfigEntry:
 
 
 def _register_briefing_actions(hass: HomeAssistant) -> None:
-    """Register the new engine's ``prebuild`` and ``play`` actions (spec §5.3)."""
+    """Register the engine's ``prebuild``, ``refresh`` and ``play`` actions."""
 
-    async def _async_handle_prebuild(call: ServiceCall) -> None:
+    async def _async_build(call: ServiceCall, build: Any, **options: Any) -> None:
         entry = _require_loaded_entry(hass)
         person_name = call.data.get(ATTR_PERSON)
         if routine_name := call.data.get(ATTR_ROUTINE):
             routine = find_routine(entry, routine_name, person_name)
-            await briefing.async_prebuild(hass, entry, routine=routine)
+            await build(hass, entry, routine=routine, **options)
             return
         if (person := find_person(entry, person_name)) is None:
             msg = f"CastStudio person '{person_name}' not found"
             raise HomeAssistantError(msg)
-        await briefing.async_prebuild(hass, entry, person=person)
+        await build(hass, entry, person=person, **options)
+
+    async def _async_handle_prebuild(call: ServiceCall) -> None:
+        await _async_build(call, briefing.async_prebuild)
+
+    async def _async_handle_refresh(call: ServiceCall) -> None:
+        await _async_build(
+            call, briefing.async_refresh, segments=call.data.get(ATTR_SEGMENTS)
+        )
 
     async def _async_handle_play(call: ServiceCall) -> None:
         entry = _require_loaded_entry(hass)
@@ -138,6 +157,9 @@ def _register_briefing_actions(hass: HomeAssistant) -> None:
 
     hass.services.async_register(
         DOMAIN, "prebuild", _async_handle_prebuild, schema=PREBUILD_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN, "refresh", _async_handle_refresh, schema=REFRESH_SCHEMA
     )
     hass.services.async_register(DOMAIN, "play", _async_handle_play, schema=PLAY_SCHEMA)
 

@@ -27,20 +27,22 @@ Instead of a plain text-to-speech readout, each person in the house gets their o
    Settings → CastStudio                 Your automations
  ┌──────────────────────────┐   ┌───────────────────────────────────┐
  │ People: name, voice,     │   │ 04:30  cast_studio.prebuild       │
- │   device, calendars,     │   │ alarm  cast_studio.play           │
+ │   device, calendars,     │   │ wake   cast_studio.refresh        │
+ │                          │   │ alarm  cast_studio.play           │
  │   commute sensors        │   │ button cast_studio.play           │
  │ Routines: ordered        │   │        (skip_played: true)        │
  │   segments per person    │   └────────────────┬──────────────────┘
  └────────────┬─────────────┘                    │
               ▼                                  ▼
-     Segments built ahead of time ──────► Played instantly; the
-     (AI text, voice, slides) and         commute is rebuilt live
-     stored for the briefing day          so traffic is current
+     Segments built ahead of time ──────► Played instantly; weather
+     (AI text, voice, slides) and         and commute are refreshed
+     stored for the briefing day          just before, when you wake
 ```
 
 1. **Set up people and routines** in the integration: who gets a briefing, where it plays, and which segments it contains (greeting, weather, National Day, fun fact, agenda, commute, scripture, encouragement, closing).
 2. **Pre-build** overnight with `cast_studio.prebuild`, so nothing waits on AI or video encoding in the morning.
-3. **Play** with `cast_studio.play` from any trigger: an alarm, a button, motion, a time. Playback starts at once, and `skip_played` lets a second press play only what that routine has not played yet today.
+3. **Refresh** weather and commute with `cast_studio.refresh` shortly before the routine plays (for example when you get out of bed), so they reflect that moment.
+4. **Play** with `cast_studio.play` from any trigger: an alarm, a button, motion, a time. Playback starts at once, and `skip_played` lets a second press play only what that routine has not played yet today.
 
 ---
 
@@ -107,7 +109,7 @@ A persona change takes effect on the next pre-build or briefing day.
 
 **Commute.** Each person has their own work zone and their own commute sensors (minutes). Travel mode `Fastest` compares driving and transit; `Driving` or `Transit` gives a single-mode commute with no comparison. If a person has no work zone, or no sensor for their travel mode, the commute segment is skipped with a logged warning and the rest of the briefing still plays.
 
-**Trip home and round trip.** Optionally pick an **Evening drive-home sensor** (and **Evening transit-home sensor**) in **Advanced**. Use a travel-time sensor that predicts the evening trip, such as a Google Maps Travel Time entry from work to home with **Time type** set to *Departure time* at your usual leave time. The commute segment then adds the trip home and a round-trip total, spoken and on the slide ("Home 48 min • Round trip 1h 23m"). CastStudio refreshes the person's commute sensors (`homeassistant.update_entity`) just before reading them, so sensors with polling turned off still give a current value. The commute is rebuilt every time a briefing plays, so it reflects traffic at that moment rather than at pre-build time; the pre-built commute is used if that rebuild fails. A to-work sensor with no departure time ("leave now") suits this best.
+**Trip home and round trip.** Optionally pick an **Evening drive-home sensor** (and **Evening transit-home sensor**) in **Advanced**. Use a travel-time sensor that predicts the evening trip, such as a Google Maps Travel Time entry from work to home with **Time type** set to *Departure time* at your usual leave time. The commute segment then adds the trip home and a round-trip total, spoken and on the slide ("Home 48 min • Round trip 1h 23m"). CastStudio refreshes the person's commute sensors (`homeassistant.update_entity`) just before reading them, so sensors with polling turned off still give a current value. The commute is not rebuilt when a briefing plays: call `cast_studio.refresh` shortly before it plays so it reflects traffic at that moment. Without a refresh, or if the refresh fails, the pre-built commute plays. A to-work sensor with no departure time ("leave now") suits this best.
 
 ### Add routine
 Use **Add routine**: pick the person, a routine name (unique for that person) and the segments. Segment types are `greeting`, `weather`, `national_day`, `fun_fact`, `agenda`, `commute`, `scripture`, `daily_encouragement` and `closing`. A `closing` segment says the person's name once, and the encouragement then leaves out its own sign-off. On a display it shows the sign-off over a full-screen photo with a "Happy Thursday!" style day tag: a fresh AI image themed to the weekday and season when Gemini is configured, otherwise a bundled sunrise illustration. The form stores segments in the order submitted, so check the order after saving.
@@ -137,8 +139,30 @@ Builds and stores segments without playing anything. For Visual routines the sti
 | `person` | no | At least one of `person` or `routine` is required. Alone: builds the union of segments of all of that person's routines. With `routine`: picks whose routine is meant. |
 | `routine` | no | Routine to pre-build. At least one of `person` or `routine` is required. |
 
+### `cast_studio.refresh`
+Rebuilds only the **dynamic segments**, weather and commute, so they reflect this moment. Other segments are left as they are, so a refresh is much faster than a prebuild. Call it from your own automation at a moment that predicts the play, for example when you get out of bed. A play started while a refresh is still running waits up to 10 seconds for it, then plays the stored segments. If only one of weather or commute rebuilds, the fresh one is kept and the other keeps its stored copy. During a refresh the commute sensors get at most 5 seconds to update before their last value is used.
+
+| Field | Required | Meaning |
+| :--- | :--- | :--- |
+| `person` | no | At least one of `person` or `routine` is required. Alone: refreshes every routine of that person that has a weather or commute segment. With `routine`: picks whose routine is meant. |
+| `routine` | no | Routine whose weather and commute to refresh. At least one of `person` or `routine` is required. |
+| `segments` | no | Only these dynamic segment types are refreshed, for example `[weather]`. Without it, every dynamic type is refreshed. A type that is not dynamic is rejected with an error that lists the allowed ones. |
+
+**Dynamic segment types** are the ones that change through the day:
+
+| Type | Why it is dynamic |
+| :--- | :--- |
+| `weather` | Current conditions, temperature and the chance of rain change through the morning. |
+| `commute` | Travel times change with traffic. |
+
+Each routine's status sensor shows which of its own segments are dynamic in its `dynamic_segments` attribute (for example `[weather, commute]`), so you can see what a refresh of that routine rebuilds.
+
+Stored segments belong to the person, not to one routine, so a refresh for one routine also gives the person's other routines the fresh weather and commute. Nothing refreshes on its own schedule: a routine played later in the day (for example a night routine) needs its own `refresh` (or a routine-scoped `prebuild`) at that time. The person's **max age** setting (`max_age_minutes`) is the safety net: a segment older than that is rebuilt when the routine plays.
+
+Every segment build logs how long it took at INFO level (`Built segment 'weather' for Sam in 6.2s (refresh)`), as does each refresh in total and any wait a play had for a refresh.
+
 ### `cast_studio.play`
-Plays a routine now from fresh stored segments. Missing or stale segments are built live first.
+Plays a routine now from fresh stored segments. Missing or stale segments are built live first, except weather and commute while a refresh for the person is building them.
 
 | Field | Required | Default | Meaning |
 | :--- | :--- | :--- | :--- |
@@ -240,6 +264,27 @@ actions:
   - action: cast_studio.prebuild
     data:
       person: Sam
+```
+
+**Out of bed: refresh weather and commute before the bathroom routine**
+
+```yaml
+alias: Refresh morning weather and commute
+description: Rebuilds weather and traffic when Alex gets out of bed in the morning, so the bathroom routine plays them fresh.
+mode: single
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.alex_in_bed
+    to: "off"
+conditions:
+  - condition: time
+    after: "06:00:00"
+    before: "10:00:00"
+actions:
+  - action: cast_studio.refresh
+    data:
+      person: Alex
+      routine: Full
 ```
 
 **Wake-up: play when the phone alarm goes off**

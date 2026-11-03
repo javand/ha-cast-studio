@@ -17,6 +17,33 @@ prebuild:
       selector:
         text:
 
+refresh:
+  name: Refresh Dynamic Segments
+  description: Rebuilds only the weather and commute segments of a routine, or of all of a person's routines that have them, so they reflect this moment. Other segments are left as they are. A play started while a refresh runs waits up to 10 seconds for it, then plays the stored segments.
+  fields:
+    person:
+      name: Person
+      description: Person to refresh. Alone, refreshes every routine of that person that has a weather or commute segment; with a routine, picks which person's routine is meant.
+      required: false
+      example: Sam
+      selector:
+        text:
+    routine:
+      name: Routine
+      description: Routine whose weather and commute segments to refresh. Give a person or a routine, or both.
+      required: false
+      example: Quick
+      selector:
+        text:
+    segments:
+      name: Segments
+      description: "Optional. Only these dynamic segment types are refreshed, for example weather. Allowed: commute, weather. Without it, every dynamic type is refreshed. A routine's status sensor lists its dynamic segments in the dynamic_segments attribute."
+      required: false
+      example: weather
+      selector:
+        text:
+          multiple: true
+
 play:
   name: Play Briefing
   description: Plays a routine now from fresh stored segments, building anything missing or stale live first.

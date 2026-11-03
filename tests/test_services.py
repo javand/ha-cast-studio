@@ -54,6 +54,7 @@ async def test_only_the_current_actions_are_registered(
     """The old pipeline's actions are gone; briefing and announcement ones remain."""
     assert set(hass.services.async_services()[DOMAIN]) == {
         "prebuild",
+        "refresh",
         "play",
         "rebuild_announcement",
         "announce",
@@ -112,6 +113,40 @@ async def test_play_and_prebuild_actions_resolve_routines(
                 )
 
 
+async def test_refresh_action_resolves_routine_and_person(
+    hass: Any, sam_quick: Any
+) -> None:
+    """``refresh`` targets a routine or a person, like ``prebuild``."""
+    import voluptuous as vol
+    from homeassistant.exceptions import HomeAssistantError
+
+    with patch(
+        "custom_components.cast_studio.briefing.async_refresh", new=AsyncMock()
+    ) as refresh:
+        await hass.services.async_call(
+            DOMAIN, "refresh", {"routine": "Quick", "person": "Sam"}, blocking=True
+        )
+        assert refresh.await_args.kwargs["routine"].routine_id == "r_sam_quick"
+
+        await hass.services.async_call(
+            DOMAIN, "refresh", {"person": "Sam"}, blocking=True
+        )
+        assert refresh.await_args.kwargs["person"].name == "Sam"
+        assert refresh.await_args.kwargs["segments"] is None
+
+        await hass.services.async_call(
+            DOMAIN, "refresh", {"person": "Sam", "segments": "weather"}, blocking=True
+        )
+        assert refresh.await_args.kwargs["segments"] == ["weather"]
+
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(DOMAIN, "refresh", {}, blocking=True)
+        with pytest.raises(HomeAssistantError, match="not found"):
+            await hass.services.async_call(
+                DOMAIN, "refresh", {"person": "Nobody"}, blocking=True
+            )
+
+
 async def test_routine_sensor_entity_id_is_person_and_routine_slug(
     hass: Any, sam_quick: Any
 ) -> None:
@@ -123,6 +158,7 @@ async def test_routine_sensor_entity_id_is_person_and_routine_slug(
     assert state.attributes["routine"] == "Quick"
     assert state.attributes["briefing_day"]
     assert state.attributes["ready_segments"] == []
+    assert state.attributes["dynamic_segments"] == ["weather"]
 
 
 async def test_play_action_target_must_be_a_media_player(
