@@ -1264,7 +1264,7 @@ async def test_person_form_has_one_voice_picker(
 VOICE_HELP = (
     "Who speaks every segment of this person's routines. Pick several to get "
     "a different one each day. A routine can give individual segments a "
-    "different voice under Advanced."
+    "different voice in its own Advanced section."
 )
 
 
@@ -1657,3 +1657,37 @@ def test_routine_voice_change_strings() -> None:
         fields = data["selector"]["voice_changes"]["fields"]
         assert fields["segment"]["name"] == "Segment"
         assert fields["personas"]["name"] == "Voice"
+
+
+def test_every_form_field_has_help_text() -> None:
+    """Each field and section says what it does, in both translation files."""
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        steps = {
+            **{f"config.{k}": v for k, v in data["config"]["step"].items()},
+            **{f"options.{k}": v for k, v in data["options"]["step"].items()},
+            **{
+                f"{kind}.{k}": v
+                for kind, sub in data["config_subentries"].items()
+                for k, v in sub["step"].items()
+            },
+        }
+        missing = []
+        for name, step in steps.items():
+            missing += [
+                f"{name}.{key}"
+                for key in step.get("data", {})
+                if not step.get("data_description", {}).get(key)
+            ]
+            for section_name, section in step.get("sections", {}).items():
+                if not section.get("description"):
+                    missing.append(f"{name}.{section_name}")
+                missing += [
+                    f"{name}.{section_name}.{key}"
+                    for key in section.get("data", {})
+                    if not section.get("data_description", {}).get(key)
+                ]
+        assert missing == []
+        person = data["config_subentries"]["person"]["step"]["user"]
+        assert "voice" not in person["sections"]["advanced"]["description"].lower()

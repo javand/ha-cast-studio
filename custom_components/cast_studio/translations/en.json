@@ -15,7 +15,12 @@
         },
         "data_description": {
           "phonetic_name": "How the name should be spoken, for example Al-ex. Leave blank to say it as written.",
-          "commute_destination_zone": "Zone used as the commute map destination. Leave empty to use zone.work or zone.office if they exist; otherwise the map is skipped."
+          "commute_destination_zone": "Zone used as the commute map destination. Leave empty to use zone.work or zone.office if they exist; otherwise the map is skipped.",
+          "api_key": "Gemini API key for writing, images and voices. Leave empty to reuse the key from the Google Generative AI integration, or to use a Home Assistant conversation agent if there is none.",
+          "maps_api_key": "Shows a route map on the commute slide (needs the Directions and Static Maps APIs). Leave empty to reuse a key from Google Travel Time, Google Maps or secrets.yaml; with none, a simple drawn map is used.",
+          "default_transportation_mode": "Travel mode new people start with. Fastest compares driving and transit and leads with the quicker one.",
+          "output_dir": "Folder where built briefings are stored. Keep it under /config/www so displays can load the files.",
+          "recipient_name": "Who the first briefing is for. It greets them by this name."
         }
       }
     },
@@ -51,15 +56,17 @@
           "data_description": {
             "phonetic_name": "How the name should be spoken, for example Al-ex.",
             "media_player": "Where this person's briefings play.",
-            "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice under Advanced.",
+            "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice in its own Advanced section.",
             "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
             "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
-            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
+            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped.",
+            "name": "Who the briefings are for. The greeting uses this name.",
+            "transportation_mode": "How this person gets to work. Fastest compares driving and transit and leads with the quicker one."
           },
           "sections": {
             "advanced": {
               "name": "Advanced",
-              "description": "Entities, voices and greeting details used to build this person's segments.",
+              "description": "Entities, a backup writer and greeting details used to build this person's segments.",
               "data": {
                 "weather_entity": "Weather entity",
                 "calendar_entities": "Calendars",
@@ -85,7 +92,10 @@
                 "conversation_agent": "Backup writer for the briefing, used only when Gemini isn't set up or a Gemini request fails. Leave empty for Home Assistant's default agent.",
                 "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
                 "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",
-                "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day."
+                "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day.",
+                "weather_entity": "Weather for the weather segment.",
+                "calendar_entities": "Calendars read by the agenda segment. Add as many as you like; their events are merged and called \"your calendar\".",
+                "todo_entities": "To-do lists read by the agenda segment after the calendar. Add as many as you like; they are called \"your to-do list\"."
               }
             }
           }
@@ -106,15 +116,17 @@
           "data_description": {
             "phonetic_name": "How the name should be spoken, for example Al-ex.",
             "media_player": "Where this person's briefings play.",
-            "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice under Advanced.",
+            "voice_personas": "Who speaks every segment of this person's routines. Pick several to get a different one each day. A routine can give individual segments a different voice in its own Advanced section.",
             "reset_time": "When this person's briefing day starts. Content from before this time counts as yesterday's.",
             "max_age_minutes": "Stored content older than this is rebuilt before it plays. 0 turns this off.",
-            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped."
+            "commute_destination_zone": "The zone this person commutes to. The commute segment needs it, plus a commute sensor in Advanced; without both, the commute segment is skipped.",
+            "name": "Who the briefings are for. The greeting uses this name.",
+            "transportation_mode": "How this person gets to work. Fastest compares driving and transit and leads with the quicker one."
           },
           "sections": {
             "advanced": {
               "name": "Advanced",
-              "description": "Entities, voices and greeting details used to build this person's segments.",
+              "description": "Entities, a backup writer and greeting details used to build this person's segments.",
               "data": {
                 "weather_entity": "Weather entity",
                 "calendar_entities": "Calendars",
@@ -140,7 +152,10 @@
                 "conversation_agent": "Backup writer for the briefing, used only when Gemini isn't set up or a Gemini request fails. Leave empty for Home Assistant's default agent.",
                 "greeting_title": "Large text on the greeting slide. Leave empty to show the person's name.",
                 "greeting_subtitle": "Smaller line under the greeting title. Leave empty for \"Good Morning\".",
-                "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day."
+                "greeting_image": "Background for the greeting slide: pick one from your media or upload it. Leave empty for a new AI-generated image each day.",
+                "weather_entity": "Weather for the weather segment.",
+                "calendar_entities": "Calendars read by the agenda segment. Add as many as you like; their events are merged and called \"your calendar\".",
+                "todo_entities": "To-do lists read by the agenda segment after the calendar. Add as many as you like; they are called \"your to-do list\"."
               }
             }
           }
@@ -178,7 +193,8 @@
             "segments": "Segments play in the order you pick them.",
             "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
-            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
+            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device.",
+            "person_id": "Who this routine is for. It uses their voice, entities and output device."
           },
           "sections": {
             "advanced": {
@@ -188,7 +204,8 @@
               },
               "data_description": {
                 "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds."
-              }
+              },
+              "description": "Optional changes for this routine only."
             }
           }
         },
@@ -207,7 +224,8 @@
             "segments": "Segments play in the order you pick them.",
             "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
-            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
+            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device.",
+            "person_id": "Who this routine is for. It uses their voice, entities and output device."
           },
           "sections": {
             "advanced": {
@@ -217,7 +235,8 @@
               },
               "data_description": {
                 "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds."
-              }
+              },
+              "description": "Optional changes for this routine only."
             }
           }
         }
@@ -318,6 +337,12 @@
           "maps_api_key": "Google Maps API Key (Optional)",
           "default_transportation_mode": "Default Transportation Mode",
           "output_dir": "Output Directory"
+        },
+        "data_description": {
+          "api_key": "Gemini API key for writing, images and voices. Leave empty to reuse the key from the Google Generative AI integration, or to use a Home Assistant conversation agent if there is none.",
+          "maps_api_key": "Shows a route map on the commute slide (needs the Directions and Static Maps APIs). Leave empty to reuse a key from Google Travel Time, Google Maps or secrets.yaml; with none, a simple drawn map is used.",
+          "default_transportation_mode": "Travel mode new people start with. Fastest compares driving and transit and leads with the quicker one.",
+          "output_dir": "Folder where built briefings are stored. Keep it under /config/www so displays can load the files."
         }
       }
     }
