@@ -1495,3 +1495,161 @@ def test_announcement_translations_present() -> None:
             "static",
             "daily",
         }
+
+
+# --- Voice changes per routine ----------------------------------------------
+
+
+def _voice_change_segments(schema: vol.Schema) -> list[str]:
+    row = _advanced_selectors(schema)["voice_changes"]
+    return row.config["fields"]["segment"]["selector"]["select"]["options"]
+
+
+async def _sam_routine(
+    hass: HomeAssistant, entry: MockConfigEntry, **extra: Any
+) -> dict[str, Any]:
+    return await _add_routine(
+        hass,
+        entry,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting", "weather", "daily_encouragement", "closing"],
+            **extra,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_edit_routine_lists_only_its_segments(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    await _sam_routine(hass, entry_with_sam)
+    routine = find_routine(entry_with_sam, "Morning")
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    assert _voice_change_segments(result["data_schema"]) == [
+        "greeting",
+        "weather",
+        "daily_encouragement",
+        "closing",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_routine_lists_every_segment(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    result = await _start_subentry(hass, entry_with_sam, "routine")
+    assert _voice_change_segments(result["data_schema"]) == list(SEGMENT_TYPES)
+
+
+@pytest.mark.asyncio
+async def test_add_routine_rejects_change_for_unpicked_segment(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    result = await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting"],
+            "advanced": {
+                "voice_changes": [{"segment": "weather", "personas": ["theo"]}]
+            },
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["errors"] == {"base": "voice_change_not_in_routine"}
+    assert get_routines(entry_with_sam) == []
+
+
+@pytest.mark.asyncio
+async def test_edit_routine_drops_change_for_removed_segment(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    change = {"segment": "weather", "personas": ["theo"]}
+    await _sam_routine(hass, entry_with_sam, advanced={"voice_changes": [change]})
+    routine = find_routine(entry_with_sam, "Morning")
+    assert routine.voice_changes == (("weather", ("theo",)),)
+
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting", "closing"],
+            "advanced": {"voice_changes": [change]},
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    subentry = entry_with_sam.subentries[routine.routine_id]
+    assert subentry.data.get("voice_changes", []) == []
+
+
+@pytest.mark.asyncio
+async def test_routine_voice_changes_saved_flat(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    result = await _add_routine(
+        hass,
+        entry_with_sam,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting", "scripture"],
+            "advanced": {
+                "voice_changes": [
+                    {"segment": "scripture", "personas": ["malenfant"]},
+                    {"segment": "greeting", "personas": []},
+                ]
+            },
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    routine = find_routine(entry_with_sam, "Morning")
+    data = entry_with_sam.subentries[routine.routine_id].data
+    assert data["voice_changes"] == [
+        {"segment": "scripture", "personas": ["malenfant"]}
+    ]
+    assert "advanced" not in data
+
+
+@pytest.mark.asyncio
+async def test_edit_routine_suggests_saved_voice_changes(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    change = {"segment": "weather", "personas": ["theo"]}
+    await _sam_routine(hass, entry_with_sam, advanced={"voice_changes": [change]})
+    routine = find_routine(entry_with_sam, "Morning")
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    advanced = next(
+        value
+        for key, value in result["data_schema"].schema.items()
+        if str(key) == "advanced"
+    )
+    key = next(k for k in advanced.schema.schema if str(k) == "voice_changes")
+    assert key.description == {"suggested_value": [change]}
+
+
+def test_routine_voice_change_strings() -> None:
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        routine = data["config_subentries"]["routine"]
+        for step in ("user", "reconfigure"):
+            advanced = routine["step"][step]["sections"]["advanced"]
+            assert advanced["name"] == "Advanced"
+            assert advanced["data"]["voice_changes"] == "Voice changes"
+            assert "word for word" in advanced["data_description"]["voice_changes"]
+        assert "voice_change_not_in_routine" in routine["error"]
+        fields = data["selector"]["voice_changes"]["fields"]
+        assert fields["segment"]["name"] == "Segment"
+        assert fields["personas"]["name"] == "Voice"

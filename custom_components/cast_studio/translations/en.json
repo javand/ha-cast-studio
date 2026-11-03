@@ -179,6 +179,17 @@
             "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
             "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
+          },
+          "sections": {
+            "advanced": {
+              "name": "Advanced",
+              "data": {
+                "voice_changes": "Voice changes"
+              },
+              "data_description": {
+                "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds."
+              }
+            }
           }
         },
         "reconfigure": {
@@ -197,13 +208,25 @@
             "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
             "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
             "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device."
+          },
+          "sections": {
+            "advanced": {
+              "name": "Advanced",
+              "data": {
+                "voice_changes": "Voice changes"
+              },
+              "data_description": {
+                "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds."
+              }
+            }
           }
         }
       },
       "error": {
         "duplicate_routine": "This person already has a routine with that name.",
         "no_segments": "Pick at least one segment.",
-        "invalid_name": "Enter a routine name with at least one letter or number."
+        "invalid_name": "Enter a routine name with at least one letter or number.",
+        "voice_change_not_in_routine": "A voice change names a segment that isn't in this routine. Add the segment or remove the voice change."
       },
       "abort": {
         "no_people": "Add a person before adding a routine.",
@@ -348,6 +371,17 @@
       "options": {
         "static": "Static",
         "daily": "Daily"
+      }
+    },
+    "voice_changes": {
+      "fields": {
+        "segment": {
+          "name": "Segment"
+        },
+        "personas": {
+          "name": "Voice",
+          "description": "Pick several to get a different one each day."
+        }
       }
     }
   },

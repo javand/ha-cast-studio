@@ -74,6 +74,7 @@ from .people import (
     ROUTINE_OUTPUT_FORMAT,
     ROUTINE_PERSON_ID,
     ROUTINE_SEGMENTS,
+    ROUTINE_VOICE_CHANGES,
     SEGMENT_TYPES,
     SUBENTRY_PERSON,
     SUBENTRY_ROUTINE,
@@ -523,14 +524,35 @@ class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
 
         errors: dict[str, str] = {}
         current = dict(subentry.data) if subentry else {}
+        # A form can't follow the segment chips live, so an edit offers the
+        # segments the routine had when the form opened.
+        segment_choices = (
+            list(subentry.data.get(ROUTINE_SEGMENTS) or [])
+            if subentry
+            else list(SEGMENT_TYPES)
+        )
         if user_input is not None:
             data = _routine_data(user_input)
             current = data
             own_id = subentry.subentry_id if subentry else None
+            stray = [
+                change
+                for change in data[ROUTINE_VOICE_CHANGES]
+                if change["segment"] not in data[ROUTINE_SEGMENTS]
+            ]
+            if subentry is not None:
+                # Removing a segment from a routine drops its voice change.
+                data[ROUTINE_VOICE_CHANGES] = [
+                    change
+                    for change in data[ROUTINE_VOICE_CHANGES]
+                    if change not in stray
+                ]
             if not is_valid_name(data[ROUTINE_NAME]):
                 errors["base"] = "invalid_name"
             elif not data[ROUTINE_SEGMENTS]:
                 errors[ROUTINE_SEGMENTS] = "no_segments"
+            elif subentry is None and stray:
+                errors["base"] = "voice_change_not_in_routine"
             elif any(
                 routine.routine_id != own_id
                 and slugify_name(routine.name) == slugify_name(data[ROUTINE_NAME])
@@ -551,13 +573,17 @@ class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
         return self.async_show_form(
             step_id=step_id,
             data_schema=_routine_schema(
-                people, current, await async_dashboard_options(self.hass)
+                people,
+                current,
+                await async_dashboard_options(self.hass),
+                segment_choices,
             ),
             errors=errors,
         )
 
 
 def _routine_data(user_input: dict[str, Any]) -> dict[str, Any]:
+    advanced = user_input.get(ADVANCED_SECTION) or {}
     return {
         ROUTINE_PERSON_ID: user_input[ROUTINE_PERSON_ID],
         ROUTINE_NAME: (user_input.get(ROUTINE_NAME) or "").strip(),
@@ -566,6 +592,11 @@ def _routine_data(user_input: dict[str, Any]) -> dict[str, Any]:
         or DEFAULT_OUTPUT_FORMAT,
         **_split_dashboard(user_input.get(ROUTINE_DASHBOARD)),
         ROUTINE_DASHBOARD_DISPLAY: user_input.get(ROUTINE_DASHBOARD_DISPLAY) or None,
+        ROUTINE_VOICE_CHANGES: [
+            {"segment": row["segment"], "personas": list(row["personas"])}
+            for row in advanced.get(ROUTINE_VOICE_CHANGES) or []
+            if isinstance(row, dict) and row.get("segment") and row.get("personas")
+        ],
     }
 
 
@@ -636,6 +667,7 @@ def _routine_schema(
     people: list[Any],
     current: dict[str, Any],
     dashboards: list[selector.SelectOptionDict],
+    segment_choices: list[str],
 ) -> vol.Schema:
     person_options = [
         selector.SelectOptionDict(value=p.person_id, label=p.name) for p in people
@@ -690,7 +722,46 @@ def _routine_schema(
                 ROUTINE_DASHBOARD_DISPLAY,
                 description=_suggested(current.get(ROUTINE_DASHBOARD_DISPLAY)),
             ): _cast_display_selector(),
+            vol.Optional(ADVANCED_SECTION): section(
+                vol.Schema(
+                    {
+                        vol.Optional(
+                            ROUTINE_VOICE_CHANGES,
+                            description=_suggested(
+                                current.get(ROUTINE_VOICE_CHANGES) or None
+                            ),
+                        ): _voice_changes_selector(segment_choices)
+                    }
+                ),
+                {"collapsed": True},
+            ),
         }
+    )
+
+
+def _voice_changes_selector(segment_choices: list[str]) -> selector.ObjectSelector:
+    """Rows of one routine segment and the persona(s) that voice it."""
+    return selector.ObjectSelector(
+        selector.ObjectSelectorConfig(
+            multiple=True,
+            fields={
+                "segment": {
+                    "selector": {
+                        "select": {
+                            "options": segment_choices,
+                            "translation_key": "segment_type",
+                        }
+                    },
+                    "required": True,
+                },
+                "personas": {
+                    "selector": {"select": _persona_selector().config},
+                    "required": True,
+                },
+            },
+            label_field="segment",
+            translation_key=ROUTINE_VOICE_CHANGES,
+        )
     )
 
 
