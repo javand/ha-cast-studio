@@ -104,11 +104,8 @@ def test_extract_entity_context_all_domains():
     ctx = _extract_entity_context(hass, step)
     assert "Focus on high priority tasks" in ctx
     assert "Weather (weather.home): Condition: partlycloudy, Temperature: 72°F" in ctx
-    assert (
-        "Calendar (calendar.work): State: on, Summary: Team Standup, Start: 09:00:00"
-        in ctx
-    )
-    assert "To-do (todo.groceries): 4 tasks pending" in ctx
+    assert "Calendar: State: on, Summary: Team Standup, Start: 09:00:00" in ctx
+    assert "To-do list: 4 tasks pending" in ctx
     assert "Sensor (sensor.power): 23.5 kWh" in ctx
 
 
@@ -186,7 +183,7 @@ def test_extract_entity_context_empty_calendar():
     step = {"entity_id": "calendar.personal"}
     context = _extract_entity_context(hass, step)
     assert (
-        "Calendar (calendar.personal): No scheduled meetings today. The user's schedule is completely clear."
+        "Calendar: No scheduled meetings today. The user's schedule is completely clear."
         in context
     )
     assert "State: off" not in context
@@ -891,9 +888,9 @@ async def test_agenda_step_extracts_both_calendar_and_todo_context() -> None:
         "todo_entity": "todo.tasks",
     }
     context = await async_extract_entity_context(mock_hass, agenda_step)
-    assert "Calendar (calendar.work):" in context
+    assert "Calendar: Summary: Team Sync" in context
     assert "Team Sync" in context
-    assert "To-do (todo.tasks):" in context
+    assert "To-do list: 1 tasks pending: Buy groceries" in context
     assert "Buy groceries" in context
 
 
@@ -1172,7 +1169,7 @@ async def test_async_extract_entity_context_attaches_structured_agenda_data() ->
         "todo_entity": "todo.daily",
     }
     context = await async_extract_entity_context(mock_hass, step)
-    assert "calendar.personal" in context
+    assert "calendar.personal" not in context
     assert "Team Architecture Alignment" in context
     assert "Review pull request" in context
 
@@ -1193,7 +1190,7 @@ async def test_async_extract_entity_context_attaches_structured_agenda_data() ->
     ]
 
 
-async def test_agenda_names_each_calendar_and_merges_events_by_time() -> None:
+async def test_agenda_merges_calendars_unnamed_and_events_by_time() -> None:
     """Two calendars: each is named in the context, events share one timeline."""
     events = {
         "calendar.personal": [
@@ -1226,17 +1223,18 @@ async def test_agenda_names_each_calendar_and_merges_events_by_time() -> None:
     step = {"name": "agenda", "calendar_entities": list(events)}
     context = await async_extract_entity_context(mock_hass, step)
 
-    assert "Calendar 'Personal' (calendar.personal): Summary: Dentist" in context
-    assert "Calendar 'Family' (calendar.family): Summary: School drop-off" in context
-    assert "Calendar 'Work' (calendar.empty): No events on this calendar today." in (
-        context
-    )
+    assert "Calendar: Summary: Dentist" in context
+    assert "Calendar: Summary: School drop-off" in context
+    assert "Calendar: No events on this calendar today." in context
+    # The person hears "your calendar": no calendar names or ids to read out.
+    for leak in ("Personal", "Family", "Work", "calendar."):
+        assert leak not in context
     titles = [ev["title"] for ev in step["card"]["agenda_data"]["calendar_events"]]
     assert titles == ["Grandma visiting", "School drop-off", "Dentist"]
 
 
-async def test_agenda_context_names_each_todo_list() -> None:
-    """Tasks from several to-do lists all reach the card, each list named."""
+async def test_agenda_context_merges_todo_lists_unnamed() -> None:
+    """Tasks from several to-do lists all reach the card, no list named."""
     items = {
         "todo.sam": [{"summary": "Call the bank"}],
         "todo.chores": [{"summary": "Take out trash"}, {"summary": "Mow lawn"}],
@@ -1258,11 +1256,11 @@ async def test_agenda_context_names_each_todo_list() -> None:
     step = {"name": "agenda", "todo_entities": list(items)}
     context = await async_extract_entity_context(mock_hass, step)
 
-    assert "To-do 'Sam's list' (todo.sam): 1 tasks pending: Call the bank" in context
-    assert (
-        "To-do 'Chores' (todo.chores): 2 tasks pending: Take out trash, Mow lawn"
-        in context
-    )
+    assert "To-do list: 1 tasks pending: Call the bank" in context
+    assert "To-do list: 2 tasks pending: Take out trash, Mow lawn" in context
+    # The person hears "your to-do list": no list names or ids to read out.
+    for leak in ("Sam's list", "Chores", "todo."):
+        assert leak not in context
     assert step["card"]["agenda_data"]["todo_items"] == [
         "Call the bank",
         "Take out trash",
