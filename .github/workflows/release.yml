@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Automated Release
@@ -21,19 +25,62 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 (v4)
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # The deploy key may bypass main's ruleset, so the bump commit
+          # can be pushed without a PR.
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
-      - name: Read manifest version
+      - name: Determine next version
+        id: next
+        uses: mathieudutour/github-tag-action@a22cf08638b34d5badda920f9daf6e72c477b07b # v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          tag_prefix: v
+          release_branches: main
+          dry_run: true
+
+      - name: Pick release version
         id: tag_version
+        env:
+          NEXT_VERSION: ${{ steps.next.outputs.new_version }}
         run: |
           # The manifest is the version Home Assistant shows, so it names the
-          # release. Bump it in the PR; a merge without a bump releases nothing.
-          version="$(jq -r .version custom_components/cast_studio/manifest.json)"
-          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
-            echo "v${version} already released; nothing to do."
+          # release. A manifest already bumped past the last tag is used as
+          # is; otherwise the commits since that tag pick the bump
+          # (feat: minor, BREAKING CHANGE: major, anything else: patch).
+          manifest_version="$(jq -r .version custom_components/cast_studio/manifest.json)"
+          latest_tag="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          latest="${latest_tag#v}"
+          if [ -n "$latest" ] \
+            && [ "$manifest_version" != "$latest" ] \
+            && [ "$(printf '%s\n%s\n' "$latest" "$manifest_version" | sort -V | tail -n1)" = "$manifest_version" ]; then
+            version="$manifest_version"
           else
-            echo "new_tag=v${version}" >> "$GITHUB_OUTPUT"
+            version="$NEXT_VERSION"
           fi
+          if [ -z "$version" ] || git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
+            echo "Nothing to release."
+            exit 0
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "new_tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Bump manifest version
+        id: bump
+        if: steps.tag_version.outputs.new_tag
+        env:
+          VERSION: ${{ steps.tag_version.outputs.version }}
+        run: |
+          manifest=custom_components/cast_studio/manifest.json
+          if [ "$(jq -r .version "$manifest")" != "$VERSION" ]; then
+            jq --arg v "$VERSION" '.version = $v' "$manifest" > "$manifest.tmp"
+            mv "$manifest.tmp" "$manifest"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "chore(release): v${VERSION} [skip ci]"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         if: steps.tag_version.outputs.new_tag
@@ -41,6 +88,6 @@ jobs:
         with:
           tag_name: ${{ steps.tag_version.outputs.new_tag }}
           name: ${{ steps.tag_version.outputs.new_tag }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ steps.bump.outputs.sha }}
           generate_release_notes: true
           token: ${{ secrets.GITHUB_TOKEN }}
