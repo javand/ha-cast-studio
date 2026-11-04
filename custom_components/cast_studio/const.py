@@ -21,11 +21,23 @@ CONF_COMMUTE_DESTINATION = "commute_destination_zone"
 CONF_TEXT_MODEL = "text_model"
 CONF_IMAGE_MODEL = "image_model"
 CONF_VOICE_MODEL = "voice_model"
-DEFAULT_TEXT_MODEL = "gemini-2.5-flash"
-DEFAULT_IMAGE_MODEL = "gemini-2.5-flash-image"
+DEFAULT_TEXT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-lite-image"
 DEFAULT_VOICE_MODEL = "gemini-3.8-flash-lite-tts"
-TEXT_MODELS = ("gemini-2.5-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite")
-IMAGE_MODELS = ("gemini-2.5-flash-image",)
+TEXT_MODELS = (
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+)
+IMAGE_MODELS = (
+    "gemini-3.1-flash-lite-image",
+    "gemini-nano-banana-2.1",
+    "gemini-3.1-flash-image",
+    "gemini-3-pro-image",
+    "gemini-2.5-flash-image",
+)
 VOICE_MODELS = (
     "gemini-3.8-flash-lite-tts",
     "gemini-3.8-flash-tts",

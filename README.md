@@ -183,7 +183,7 @@ Plays a routine now from fresh stored segments. Missing or stale segments are bu
 - Played segment types are recorded per routine when playback starts. `skip_played: true` relies on that routine's record, which resets with the briefing day.
 
 ### Gemini models
-CastStudio's options (**Settings → Devices & services → CastStudio → Configure**) pick the Gemini model for each job: **Writing model** (default `gemini-2.5-flash`), **Image model** (default `gemini-2.5-flash-image`) and **Voice model** (default `gemini-3.8-flash-lite-tts`). Each list offers known models, and you can type any other Gemini model name. Each model has its own daily request limit, so switching the voice model is a way out when one model's quota is used up. A change applies to the next build; run `cast_studio.prebuild` to rebuild today's segments with it.
+CastStudio's options (**Settings → Devices & services → CastStudio → Configure**) pick the Gemini model for each job: **Writing model** (default `gemini-3.5-flash-lite`), **Image model** (default `gemini-3.1-flash-lite-image`) and **Voice model** (default `gemini-3.8-flash-lite-tts`). Each list offers known models, and you can type any other Gemini model name. Each model has its own daily request limit, so switching the voice model is a way out when one model's quota is used up. A change applies to the next build; run `cast_studio.prebuild` to rebuild today's segments with it.
 
 ### AI account problems
 When Gemini or OpenAI rejects a request because of the account (key rejected, billing or credits, access denied, or quota used up), briefings still play with the fallback voice and text, and CastStudio tells you:

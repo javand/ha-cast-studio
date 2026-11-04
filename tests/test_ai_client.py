@@ -928,8 +928,8 @@ async def test_credentials_carry_the_configured_models() -> None:
 async def test_credentials_default_models() -> None:
     hass = _hass_with_entries({DOMAIN: [_entry({"api_key": "k"})]})
     creds = await async_discover_ai_credentials(hass)
-    assert creds["text_model"] == "gemini-2.5-flash"
-    assert creds["image_model"] == "gemini-2.5-flash-image"
+    assert creds["text_model"] == "gemini-3.5-flash-lite"
+    assert creds["image_model"] == "gemini-3.1-flash-lite-image"
     assert creds["voice_model"] == "gemini-3.8-flash-lite-tts"
 
 
