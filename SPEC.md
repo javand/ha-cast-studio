@@ -114,6 +114,8 @@ ha-cast-studio/
 }
 ```
 
+`version` is set by the release workflow, not by hand. On each push to `main` it picks the next version from the commits since the last tag (`feat:` minor, `BREAKING CHANGE:` major, anything else patch), writes it to `manifest.json`, pushes that commit with the `RELEASE_DEPLOY_KEY` deploy key (which may bypass the `main` ruleset) and releases it. A manifest already bumped past the last tag in the PR is released as is.
+
 ### 5.2. Actions (`services.yaml`)
 1. **`cast_studio.prebuild`**: builds and stores a routine's segments, or the union of a person's routines, without playing.
 2. **`cast_studio.refresh`**: rebuilds only the refresh segments of a routine (its `refresh_segments`, default weather and commute), or the union of every routine of a person, even when fresh. Visual routines in scope get their stitched files re-stored.
