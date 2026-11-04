@@ -351,8 +351,8 @@
           "maps_api_key": "Shows a route map on the commute slide (needs the Directions and Static Maps APIs). Leave empty to reuse a key from Google Travel Time, Google Maps or secrets.yaml; with none, a simple drawn map is used.",
           "default_transportation_mode": "Travel mode new people start with. Fastest compares driving and transit and leads with the quicker one.",
           "output_dir": "Folder where built briefings are stored. Keep it under /config/www so displays can load the files.",
-          "text_model": "Gemini model that writes the briefing text. Pick one or type any Gemini model name. Default: gemini-2.5-flash.",
-          "image_model": "Gemini model that draws the slide images. Pick one or type any Gemini image model name. Default: gemini-2.5-flash-image.",
+          "text_model": "Gemini model that writes the briefing text. Pick one or type any Gemini model name. Default: gemini-3.5-flash-lite.",
+          "image_model": "Gemini model that draws the slide images. Pick one or type any Gemini image model name. Default: gemini-3.1-flash-lite-image.",
           "voice_model": "Gemini model that speaks the briefing. Each model has its own daily limit; when it runs out, Home Assistant's own TTS reads instead. Default: gemini-3.8-flash-lite-tts."
         }
       }
