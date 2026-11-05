@@ -70,6 +70,40 @@ def test_find_announcement_by_id_and_name() -> None:
         find_announcement(entry, "Patio Door")
 
 
+def test_template_announcement_subentry_parsing() -> None:
+    entry = make_entry(
+        [
+            announcement_subentry(
+                "a1",
+                "Warriors Gameday",
+                visual_mode="template",
+                template_image="media-source://media_source/local/warriors_slide.png",
+                template_prompt="Show Warriors gameday from sensor.nba_golden_state_warriors",
+                template_layout={"elements": [{"text": "Warriors", "box": [400, 100, 500, 60]}]},
+                audio_mode="chime_and_voice",
+                chime_sound="media-source://media_source/local/espn-notification.mp3",
+                hold_seconds=8.0,
+            )
+        ]
+    )
+    [ann] = get_announcements(entry)
+    assert ann.visual_mode == "template"
+    assert ann.template_image == "media-source://media_source/local/warriors_slide.png"
+    assert ann.template_prompt == "Show Warriors gameday from sensor.nba_golden_state_warriors"
+    assert ann.template_layout == {"elements": [{"text": "Warriors", "box": [400, 100, 500, 60]}]}
+    assert ann.audio_mode == "chime_and_voice"
+    assert ann.chime_sound == "media-source://media_source/local/espn-notification.mp3"
+    assert ann.hold_seconds == 8.0
+
+    # Test fingerprint changes with template or chime changes
+    base_fp = settings_fingerprint(ann)
+    ann2 = _one(
+        visual_mode="template",
+        template_image="media-source://media_source/local/other.png",
+    )
+    assert settings_fingerprint(ann2) != base_fp
+
+
 def test_fingerprint_changes_with_settings_not_rebuild_time() -> None:
     base = settings_fingerprint(_one())
     assert settings_fingerprint(_one(message="Shut it")) != base
