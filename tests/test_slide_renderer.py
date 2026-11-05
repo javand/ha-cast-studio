@@ -1106,3 +1106,50 @@ def test_closing_slide_uses_its_own_layout(tmp_path: Path) -> None:
         )
     assert draw.called
     assert out.is_file()
+
+
+def test_render_template_slide(tmp_path: Path) -> None:
+    from custom_components.cast_studio.slide_renderer import render_template_slide
+
+    bg_path = tmp_path / "bg.png"
+    Image.new("RGB", (1024, 600), "#07192b").save(bg_path)
+
+    out_path = tmp_path / "output.jpg"
+    elements = [
+        {
+            "role": "badge",
+            "text": "Upcoming Game",
+            "box": [400, 80, 200, 40],
+            "font_size": 18,
+            "font_weight": "bold",
+            "color": "#ffffff",
+            "badge": True,
+        },
+        {
+            "role": "title",
+            "text": "Golden State Warriors",
+            "box": [400, 140, 500, 80],
+            "font_size": 48,
+            "font_weight": "bold",
+            "color": "#ffffff",
+            "align": "left",
+            "style": "normal",
+        },
+        {
+            "role": "subtitle",
+            "text": "vs. Miami Heat",
+            "box": [400, 230, 500, 50],
+            "font_size": 32,
+            "font_weight": "regular",
+            "color": "#ffffff",
+            "align": "left",
+            "style": "normal",
+        },
+    ]
+    result = render_template_slide(str(bg_path), elements, str(out_path))
+    assert Path(result).is_file()
+    assert result == str(out_path)
+    with Image.open(result) as img:
+        assert img.size == (1024, 600)
+        assert img.mode == "RGB"
+
