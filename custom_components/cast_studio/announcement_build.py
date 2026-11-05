@@ -27,12 +27,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import template
 
 from .ai_client import async_generate_ai_image, async_generate_announcement_words
 from .announcements import (
     MAX_PICTURES,
     announcement_day,
     pick_build_persona,
+    resolve_local_media_file,
     resolve_local_picture,
     settings_fingerprint,
 )
@@ -42,12 +44,13 @@ from .helpers import async_run_in_executor, write_json_atomic
 from .people import get_loaded_entry, get_people
 from .pronunciation import apply_pronunciations, build_household_lexicon
 from .segments import (
+    async_concat_audio,
     async_encode_segment_audio,
     async_encode_segment_clip,
     is_safe_subpath,
     versioned_path,
 )
-from .slide_renderer import render_slide
+from .slide_renderer import render_slide, render_template_slide
 from .tts_client import async_synthesize_speech
 
 if TYPE_CHECKING:
@@ -272,68 +275,173 @@ async def async_build_announcement(  # noqa: PLR0913
     words, note = await _async_words(hass, announcement, persona, ai_creds, previous)
     notes = [note] if note else []
 
-    entry = get_loaded_entry(hass)
-    lexicon = build_household_lexicon(get_people(entry)) if entry else []
-    spoken = apply_pronunciations(words, lexicon)
-
     scratch = Path(
         await async_run_in_executor(hass, tempfile.mkdtemp, prefix="cast_studio_ann_")
     )
     try:
-        wav = scratch / "speech.wav"
-        wav = Path(
-            await async_synthesize_speech(
-                hass,
-                spoken,
-                persona.gemini_voice,
-                persona.character,
-                str(wav),
-                ai_creds,
-                voice_profile=persona.delivery,
-                openai_voice=persona.openai_voice,
-            )
-            or wav
-        )
-        mp3 = scratch / "speech.mp3"
-        if not await async_encode_segment_audio(hass, str(wav), str(mp3)):
-            msg = f"FFmpeg audio encode failed for announcement '{announcement.name}'"
-            raise HomeAssistantError(msg)
-        audio_duration = await async_run_in_executor(
-            hass, get_audio_duration, str(wav), fallback_text=words
-        )
-        staged: dict[str, Path] = {"speech": mp3}
+        audio_source_for_clip: Path
+        clip_pad_seconds = FINAL_SLIDE_PAD_SECONDS
 
-        clip_duration: float | None = None
-        if announcement.output_format == "visual":
-            pictures = await async_run_in_executor(
-                hass, _read_pictures, hass, announcement
+        if announcement.audio_mode == "sound":
+            chime_file = await async_run_in_executor(
+                hass, resolve_local_media_file, hass, announcement.chime_sound
             )
-            slide = await async_generate_ai_image(
-                hass,
-                _slide_prompt(announcement, words),
-                str(scratch / "slide.png"),
-                ai_creds,
-                reference_images=[(mime, data) for _, mime, data in pictures],
-                aspect_ratio="16:9",
+            if chime_file is None or not chime_file.is_file():
+                msg = f"Chime sound file '{announcement.chime_sound}' not found"
+                raise HomeAssistantError(msg)
+            mp3 = scratch / "speech.mp3"
+            if not await async_encode_segment_audio(hass, str(chime_file), str(mp3)):
+                msg = f"FFmpeg audio encode failed for announcement '{announcement.name}'"
+                raise HomeAssistantError(msg)
+            audio_duration = await async_run_in_executor(
+                hass, get_audio_duration, str(chime_file), fallback_text=words
             )
-            if slide is None:
-                card: dict[str, Any] = {"title": announcement.name, "subtitle": ""}
-                if pictures:
-                    card.update(image_path=str(pictures[0][0]), layout="photo")
-                slide = await async_run_in_executor(
-                    hass, render_slide, card, str(scratch / "slide.jpg")
+            audio_source_for_clip = chime_file
+            clip_pad_seconds = announcement.hold_seconds
+            clip_duration = round(audio_duration + clip_pad_seconds, 2)
+            staged: dict[str, Path] = {"speech": mp3}
+
+        elif announcement.audio_mode == "chime_and_voice":
+            chime_file = await async_run_in_executor(
+                hass, resolve_local_media_file, hass, announcement.chime_sound
+            )
+            if chime_file is None or not chime_file.is_file():
+                msg = f"Chime sound file '{announcement.chime_sound}' not found"
+                raise HomeAssistantError(msg)
+
+            entry = get_loaded_entry(hass)
+            lexicon = build_household_lexicon(get_people(entry)) if entry else []
+            spoken = apply_pronunciations(words, lexicon)
+
+            tts_wav = scratch / "tts.wav"
+            tts_wav = Path(
+                await async_synthesize_speech(
+                    hass,
+                    spoken,
+                    persona.gemini_voice,
+                    persona.character,
+                    str(tts_wav),
+                    ai_creds,
+                    voice_profile=persona.delivery,
+                    openai_voice=persona.openai_voice,
                 )
-                notes.append(NOTE_NO_SLIDE)
-            slide_path = Path(slide)
+                or tts_wav
+            )
+            combined_wav = scratch / "speech.wav"
+            if not await async_concat_audio(
+                hass, str(chime_file), str(tts_wav), str(combined_wav)
+            ):
+                msg = f"FFmpeg chime concatenation failed for announcement '{announcement.name}'"
+                raise HomeAssistantError(msg)
+
+            mp3 = scratch / "speech.mp3"
+            if not await async_encode_segment_audio(hass, str(combined_wav), str(mp3)):
+                msg = f"FFmpeg audio encode failed for announcement '{announcement.name}'"
+                raise HomeAssistantError(msg)
+
+            audio_duration = await async_run_in_executor(
+                hass, get_audio_duration, str(combined_wav), fallback_text=words
+            )
+            audio_source_for_clip = combined_wav
+            clip_pad_seconds = FINAL_SLIDE_PAD_SECONDS
+            clip_duration = round(audio_duration + clip_pad_seconds, 2)
+            staged = {"speech": mp3}
+
+        else:
+            entry = get_loaded_entry(hass)
+            lexicon = build_household_lexicon(get_people(entry)) if entry else []
+            spoken = apply_pronunciations(words, lexicon)
+
+            wav = scratch / "speech.wav"
+            wav = Path(
+                await async_synthesize_speech(
+                    hass,
+                    spoken,
+                    persona.gemini_voice,
+                    persona.character,
+                    str(wav),
+                    ai_creds,
+                    voice_profile=persona.delivery,
+                    openai_voice=persona.openai_voice,
+                )
+                or wav
+            )
+            mp3 = scratch / "speech.mp3"
+            if not await async_encode_segment_audio(hass, str(wav), str(mp3)):
+                msg = f"FFmpeg audio encode failed for announcement '{announcement.name}'"
+                raise HomeAssistantError(msg)
+            audio_duration = await async_run_in_executor(
+                hass, get_audio_duration, str(wav), fallback_text=words
+            )
+            audio_source_for_clip = wav
+            clip_pad_seconds = FINAL_SLIDE_PAD_SECONDS
+            clip_duration = round(audio_duration + clip_pad_seconds, 2)
+            staged = {"speech": mp3}
+
+        if announcement.output_format == "visual":
+            if announcement.visual_mode == "template":
+                bg_file = await async_run_in_executor(
+                    hass, resolve_local_media_file, hass, announcement.template_image
+                )
+                if bg_file is None or not bg_file.is_file():
+                    msg = f"Template background image '{announcement.template_image}' not found"
+                    raise HomeAssistantError(msg)
+
+                raw_elements = (
+                    (announcement.template_layout or {}).get("elements") or []
+                )
+                evaluated_elements: list[dict[str, Any]] = []
+                for elem in raw_elements:
+                    raw_text = elem.get("template", elem.get("text", ""))
+                    try:
+                        rendered = template.Template(raw_text, hass).async_render(
+                            parse_result=False
+                        )
+                    except Exception:
+                        rendered = raw_text
+                    item = dict(elem)
+                    item["text"] = str(rendered)
+                    evaluated_elements.append(item)
+
+                slide_file = scratch / "slide.jpg"
+                await async_run_in_executor(
+                    hass,
+                    render_template_slide,
+                    str(bg_file),
+                    evaluated_elements,
+                    str(slide_file),
+                )
+                slide_path = Path(slide_file)
+            else:
+                pictures = await async_run_in_executor(
+                    hass, _read_pictures, hass, announcement
+                )
+                slide = await async_generate_ai_image(
+                    hass,
+                    _slide_prompt(announcement, words),
+                    str(scratch / "slide.png"),
+                    ai_creds,
+                    reference_images=[(mime, data) for _, mime, data in pictures],
+                    aspect_ratio="16:9",
+                )
+                if slide is None:
+                    card: dict[str, Any] = {"title": announcement.name, "subtitle": ""}
+                    if pictures:
+                        card.update(image_path=str(pictures[0][0]), layout="photo")
+                    slide = await async_run_in_executor(
+                        hass, render_slide, card, str(scratch / "slide.jpg")
+                    )
+                    notes.append(NOTE_NO_SLIDE)
+                slide_path = Path(slide)
+
             clip = scratch / "clip.mp4"
-            clip_duration = round(audio_duration + FINAL_SLIDE_PAD_SECONDS, 2)
             if not await async_encode_segment_clip(
                 hass,
                 str(slide_path),
-                str(wav),
+                str(audio_source_for_clip),
                 str(clip),
                 duration=clip_duration,
-                pad_seconds=FINAL_SLIDE_PAD_SECONDS,
+                pad_seconds=clip_pad_seconds,
             ):
                 msg = (
                     f"FFmpeg clip encode failed for announcement '{announcement.name}'"

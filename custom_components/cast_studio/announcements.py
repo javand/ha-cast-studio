@@ -214,3 +214,20 @@ def resolve_local_picture(hass: HomeAssistant, media_content_id: str) -> Path | 
     if not path.is_relative_to(root) or not path.is_file():
         return None
     return path
+
+
+def resolve_local_media_file(hass: HomeAssistant, media_id_or_path: str | None) -> Path | None:
+    """Resolve a media-source id, /local/ URL path, or local filesystem path to a Path object."""
+    if not media_id_or_path:
+        return None
+    if media_id_or_path.startswith(LOCAL_MEDIA_PREFIX):
+        return resolve_local_picture(hass, media_id_or_path)
+    p = Path(media_id_or_path)
+    if p.is_file():
+        return p
+    if media_id_or_path.startswith("/local/"):
+        rel = media_id_or_path.removeprefix("/local/")
+        www_p = Path(hass.config.path("www", rel))
+        if www_p.is_file():
+            return www_p
+    return None
