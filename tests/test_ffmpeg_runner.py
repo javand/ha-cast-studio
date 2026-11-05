@@ -319,3 +319,17 @@ async def test_async_run_ffmpeg_cancellation():
         await async_run_ffmpeg(hass, cmd)
     mock_process.kill.assert_called_once()
     mock_process.wait.assert_awaited_once()
+
+
+def test_build_concat_audio_command():
+    from custom_components.cast_studio.ffmpeg_runner import build_concat_audio_command
+
+    cmd = build_concat_audio_command("chime.mp3", "speech.wav", "combined.wav", gap_seconds=0.4)
+    assert "ffmpeg" in cmd[0]
+    assert "-i" in cmd
+    assert "chime.mp3" in cmd
+    assert "speech.wav" in cmd
+    assert "-filter_complex" in cmd
+    assert any("concat" in arg for arg in cmd)
+    assert cmd[-1] == "combined.wav"
+
