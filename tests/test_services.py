@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from PIL import Image
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.cast_studio.const import DOMAIN
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from custom_components.cast_studio.const import CONF_OUTPUT_DIR, DOMAIN
+from custom_components.cast_studio.slide_renderer import render_template_slide
+from .conftest import SAM_ID, announcement_subentry, person_subentry, routine_subentry
 
 
 async def _setup_entry_with_sam_quick(hass: Any, tmp_path: Path) -> Any:
@@ -197,3 +199,156 @@ def test_resolve_cast_media_url_maps_www_to_local() -> None:
         assert result.startswith(
             "http://192.168.1.50:8123/local/cast_studio/people/p/2026-10-24/routine_quick.mp4?v="
         )
+
+
+async def test_warriors_gameday_announcement_lifecycle(
+    hass: Any, tmp_path: Path
+) -> None:
+    """Golden State Warriors end-to-end template announcement lifecycle test.
+
+    Verifies:
+    1. Custom background image + locked template layout with Jinja sensor bindings.
+    2. Live evaluation against initial opponent (Miami Heat).
+    3. External automation trigger via rebuild_announcement action.
+    4. Deterministic rebuild when sensor updates to Sacramento Kings with zero AI tokens.
+    """
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    bg_file = media_dir / "warriors_bg.png"
+    Image.new("RGB", (1024, 600), "#002b49").save(bg_file)
+    chime_file = media_dir / "espn_chime.mp3"
+    chime_file.write_bytes(b"dummy_chime_sound")
+
+    hass.config.media_dirs = {"local": str(media_dir)}
+
+    # Initial opponent: Miami Heat
+    hass.states.async_set(
+        "sensor.nba_golden_state_warriors",
+        "PRE",
+        {"opponent_long_name": "Miami Heat", "clock": "11/5 - 10:00 PM EST"},
+    )
+
+    locked_layout = {
+        "elements": [
+            {
+                "role": "title",
+                "template": "Warriors vs. {{ state_attr('sensor.nba_golden_state_warriors', 'opponent_long_name') }}",
+                "box": [400, 100, 500, 60],
+                "font_size": 36,
+                "font_weight": "bold",
+                "color": "#ffffff",
+            },
+            {
+                "role": "footer",
+                "template": "Tip-off: {{ state_attr('sensor.nba_golden_state_warriors', 'clock') }}",
+                "box": [400, 180, 500, 40],
+                "font_size": 24,
+                "font_weight": "regular",
+                "color": "#ffc72c",
+            },
+        ]
+    }
+
+    ann_sub = announcement_subentry(
+        "a_warriors",
+        "Warriors Gameday",
+        visual_mode="template",
+        template_image="media-source://media_source/local/warriors_bg.png",
+        template_prompt="Show Warriors gameday alert from sensor.nba_golden_state_warriors",
+        template_layout=locked_layout,
+        audio_mode="sound",
+        chime_sound="media-source://media_source/local/espn_chime.mp3",
+        hold_seconds=6.0,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        minor_version=2,
+        unique_id=DOMAIN,
+        title="CastStudio",
+        data={CONF_OUTPUT_DIR: str(tmp_path / "output")},
+        subentries_data=[
+            person_subentry(SAM_ID, "Sam"),
+            ann_sub,
+        ],
+    )
+    entry.add_to_hass(hass)
+
+    rendered_elements_log: list[list[dict[str, Any]]] = []
+
+    def _track_render(bg: Any, elements: Any, out: Any) -> str:
+        rendered_elements_log.append(list(elements))
+        return render_template_slide(bg, elements, out)
+
+    async def _mock_ffmpeg(_h: Any, cmd: list[str], **_kw: Any) -> bool:
+        Path(cmd[-1]).write_bytes(b"video_bytes")
+        return True
+
+    with (
+        patch(
+            "custom_components.cast_studio.ai_client.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.cast_studio.announcement_runtime.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"platform": "gemini", "api_key": "k"}),
+        ),
+        patch(
+            "custom_components.cast_studio.announcement_build.get_audio_duration",
+            return_value=2.0,
+        ),
+        patch(
+            "custom_components.cast_studio.segments.async_run_ffmpeg",
+            new=AsyncMock(side_effect=_mock_ffmpeg),
+        ),
+        patch(
+            "custom_components.cast_studio.announcement_build.render_template_slide",
+            side_effect=_track_render,
+        ),
+        patch(
+            "custom_components.cast_studio.announcement_layout.async_plan_announcement_layout",
+        ) as mock_plan,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # Step 1: Rebuild announcement for Miami Heat
+        await hass.services.async_call(
+            DOMAIN,
+            "rebuild_announcement",
+            {"announcement": "Warriors Gameday"},
+            blocking=True,
+        )
+
+        assert len(rendered_elements_log) >= 1
+        assert rendered_elements_log[-1][0]["text"] == "Warriors vs. Miami Heat"
+        assert rendered_elements_log[-1][1]["text"] == "Tip-off: 11/5 - 10:00 PM EST"
+
+        # Step 2: Next game - opponent changes to Sacramento Kings
+        hass.states.async_set(
+            "sensor.nba_golden_state_warriors",
+            "PRE",
+            {"opponent_long_name": "Sacramento Kings", "clock": "11/7 - 7:30 PM PST"},
+        )
+
+        # Step 3: External automation fires rebuild_announcement
+        await hass.services.async_call(
+            DOMAIN,
+            "rebuild_announcement",
+            {"announcement": "Warriors Gameday"},
+            blocking=True,
+        )
+
+        assert len(rendered_elements_log) >= 2
+        assert rendered_elements_log[-1][0]["text"] == "Warriors vs. Sacramento Kings"
+        assert rendered_elements_log[-1][1]["text"] == "Tip-off: 11/7 - 7:30 PM PST"
+
+        # Verify zero calls to AI layout planner on rebuilds!
+        mock_plan.assert_not_called()
+
+        # Verify final build state
+        manager = hass.data[DOMAIN]["announcements"]
+        build_state = manager.state("a_warriors")
+        assert build_state is not None
+        assert build_state.status == "ready"
