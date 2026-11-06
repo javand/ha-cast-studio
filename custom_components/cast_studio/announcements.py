@@ -195,6 +195,12 @@ def pick_build_persona(
     return persona
 
 
+IMAGE_UPLOAD_PREFIXES: tuple[str, ...] = (
+    "media-source://image_upload/",
+    "media-source://image/",
+)
+
+
 def resolve_local_picture(hass: HomeAssistant, media_content_id: str) -> Path | None:
     """
     Return the file behind a local media-source id, or None.
@@ -206,7 +212,12 @@ def resolve_local_picture(hass: HomeAssistant, media_content_id: str) -> Path | 
     dir_id, _, relative = media_content_id.removeprefix(LOCAL_MEDIA_PREFIX).partition(
         "/"
     )
-    base = hass.config.media_dirs.get(dir_id)
+    base = (hass.config.media_dirs or {}).get(dir_id)
+    if not base and dir_id == "local":
+        for candidate_base in (hass.config.path("media"), "/media"):
+            if Path(candidate_base).is_dir():
+                base = candidate_base
+                break
     if not base or not relative:
         return None
     root = Path(base).resolve()
@@ -224,6 +235,15 @@ def resolve_local_media_file(
         return None
     if media_id_or_path.startswith(LOCAL_MEDIA_PREFIX):
         return resolve_local_picture(hass, media_id_or_path)
+    for prefix in IMAGE_UPLOAD_PREFIXES:
+        if media_id_or_path.startswith(prefix):
+            img_id = media_id_or_path.removeprefix(prefix).split("/")[0]
+            for candidate in (
+                Path(hass.config.path("image", img_id, "original")),
+                Path(hass.config.path("image", img_id)),
+            ):
+                if candidate.is_file():
+                    return candidate
     p = Path(media_id_or_path)
     if p.is_file():
         return p

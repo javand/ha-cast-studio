@@ -14,6 +14,7 @@ from custom_components.cast_studio.announcements import (
     find_announcement,
     get_announcements,
     pick_build_persona,
+    resolve_local_media_file,
     resolve_local_picture,
     settings_fingerprint,
 )
@@ -165,3 +166,53 @@ def test_resolve_local_picture(hass: HomeAssistant, tmp_path: Path) -> None:
     assert (
         resolve_local_picture(hass, "media-source://media_source/local/b.jpg") is None
     )
+
+
+def test_resolve_local_picture_fallback(hass: HomeAssistant, tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "test.jpg").write_bytes(b"data")
+    hass.config.media_dirs = {}
+    hass.config.config_dir = str(tmp_path)
+    assert (
+        resolve_local_picture(hass, "media-source://media_source/local/test.jpg")
+        == media / "test.jpg"
+    )
+
+
+def test_resolve_local_media_file(hass: HomeAssistant, tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "audio.mp3").write_bytes(b"mp3")
+    hass.config.media_dirs = {"local": str(media)}
+    hass.config.config_dir = str(tmp_path)
+
+    # local media-source
+    assert (
+        resolve_local_media_file(hass, "media-source://media_source/local/audio.mp3")
+        == media / "audio.mp3"
+    )
+
+    # image_upload
+    img_dir = tmp_path / "image" / "abc12345"
+    img_dir.mkdir(parents=True)
+    img_file = img_dir / "original"
+    img_file.write_bytes(b"img")
+    assert (
+        resolve_local_media_file(hass, "media-source://image_upload/abc12345")
+        == img_file
+    )
+    assert resolve_local_media_file(hass, "media-source://image/abc12345") == img_file
+
+    # /local/ www path
+    www = tmp_path / "www"
+    www.mkdir()
+    (www / "slide.png").write_bytes(b"slide")
+    assert resolve_local_media_file(hass, "/local/slide.png") == www / "slide.png"
+
+    # raw filepath
+    raw = tmp_path / "raw.png"
+    raw.write_bytes(b"raw")
+    assert resolve_local_media_file(hass, str(raw)) == raw
+    assert resolve_local_media_file(hass, None) is None
+    assert resolve_local_media_file(hass, "") is None
