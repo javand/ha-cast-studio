@@ -580,9 +580,7 @@ def _is_routine_media_playing(  # noqa: PLR0911
     return app_name not in ("backdrop", "ambient", "google cast", "homescreen")
 
 
-def _is_still_playing_media(
-    state_obj: Any, media_url: str, media_path: str
-) -> bool:
+def _is_still_playing_media(state_obj: Any, media_url: str, media_path: str) -> bool:
     """Return True if the player reports our media as still playing."""
     if state_obj is None or state_obj.state not in _STILL_PLAYING_STATES:
         return False
