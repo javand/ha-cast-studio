@@ -1611,3 +1611,85 @@ async def test_lifecycle_waits_extra_seconds_added_during_playback() -> None:
         control.extra_seconds = 0.2
         await task
     assert loop.time() - started >= 0.28
+
+
+def _cast_state(state: str, media_id: str) -> MagicMock:
+    return MagicMock(
+        state=state,
+        attributes={"app_id": "CC1AD845", "media_content_id": media_id},
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_actions_wait_for_media_still_playing_at_timer_end() -> None:
+    """A Hub that buffered first is still playing at the timer: wait it out."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    media_id = "http://ha.local/local/morning.mp4"
+    hass.states.get.return_value = _cast_state("buffering", "http://other/x.mp4")
+    metadata: dict = {
+        "video_path": media_id,
+        "prepare_player": False,
+        "duration": 0.05,
+        "post_routine_actions": [
+            {"service": "cast.show_lovelace_view", "data": {"view_path": "home"}}
+        ],
+    }
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ) as mock_track,
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        # 'buffering' of our media counts as started; the audio is not out yet.
+        event = MagicMock()
+        event.data = {"new_state": _cast_state("buffering", media_id)}
+        mock_track.call_args[0][2](event)
+
+        # The timer runs out while the player still plays our media.
+        hass.states.get.return_value = _cast_state("playing", media_id)
+        await asyncio.sleep(0.15)
+        assert not task.done()
+        hass.services.async_call.assert_not_called()
+
+        # The media finishes: now the dashboard may be cast.
+        ended = MagicMock()
+        ended.data = {"new_state": _cast_state("idle", media_id)}
+        mock_track.call_args[0][2](ended)
+        await asyncio.wait_for(task, 1)
+    hass.services.async_call.assert_any_call(
+        "cast",
+        "show_lovelace_view",
+        service_data={"view_path": "home"},
+        target={"entity_id": "media_player.bathroom_display"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_actions_stop_waiting_for_media_end_at_cap() -> None:
+    """A player that never reports the end does not hold post actions forever."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    media_id = "http://ha.local/local/morning.mp4"
+    hass.states.get.return_value = _cast_state("playing", media_id)
+    metadata: dict = {
+        "video_path": media_id,
+        "prepare_player": False,
+        "duration": 0.02,
+        "post_routine_actions": [{"service": "cast.show_lovelace_view"}],
+    }
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+        patch("custom_components.cast_studio.orchestrator.MEDIA_END_WAIT_MAX", 0.1),
+    ):
+        task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        await asyncio.wait_for(task, 1)
+    hass.services.async_call.assert_called()

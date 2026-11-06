@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,8 +24,6 @@ from custom_components.cast_studio.announcements import get_announcements
 from .conftest import SAM_ID, announcement_subentry, at, make_entry, person_subentry
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from homeassistant.core import HomeAssistant
 
     from custom_components.cast_studio.announcements import Announcement
@@ -300,3 +299,96 @@ async def test_daily_build_records_build_day(
     ann = _announcement(hass, freshness="daily")
     build = await _build(hass, tmp_path, ann, now=at(2))
     assert build.build_day.isoformat() == "2026-10-19"
+
+
+async def test_build_template_announcement_sound_only(
+    hass: HomeAssistant, tmp_path: Path, mocks: dict[str, Any]
+) -> None:
+    hass.states.async_set(
+        "sensor.nba_golden_state_warriors",
+        "PRE",
+        {
+            "opponent_long_name": "Miami Heat",
+            "clock": "11/5 - 10:00 PM EST",
+        },
+    )
+    bg = tmp_path / "bg.png"
+    bg.write_bytes(b"bgpng")
+    chime = tmp_path / "chime.mp3"
+    chime.write_bytes(b"chimebytes")
+
+    ann = _announcement(
+        hass,
+        visual_mode="template",
+        template_image=str(bg),
+        template_layout={
+            "elements": [
+                {
+                    "role": "title",
+                    "template": "Golden State Warriors",
+                    "box": [400, 100, 500, 60],
+                    "font_size": 48,
+                    "font_weight": "bold",
+                    "color": "#ffffff",
+                },
+                {
+                    "role": "subtitle",
+                    "template": "vs. {{ state_attr('sensor.nba_golden_state_warriors', 'opponent_long_name') }}",
+                    "box": [400, 170, 500, 40],
+                    "font_size": 28,
+                    "font_weight": "regular",
+                    "color": "#ffffff",
+                },
+            ]
+        },
+        audio_mode="sound",
+        chime_sound=str(chime),
+        hold_seconds=6.0,
+    )
+
+    def _mock_slide_render(bg: str, elems: Any, path: str) -> str:
+        Path(path).write_bytes(b"jpg")
+        return path
+
+    with patch(
+        f"{BUILD}.render_template_slide",
+        side_effect=_mock_slide_render,
+    ) as mock_render:
+        build = await _build(hass, tmp_path / "out", ann)
+        assert build.clip_path is not None
+        assert mock_render.called
+        elements = mock_render.call_args.args[1]
+        assert elements[0]["text"] == "Golden State Warriors"
+        assert elements[1]["text"] == "vs. Miami Heat"
+
+
+async def test_build_template_announcement_chime_and_voice(
+    hass: HomeAssistant, tmp_path: Path, mocks: dict[str, Any]
+) -> None:
+    bg = tmp_path / "bg.png"
+    bg.write_bytes(b"bgpng")
+    chime = tmp_path / "chime.mp3"
+    chime.write_bytes(b"chimebytes")
+
+    ann = _announcement(
+        hass,
+        message="Tip off at 10 PM",
+        visual_mode="template",
+        template_image=str(bg),
+        template_layout={"elements": [{"text": "Warriors", "box": [0, 0, 500, 50]}]},
+        audio_mode="chime_and_voice",
+        chime_sound=str(chime),
+    )
+
+    def _mock_slide_render(bg: str, elems: Any, path: str) -> str:
+        Path(path).write_bytes(b"jpg")
+        return path
+
+    with (
+        patch(f"{BUILD}.render_template_slide", side_effect=_mock_slide_render),
+        patch(f"{BUILD}.async_concat_audio", return_value=True) as mock_concat,
+    ):
+        build = await _build(hass, tmp_path / "out_cv", ann)
+        assert build.clip_path is not None
+        assert mock_concat.called
+        assert build.words == "Tip off at 10 PM"

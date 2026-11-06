@@ -1432,6 +1432,9 @@ async def test_add_announcement_stores_settings(
         "pictures": [DOOR_PICTURE],
         "output_format": "visual",
         "target": "media_player.kitchen_speaker",
+        "visual_mode": "ai_painted",
+        "audio_mode": "voice",
+        "hold_seconds": 5.0,
     }
 
 
@@ -1525,17 +1528,201 @@ async def test_reconfigure_announcement_updates_data(
     assert entry_with_sam.subentries[subentry_id].data["message"] == "Shut the freezer."
 
 
+async def test_add_announcement_template_with_preview(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry, tmp_path: Path
+) -> None:
+    """Template mode runs AI layout planner, shows preview, and stores locked layout."""
+    media = tmp_path / "media"
+    media.mkdir()
+    bg = media / "slide.png"
+    bg.write_bytes(b"bgpng")
+    chime = media / "chime.mp3"
+    chime.write_bytes(b"mp3")
+    hass.config.media_dirs = {"local": str(media)}
+
+    hass.states.async_set(
+        "sensor.nba_golden_state_warriors",
+        "PRE",
+        {"opponent_long_name": "Miami Heat", "clock": "11/5 - 10:00 PM EST"},
+    )
+
+    mock_layout = {
+        "elements": [
+            {
+                "role": "title",
+                "template": "Warriors",
+                "box": [400, 100, 500, 60],
+                "font_size": 48,
+                "font_weight": "bold",
+                "color": "#ffffff",
+            }
+        ]
+    }
+
+    result = await _start_subentry(hass, entry_with_sam, "announcement")
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    with (
+        patch(
+            "custom_components.cast_studio.config_flow.async_plan_announcement_layout",
+            new=AsyncMock(return_value=mock_layout),
+        ),
+        patch(
+            "custom_components.cast_studio.config_flow.render_template_slide",
+            return_value=str(tmp_path / "preview.jpg"),
+        ),
+    ):
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            user_input=_announcement_input(
+                name="Warriors Alert",
+                visual_mode="template",
+                template_image={
+                    "media_content_id": "media-source://media_source/local/slide.png",
+                    "media_content_type": "image/png",
+                },
+                template_prompt="Show gameday alert from sensor.nba_golden_state_warriors on the right",
+                audio_mode="sound",
+                chime_sound={
+                    "media_content_id": "media-source://media_source/local/chime.mp3",
+                    "media_content_type": "audio/mpeg",
+                },
+                hold_seconds=8.0,
+            ),
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "preview"
+
+        # Confirm preview step
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            user_input={},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+        assert result["data"]["visual_mode"] == "template"
+        assert result["data"]["template_layout"] == mock_layout
+        assert result["data"]["audio_mode"] == "sound"
+        assert result["data"]["hold_seconds"] == 8.0
+
+
+async def test_announcement_template_validation_errors(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """Missing template image, prompt, or chime sound fails validation."""
+    # Missing template image
+    result = await _start_subentry(hass, entry_with_sam, "announcement")
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input=_announcement_input(
+            visual_mode="template",
+            template_prompt="Some prompt",
+        ),
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["errors"] == {"template_image": "template_image_required"}
+
+    # Missing template prompt
+    result = await _start_subentry(hass, entry_with_sam, "announcement")
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input=_announcement_input(
+            visual_mode="template",
+            template_image={
+                "media_content_id": "media-source://media_source/local/bg.png",
+                "media_content_type": "image/png",
+            },
+            template_prompt="",
+        ),
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["errors"] == {"template_prompt": "template_prompt_required"}
+
+    # Missing chime sound in sound mode
+    result = await _start_subentry(hass, entry_with_sam, "announcement")
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input=_announcement_input(
+            audio_mode="sound",
+        ),
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["errors"] == {"chime_sound": "chime_sound_required"}
+
+
+async def test_reconfigure_announcement_template_preserves_layout(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """Reconfiguring announcement preserves template_layout when prompt and image unchanged."""
+    mock_layout = {"elements": [{"role": "title", "template": "Test"}]}
+    subentry = config_entries.ConfigSubentry(
+        data={
+            **_announcement_input(),
+            "visual_mode": "template",
+            "template_image": "media-source://media_source/local/bg.png",
+            "template_prompt": "Prompt",
+            "template_layout": mock_layout,
+        },
+        subentry_type="announcement",
+        title="Freezer Door",
+        unique_id="ann_freezer",
+    )
+    hass.config_entries.async_add_subentry(entry_with_sam, subentry)
+
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, subentry.subentry_id
+    )
+    assert result["step_id"] == "reconfigure"
+
+    with patch(
+        "custom_components.cast_studio.config_flow.async_plan_announcement_layout"
+    ) as mock_plan:
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            user_input=_announcement_input(
+                name="Freezer Door",
+                visual_mode="template",
+                template_image={
+                    "media_content_id": "media-source://media_source/local/bg.png",
+                    "media_content_type": "image/png",
+                },
+                template_prompt="Prompt",
+                message="Shut it now.",
+            ),
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.ABORT
+        assert result["reason"] == "reconfigure_successful"
+        mock_plan.assert_not_called()
+        assert (
+            entry_with_sam.subentries[subentry.subentry_id].data["template_layout"]
+            == mock_layout
+        )
+
+
 def test_announcement_translations_present() -> None:
     """Both translation files cover the announcement form and its selectors."""
     base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    new_fields = {
+        "visual_mode",
+        "template_image",
+        "template_prompt",
+        "audio_mode",
+        "chime_sound",
+        "hold_seconds",
+    }
     for path in (base / "strings.json", base / "translations" / "en.json"):
         data = json.loads(path.read_text(encoding="utf-8"))
         ann = data["config_subentries"]["announcement"]
         assert ann["initiate_flow"]["user"] == "Add announcement"
         for step in ("user", "reconfigure"):
-            for field in _announcement_input() | {"pictures": [], "target": None}:
+            for field in (
+                set(_announcement_input()) | {"pictures", "target"} | new_fields
+            ):
                 assert field in ann["step"][step]["data"]
                 assert field in ann["step"][step]["data_description"]
+        assert "preview" in ann["step"]
+        assert ann["step"]["preview"]["title"]
+        assert ann["step"]["preview"]["description"]
         for error in (
             "invalid_name",
             "duplicate_announcement",
@@ -1543,6 +1730,10 @@ def test_announcement_translations_present() -> None:
             "one_persona",
             "too_many_pictures",
             "local_pictures_only",
+            "template_image_required",
+            "template_prompt_required",
+            "chime_sound_required",
+            "template_planning_failed",
         ):
             assert ann["error"][error]
         assert set(data["selector"]["announcement_wording"]["options"]) == {
@@ -1552,6 +1743,15 @@ def test_announcement_translations_present() -> None:
         assert set(data["selector"]["announcement_freshness"]["options"]) == {
             "static",
             "daily",
+        }
+        assert set(data["selector"]["announcement_visual_mode"]["options"]) == {
+            "ai_painted",
+            "template",
+        }
+        assert set(data["selector"]["announcement_audio_mode"]["options"]) == {
+            "voice",
+            "sound",
+            "chime_and_voice",
         }
 
 
