@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.cast_studio.announcement_layout import (
     async_plan_announcement_layout,
@@ -99,3 +100,57 @@ async def test_plan_announcement_layout_returns_validated_spec(
         assert len(result["elements"]) == 4
         assert result["elements"][1]["template"] == "Golden State Warriors"
         assert "{{ state_attr(" in result["elements"][2]["template"]
+
+
+async def test_async_plan_announcement_layout_auto_discovers_credentials(
+    hass: HomeAssistant,
+) -> None:
+    mock_response = {
+        "elements": [
+            {
+                "role": "title",
+                "template": "Hello",
+                "box": [10, 10, 100, 50],
+                "font_size": 32,
+                "font_weight": "bold",
+                "color": "#fff",
+            }
+        ]
+    }
+    with (
+        patch(
+            "custom_components.cast_studio.announcement_layout.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"api_key": "auto-key", "platform": "gemini"}),
+        ),
+        patch(
+            "custom_components.cast_studio.announcement_layout._call_ai_multimodal_json",
+            new=AsyncMock(return_value=mock_response),
+        ) as mock_call,
+    ):
+        result = await async_plan_announcement_layout(
+            hass=hass,
+            image_bytes=b"pngdata",
+            image_mime="image/png",
+            prompt="Hello world",
+        )
+        assert result["elements"][0]["template"] == "Hello"
+        mock_call.assert_awaited_once()
+        assert mock_call.call_args[0][4]["api_key"] == "auto-key"
+
+
+async def test_async_plan_announcement_layout_missing_key_raises(
+    hass: HomeAssistant,
+) -> None:
+    with (
+        patch(
+            "custom_components.cast_studio.announcement_layout.async_discover_ai_credentials",
+            new=AsyncMock(return_value={"api_key": None}),
+        ),
+        pytest.raises(HomeAssistantError, match="No Gemini API key found"),
+    ):
+        await async_plan_announcement_layout(
+            hass=hass,
+            image_bytes=b"pngdata",
+            image_mime="image/png",
+            prompt="Hello world",
+        )

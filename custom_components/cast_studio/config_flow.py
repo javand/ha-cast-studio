@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector, template
 
+from .ai_client import async_discover_ai_credentials
 from .announcement_layout import async_plan_announcement_layout
 from .announcements import (
     ANN_AUDIO_MODE,
@@ -911,7 +912,7 @@ class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
             )
 
         image_path = Path(bg_path)
-        image_bytes = image_path.read_bytes()
+        image_bytes = await self.hass.async_add_executor_job(image_path.read_bytes)
         suffix = image_path.suffix.lower()
         image_mime = (
             "image/png"
@@ -921,13 +922,19 @@ class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
             else "image/jpeg"
         )
 
+        ai_creds = await async_discover_ai_credentials(self.hass)
+        if explicit_key := (
+            entry.options.get(CONF_API_KEY) or entry.data.get(CONF_API_KEY)
+        ):
+            ai_creds["api_key"] = explicit_key
+
         try:
             layout = await async_plan_announcement_layout(
                 hass=self.hass,
                 image_bytes=image_bytes,
                 image_mime=image_mime,
                 prompt=data.get(ANN_TEMPLATE_PROMPT, ""),
-                ai_creds={"api_key": entry.data.get(CONF_API_KEY, "")},
+                ai_creds=ai_creds,
             )
         except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to plan announcement layout with AI")
@@ -941,17 +948,25 @@ class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
         evaluated_elements = []
         for el in layout.get("elements", []):
             tmpl = el.get("template", "")
-            rendered_text = template.Template(tmpl, self.hass).async_render(
-                parse_result=False
-            )
+            try:
+                rendered_text = template.Template(tmpl, self.hass).async_render(
+                    parse_result=False
+                )
+            except Exception as err:  # noqa: BLE001
+                LOGGER.warning("Failed to render preview template '%s': %s", tmpl, err)
+                rendered_text = tmpl
             elem_copy = dict(el)
-            elem_copy["text"] = rendered_text
+            elem_copy["text"] = str(rendered_text)
             evaluated_elements.append(elem_copy)
 
         preview_dir = Path(self.hass.config.path("www", "cast_studio_previews"))
-        preview_dir.mkdir(parents=True, exist_ok=True)
         preview_file = preview_dir / f"preview_{self.flow_id}.jpg"
-        render_template_slide(bg_path, evaluated_elements, preview_file)
+
+        def _render_preview() -> None:
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            render_template_slide(bg_path, evaluated_elements, preview_file)
+
+        await self.hass.async_add_executor_job(_render_preview)
 
         data[ANN_TEMPLATE_LAYOUT] = layout
         self._staged_data = data

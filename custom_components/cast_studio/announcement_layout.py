@@ -12,6 +12,7 @@ import aiohttp
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .ai_client import _clean_json_text, async_discover_ai_credentials
 from .ai_health import async_report_ai_failure, async_report_ai_success
 from .const import CONF_TEXT_MODEL, DEFAULT_TEXT_MODEL, LOGGER
 
@@ -134,7 +135,8 @@ async def _call_ai_multimodal_json(
         candidate = data["candidates"][0]
         part = candidate["content"]["parts"][0]
         raw_text = part["text"]
-        return json.loads(raw_text)  # type: ignore[no-any-return]
+        clean_text = _clean_json_text(raw_text)
+        return json.loads(clean_text, strict=False)  # type: ignore[no-any-return]
 
     except Exception as err:
         LOGGER.warning("Gemini layout generation failed: %s", err)
@@ -149,10 +151,18 @@ async def async_plan_announcement_layout(  # noqa: PLR0913
     image_bytes: bytes,
     image_mime: str,
     prompt: str,
-    entity_ids: list[str] | None,
-    ai_creds: dict[str, Any],
+    entity_ids: list[str] | None = None,
+    ai_creds: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Inspect background image and entity attributes to generate layout spec."""
+    if not ai_creds or not ai_creds.get("api_key"):
+        discovered = await async_discover_ai_credentials(hass)
+        ai_creds = {**(ai_creds or {}), **discovered}
+
+    if not ai_creds.get("api_key"):
+        msg = "No Gemini API key found for layout generation"
+        raise HomeAssistantError(msg)
+
     if entity_ids is None:
         entity_ids = extract_referenced_entities(prompt, hass)
 

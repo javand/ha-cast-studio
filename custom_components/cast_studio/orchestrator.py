@@ -104,6 +104,11 @@ _NOT_STARTED_STATES = ("off", "unavailable")
 PLAY_DISPATCH_ATTEMPTS = 2
 PLAY_RETRY_DELAY = 5.0
 
+# A Cast counts as started while it still buffers, so the timed end can come
+# before the audio does: wait this long at most for the player to finish.
+MEDIA_END_WAIT_MAX = 30.0
+_STILL_PLAYING_STATES = ("playing", "buffering")
+
 
 def get_routine_sync_task(routine_name: str) -> asyncio.Task[Any] | None:
     """
@@ -575,6 +580,48 @@ def _is_routine_media_playing(  # noqa: PLR0911
     return app_name not in ("backdrop", "ambient", "google cast", "homescreen")
 
 
+def _is_still_playing_media(
+    state_obj: Any, media_url: str, media_path: str
+) -> bool:
+    """Return True if the player reports our media as still playing."""
+    if state_obj is None or state_obj.state not in _STILL_PLAYING_STATES:
+        return False
+    if not isinstance(getattr(state_obj, "attributes", None), dict):
+        return False
+    return _is_routine_media_playing(state_obj, media_url, media_path, strict=True)
+
+
+async def _async_wait_media_end(
+    hass: HomeAssistant, target_player: str, media_url: str, media_path: str
+) -> None:
+    """Wait, up to MEDIA_END_WAIT_MAX, while the player still plays our media."""
+    if not _is_still_playing_media(
+        hass.states.get(target_player), media_url, media_path
+    ):
+        return
+    ended = asyncio.Event()
+
+    @callback
+    def _changed(event: Event) -> None:
+        if not _is_still_playing_media(
+            event.data.get("new_state"), media_url, media_path
+        ):
+            ended.set()
+
+    unsub = async_track_state_change_event(hass, [target_player], _changed)
+    try:
+        async with asyncio.timeout(MEDIA_END_WAIT_MAX):
+            await ended.wait()
+    except TimeoutError:
+        LOGGER.debug(
+            "'%s' still playing %.0fs after the routine's end; carrying on",
+            target_player,
+            MEDIA_END_WAIT_MAX,
+        )
+    finally:
+        unsub()
+
+
 async def _async_prepare_player(
     hass: HomeAssistant, target_player: str, metadata: dict[str, Any]
 ) -> None:
@@ -801,6 +848,11 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0913, PLR0915
                 await control.async_wait_released()
                 if control.extra_seconds == extra:
                     break
+            # The timer starts at 'buffering'; let the media itself finish
+            # before post actions (a dashboard cast) cut it off.
+            await _async_wait_media_end(
+                hass, target_player, resolved_media_url, media_path
+            )
         except asyncio.CancelledError:
             if not playing_future.done():
                 playing_future.cancel()
