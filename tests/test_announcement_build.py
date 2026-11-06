@@ -24,8 +24,6 @@ from custom_components.cast_studio.announcements import get_announcements
 from .conftest import SAM_ID, announcement_subentry, at, make_entry, person_subentry
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from homeassistant.core import HomeAssistant
 
     from custom_components.cast_studio.announcements import Announcement
@@ -394,5 +392,3 @@ async def test_build_template_announcement_chime_and_voice(
         assert build.clip_path is not None
         assert mock_concat.called
         assert build.words == "Tip off at 10 PM"
-
-

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from homeassistant.util import dt as dt_util
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 _LOGGER = logging.getLogger(__name__)
 BUNDLED_ASSETS_DIR = Path(__file__).parent / "assets"
@@ -2330,14 +2330,12 @@ def render_slide(  # noqa: PLR0912, PLR0915
     return str(output_path)
 
 
-def render_template_slide(
+def render_template_slide(  # noqa: PLR0912, PLR0915
     background_path: str,
     elements: list[dict[str, Any]],
     output_path: str,
 ) -> str:
     """Render a 1024x600 template slide using a background image and layout elements."""
-    from PIL import Image, ImageDraw, ImageOps
-
     bg = Image.open(background_path).convert("RGB")
     if bg.size != (1024, 600):
         bg = ImageOps.fit(bg, (1024, 600), method=Image.Resampling.LANCZOS)

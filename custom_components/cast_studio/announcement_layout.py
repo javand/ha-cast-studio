@@ -32,6 +32,9 @@ def extract_referenced_entities(prompt: str, hass: HomeAssistant) -> list[str]:
     return found
 
 
+BOX_COORDS = 4
+
+
 def _build_layout_prompt(
     user_prompt: str,
     entity_snapshots: dict[str, dict[str, Any]],
@@ -39,19 +42,22 @@ def _build_layout_prompt(
     """Format instructions for Gemini to plan the slide typography and placement."""
     entities_context = json.dumps(entity_snapshots, indent=2, default=str)
     return (
-        "You are an expert graphic designer for smart display slides (1024x600 resolution, 16:9 aspect ratio).\n"
+        "You are an expert graphic designer for smart display slides "
+        "(1024x600 resolution, 16:9 aspect ratio).\n"
         "Inspect the provided background image and the user's instructions.\n\n"
         f"USER INSTRUCTIONS: {user_prompt}\n\n"
         "REFERENCED HOME ASSISTANT ENTITIES AND CURRENT VALUES:\n"
         f"{entities_context}\n\n"
         "GOAL:\n"
-        "Design a high-contrast, visually balanced typography layout positioned in the open/uncluttered space of the background image.\n"
+        "Design a high-contrast, visually balanced typography layout positioned "
+        "in the open/uncluttered space of the background image.\n"
         "Return ONLY a JSON object matching this schema:\n"
         "{\n"
         '  "elements": [\n'
         "    {\n"
         '      "role": "badge" | "title" | "subtitle" | "footer" | "custom",\n'
-        '      "template": "Literal string OR Home Assistant Jinja2 template (e.g. {{ state_attr(\'sensor.x\', \'attr\') }} or {{ states(\'sensor.x\') }})",\n'
+        '      "template": "Literal string OR Home Assistant Jinja2 template '
+        "(e.g. {{ state_attr('sensor.x', 'attr') }} or {{ states('sensor.x') }})\",\n"
         '      "box": [x, y, width, height],\n'
         '      "font_size": integer (between 18 and 64),\n'
         '      "font_weight": "bold" | "regular" | "light",\n'
@@ -64,9 +70,12 @@ def _build_layout_prompt(
         "}\n\n"
         "RULES:\n"
         "1. All coordinates [x, y, width, height] must be within the 1024x600 canvas.\n"
-        "2. Do not overlap key visual elements of the background image (e.g. logos, figures, banners).\n"
-        "3. For dynamic entity values, write valid Home Assistant Jinja2 expressions using exact attribute names from the context above.\n"
-        "4. Keep visual hierarchy clean: Title (largest, bold), Subtitle (secondary), Meta/Schedule (tertiary).\n"
+        "2. Do not overlap key visual elements of the background image "
+        "(e.g. logos, figures, banners).\n"
+        "3. For dynamic entity values, write valid Home Assistant Jinja2 expressions "
+        "using exact attribute names from the context above.\n"
+        "4. Keep visual hierarchy clean: Title (largest, bold), "
+        "Subtitle (secondary), Meta/Schedule (tertiary).\n"
     )
 
 
@@ -77,7 +86,7 @@ async def _call_ai_multimodal_json(
     image_bytes: bytes,
     ai_creds: dict[str, Any],
 ) -> dict[str, Any]:
-    """Send multimodal prompt with background image to Gemini and parse JSON response."""
+    """Send multimodal prompt with background image to Gemini and parse JSON."""
     api_key = ai_creds.get("api_key")
     if not api_key:
         msg = "No API key configured for AI layout planner"
@@ -111,12 +120,14 @@ async def _call_ai_multimodal_json(
     }
 
     try:
-        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+        async with session.post(
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=30)
+        ) as resp:
             if resp.status != HTTPStatus.OK:
                 err_body = await resp.text()
                 async_report_ai_failure(hass, "Gemini", "layout", resp.status, err_body)
                 msg = f"Gemini API returned status {resp.status}: {err_body}"
-                raise HomeAssistantError(msg)
+                raise HomeAssistantError(msg)  # noqa: TRY301
             data = await resp.json()
             async_report_ai_success(hass, "layout")
 
@@ -133,7 +144,7 @@ async def _call_ai_multimodal_json(
         raise HomeAssistantError(msg) from err
 
 
-async def async_plan_announcement_layout(
+async def async_plan_announcement_layout(  # noqa: PLR0913
     hass: HomeAssistant,
     image_bytes: bytes,
     image_mime: str,
@@ -141,7 +152,7 @@ async def async_plan_announcement_layout(
     entity_ids: list[str] | None,
     ai_creds: dict[str, Any],
 ) -> dict[str, Any]:
-    """Inspect background image and entity attributes to generate a locked layout spec."""
+    """Inspect background image and entity attributes to generate layout spec."""
     if entity_ids is None:
         entity_ids = extract_referenced_entities(prompt, hass)
 
@@ -159,7 +170,11 @@ async def async_plan_announcement_layout(
         hass, system_prompt, image_mime, image_bytes, ai_creds
     )
 
-    if not isinstance(layout, dict) or "elements" not in layout or not isinstance(layout["elements"], list):
+    if (
+        not isinstance(layout, dict)
+        or "elements" not in layout
+        or not isinstance(layout["elements"], list)
+    ):
         msg = "AI layout generator did not return valid elements structure"
         raise HomeAssistantError(msg)
 
@@ -169,7 +184,7 @@ async def async_plan_announcement_layout(
         if not isinstance(elem, dict) or "template" not in elem:
             continue
         box = elem.get("box") or [50, 50, 400, 100]
-        if not isinstance(box, list) or len(box) < 4:
+        if not isinstance(box, list) or len(box) < BOX_COORDS:
             box = [50, 50, 400, 100]
         clean_elements.append(
             {

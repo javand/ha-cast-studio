@@ -44,7 +44,6 @@ from .announcements import (
     get_announcements,
     resolve_local_media_file,
 )
-from .slide_renderer import render_template_slide
 from .const import (
     CONF_API_KEY,
     CONF_COMMUTE_DESTINATION,
@@ -119,6 +118,7 @@ from .personas import (
     get_persona,
 )
 from .segments import default_refresh_segments
+from .slide_renderer import render_template_slide
 
 ADVANCED_SECTION = "advanced"
 
@@ -929,7 +929,7 @@ class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
                 prompt=data.get(ANN_TEMPLATE_PROMPT, ""),
                 ai_creds={"api_key": entry.data.get(CONF_API_KEY, "")},
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             LOGGER.exception("Failed to plan announcement layout with AI")
             return self.async_show_form(
                 step_id="user" if subentry is None else "reconfigure",
@@ -980,19 +980,26 @@ class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
             ):
                 errors = {"base": "duplicate_announcement"}
             if not errors:
-                prompt_changed = (
-                    subentry is not None
-                    and (
-                        subentry.data.get(ANN_TEMPLATE_PROMPT) != data.get(ANN_TEMPLATE_PROMPT)
-                        or subentry.data.get(ANN_TEMPLATE_IMAGE) != data.get(ANN_TEMPLATE_IMAGE)
-                    )
+                prompt_changed = subentry is not None and (
+                    subentry.data.get(ANN_TEMPLATE_PROMPT)
+                    != data.get(ANN_TEMPLATE_PROMPT)
+                    or subentry.data.get(ANN_TEMPLATE_IMAGE)
+                    != data.get(ANN_TEMPLATE_IMAGE)
                 )
-                if subentry and not data.get(ANN_TEMPLATE_LAYOUT) and subentry.data.get(ANN_TEMPLATE_LAYOUT):
-                    if not prompt_changed:
-                        data[ANN_TEMPLATE_LAYOUT] = subentry.data[ANN_TEMPLATE_LAYOUT]
+                if (
+                    subentry
+                    and not data.get(ANN_TEMPLATE_LAYOUT)
+                    and subentry.data.get(ANN_TEMPLATE_LAYOUT)
+                    and not prompt_changed
+                ):
+                    data[ANN_TEMPLATE_LAYOUT] = subentry.data[ANN_TEMPLATE_LAYOUT]
 
-                if data.get(ANN_VISUAL_MODE) == "template" and not data.get(ANN_TEMPLATE_LAYOUT):
-                    return await self._async_plan_and_show_preview(entry, subentry, data)
+                if data.get(ANN_VISUAL_MODE) == "template" and not data.get(
+                    ANN_TEMPLATE_LAYOUT
+                ):
+                    return await self._async_plan_and_show_preview(
+                        entry, subentry, data
+                    )
 
                 # No reload: the update listener rebuilds what changed.
                 if subentry is None:
@@ -1035,11 +1042,13 @@ def _announcement_data(user_input: dict[str, Any]) -> dict[str, Any]:
     }
     if ANN_VISUAL_MODE in user_input:
         data[ANN_VISUAL_MODE] = user_input[ANN_VISUAL_MODE]
-    if (template_image := _extract_media_id(user_input.get(ANN_TEMPLATE_IMAGE))) is not None:
+    if (
+        template_image := _extract_media_id(user_input.get(ANN_TEMPLATE_IMAGE))
+    ) is not None:
         data[ANN_TEMPLATE_IMAGE] = template_image
-    if ANN_TEMPLATE_PROMPT in user_input and user_input[ANN_TEMPLATE_PROMPT]:
+    if user_input.get(ANN_TEMPLATE_PROMPT):
         data[ANN_TEMPLATE_PROMPT] = user_input[ANN_TEMPLATE_PROMPT].strip()
-    if ANN_TEMPLATE_LAYOUT in user_input and user_input[ANN_TEMPLATE_LAYOUT]:
+    if user_input.get(ANN_TEMPLATE_LAYOUT):
         data[ANN_TEMPLATE_LAYOUT] = user_input[ANN_TEMPLATE_LAYOUT]
     if ANN_AUDIO_MODE in user_input:
         data[ANN_AUDIO_MODE] = user_input[ANN_AUDIO_MODE]
@@ -1050,7 +1059,7 @@ def _announcement_data(user_input: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def _validate_announcement(data: dict[str, Any]) -> dict[str, str]:
+def _validate_announcement(data: dict[str, Any]) -> dict[str, str]:  # noqa: PLR0911
     if not is_valid_name(data[ANN_NAME]):
         return {"base": "invalid_name"}
     if (
@@ -1065,14 +1074,14 @@ def _validate_announcement(data: dict[str, Any]) -> dict[str, str]:
         return {ANN_PICTURES: "too_many_pictures"}
     if any(not p.startswith(LOCAL_MEDIA_PREFIX) for p in data[ANN_PICTURES]):
         return {ANN_PICTURES: "local_pictures_only"}
-    if data.get(ANN_VISUAL_MODE) == "template":
-        if not data.get(ANN_TEMPLATE_IMAGE):
-            return {ANN_TEMPLATE_IMAGE: "template_image_required"}
-        if not data.get(ANN_TEMPLATE_PROMPT):
-            return {ANN_TEMPLATE_PROMPT: "template_prompt_required"}
-    if data.get(ANN_AUDIO_MODE) in ("sound", "chime_and_voice"):
-        if not data.get(ANN_CHIME_SOUND):
-            return {ANN_CHIME_SOUND: "chime_sound_required"}
+    if data.get(ANN_VISUAL_MODE) == "template" and not data.get(ANN_TEMPLATE_IMAGE):
+        return {ANN_TEMPLATE_IMAGE: "template_image_required"}
+    if data.get(ANN_VISUAL_MODE) == "template" and not data.get(ANN_TEMPLATE_PROMPT):
+        return {ANN_TEMPLATE_PROMPT: "template_prompt_required"}
+    if data.get(ANN_AUDIO_MODE) in ("sound", "chime_and_voice") and not data.get(
+        ANN_CHIME_SOUND
+    ):
+        return {ANN_CHIME_SOUND: "chime_sound_required"}
     return {}
 
 
@@ -1120,9 +1129,7 @@ def _announcement_schema(current: dict[str, Any]) -> vol.Schema:
             ): _list_selector(VISUAL_MODES, "announcement_visual_mode"),
             vol.Optional(
                 ANN_TEMPLATE_IMAGE, description=_suggested(template_image)
-            ): selector.MediaSelector(
-                selector.MediaSelectorConfig(accept=["image/*"])
-            ),
+            ): selector.MediaSelector(selector.MediaSelectorConfig(accept=["image/*"])),
             vol.Optional(
                 ANN_TEMPLATE_PROMPT,
                 description=_suggested(current.get(ANN_TEMPLATE_PROMPT)),
@@ -1132,9 +1139,7 @@ def _announcement_schema(current: dict[str, Any]) -> vol.Schema:
             ): _list_selector(AUDIO_MODES, "announcement_audio_mode"),
             vol.Optional(
                 ANN_CHIME_SOUND, description=_suggested(chime_sound)
-            ): selector.MediaSelector(
-                selector.MediaSelectorConfig(accept=["audio/*"])
-            ),
+            ): selector.MediaSelector(selector.MediaSelectorConfig(accept=["audio/*"])),
             vol.Optional(
                 ANN_HOLD_SECONDS,
                 default=float(current.get(ANN_HOLD_SECONDS, DEFAULT_HOLD_SECONDS)),

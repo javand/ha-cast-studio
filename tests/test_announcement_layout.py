@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -31,7 +30,9 @@ def test_extract_referenced_entities(hass: HomeAssistant) -> None:
 
 
 @pytest.mark.asyncio
-async def test_plan_announcement_layout_returns_validated_spec(hass: HomeAssistant) -> None:
+async def test_plan_announcement_layout_returns_validated_spec(
+    hass: HomeAssistant,
+) -> None:
     hass.states.async_set(
         "sensor.nba_golden_state_warriors",
         "PRE",

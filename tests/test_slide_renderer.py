@@ -1152,4 +1152,3 @@ def test_render_template_slide(tmp_path: Path) -> None:
     with Image.open(result) as img:
         assert img.size == (1024, 600)
         assert img.mode == "RGB"
-

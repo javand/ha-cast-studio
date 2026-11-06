@@ -255,7 +255,7 @@ async def _async_words(
     return words, None
 
 
-async def async_build_announcement(  # noqa: PLR0913
+async def async_build_announcement(  # noqa: PLR0912, PLR0913, PLR0915
     hass: HomeAssistant,
     directory: Path,
     announcement: Announcement,
@@ -291,7 +291,9 @@ async def async_build_announcement(  # noqa: PLR0913
                 raise HomeAssistantError(msg)
             mp3 = scratch / "speech.mp3"
             if not await async_encode_segment_audio(hass, str(chime_file), str(mp3)):
-                msg = f"FFmpeg audio encode failed for announcement '{announcement.name}'"
+                msg = (
+                    f"FFmpeg audio encode failed for announcement '{announcement.name}'"
+                )
                 raise HomeAssistantError(msg)
             audio_duration = await async_run_in_executor(
                 hass, get_audio_duration, str(chime_file), fallback_text=words
@@ -331,12 +333,17 @@ async def async_build_announcement(  # noqa: PLR0913
             if not await async_concat_audio(
                 hass, str(chime_file), str(tts_wav), str(combined_wav)
             ):
-                msg = f"FFmpeg chime concatenation failed for announcement '{announcement.name}'"
+                msg = (
+                    f"FFmpeg chime concatenation failed for "
+                    f"announcement '{announcement.name}'"
+                )
                 raise HomeAssistantError(msg)
 
             mp3 = scratch / "speech.mp3"
             if not await async_encode_segment_audio(hass, str(combined_wav), str(mp3)):
-                msg = f"FFmpeg audio encode failed for announcement '{announcement.name}'"
+                msg = (
+                    f"FFmpeg audio encode failed for announcement '{announcement.name}'"
+                )
                 raise HomeAssistantError(msg)
 
             audio_duration = await async_run_in_executor(
@@ -368,7 +375,9 @@ async def async_build_announcement(  # noqa: PLR0913
             )
             mp3 = scratch / "speech.mp3"
             if not await async_encode_segment_audio(hass, str(wav), str(mp3)):
-                msg = f"FFmpeg audio encode failed for announcement '{announcement.name}'"
+                msg = (
+                    f"FFmpeg audio encode failed for announcement '{announcement.name}'"
+                )
                 raise HomeAssistantError(msg)
             audio_duration = await async_run_in_executor(
                 hass, get_audio_duration, str(wav), fallback_text=words
@@ -384,12 +393,15 @@ async def async_build_announcement(  # noqa: PLR0913
                     hass, resolve_local_media_file, hass, announcement.template_image
                 )
                 if bg_file is None or not bg_file.is_file():
-                    msg = f"Template background image '{announcement.template_image}' not found"
+                    msg = (
+                        f"Template background image "
+                        f"'{announcement.template_image}' not found"
+                    )
                     raise HomeAssistantError(msg)
 
-                raw_elements = (
-                    (announcement.template_layout or {}).get("elements") or []
-                )
+                raw_elements = (announcement.template_layout or {}).get(
+                    "elements"
+                ) or []
                 evaluated_elements: list[dict[str, Any]] = []
                 for elem in raw_elements:
                     raw_text = elem.get("template", elem.get("text", ""))
@@ -397,7 +409,7 @@ async def async_build_announcement(  # noqa: PLR0913
                         rendered = template.Template(raw_text, hass).async_render(
                             parse_result=False
                         )
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         rendered = raw_text
                     item = dict(elem)
                     item["text"] = str(rendered)

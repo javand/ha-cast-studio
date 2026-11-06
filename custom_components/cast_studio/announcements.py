@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass
 from datetime import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from homeassistant.exceptions import HomeAssistantError
 
@@ -216,8 +216,10 @@ def resolve_local_picture(hass: HomeAssistant, media_content_id: str) -> Path | 
     return path
 
 
-def resolve_local_media_file(hass: HomeAssistant, media_id_or_path: str | None) -> Path | None:
-    """Resolve a media-source id, /local/ URL path, or local filesystem path to a Path object."""
+def resolve_local_media_file(
+    hass: HomeAssistant, media_id_or_path: str | None
+) -> Path | None:
+    """Resolve a media-source id, /local/ URL path, or local path to a Path."""
     if not media_id_or_path:
         return None
     if media_id_or_path.startswith(LOCAL_MEDIA_PREFIX):

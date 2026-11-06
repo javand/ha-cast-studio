@@ -79,7 +79,9 @@ def test_template_announcement_subentry_parsing() -> None:
                 visual_mode="template",
                 template_image="media-source://media_source/local/warriors_slide.png",
                 template_prompt="Show Warriors gameday from sensor.nba_golden_state_warriors",
-                template_layout={"elements": [{"text": "Warriors", "box": [400, 100, 500, 60]}]},
+                template_layout={
+                    "elements": [{"text": "Warriors", "box": [400, 100, 500, 60]}]
+                },
                 audio_mode="chime_and_voice",
                 chime_sound="media-source://media_source/local/espn-notification.mp3",
                 hold_seconds=8.0,
@@ -89,8 +91,13 @@ def test_template_announcement_subentry_parsing() -> None:
     [ann] = get_announcements(entry)
     assert ann.visual_mode == "template"
     assert ann.template_image == "media-source://media_source/local/warriors_slide.png"
-    assert ann.template_prompt == "Show Warriors gameday from sensor.nba_golden_state_warriors"
-    assert ann.template_layout == {"elements": [{"text": "Warriors", "box": [400, 100, 500, 60]}]}
+    assert (
+        ann.template_prompt
+        == "Show Warriors gameday from sensor.nba_golden_state_warriors"
+    )
+    assert ann.template_layout == {
+        "elements": [{"text": "Warriors", "box": [400, 100, 500, 60]}]
+    }
     assert ann.audio_mode == "chime_and_voice"
     assert ann.chime_sound == "media-source://media_source/local/espn-notification.mp3"
     assert ann.hold_seconds == 8.0

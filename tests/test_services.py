@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +12,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.cast_studio.const import CONF_OUTPUT_DIR, DOMAIN
 from custom_components.cast_studio.slide_renderer import render_template_slide
+
 from .conftest import SAM_ID, announcement_subentry, person_subentry, routine_subentry
 
 
@@ -21,7 +22,7 @@ async def _setup_entry_with_sam_quick(hass: Any, tmp_path: Path) -> Any:
 
     from custom_components.cast_studio.const import CONF_OUTPUT_DIR
 
-    from .conftest import SAM_ID, person_subentry, routine_subentry
+    from .conftest import SAM_ID, person_subentry
 
     entry = MockConfigEntry(
         domain=DOMAIN,

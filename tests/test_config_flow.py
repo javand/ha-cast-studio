@@ -1669,7 +1669,9 @@ async def test_reconfigure_announcement_template_preserves_layout(
     )
     hass.config_entries.async_add_subentry(entry_with_sam, subentry)
 
-    result = await entry_with_sam.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, subentry.subentry_id
+    )
     assert result["step_id"] == "reconfigure"
 
     with patch(
@@ -1691,8 +1693,10 @@ async def test_reconfigure_announcement_template_preserves_layout(
         assert result["type"] == data_entry_flow.FlowResultType.ABORT
         assert result["reason"] == "reconfigure_successful"
         mock_plan.assert_not_called()
-        assert entry_with_sam.subentries[subentry.subentry_id].data["template_layout"] == mock_layout
-
+        assert (
+            entry_with_sam.subentries[subentry.subentry_id].data["template_layout"]
+            == mock_layout
+        )
 
 
 def test_announcement_translations_present() -> None:
@@ -1711,7 +1715,9 @@ def test_announcement_translations_present() -> None:
         ann = data["config_subentries"]["announcement"]
         assert ann["initiate_flow"]["user"] == "Add announcement"
         for step in ("user", "reconfigure"):
-            for field in set(_announcement_input()) | {"pictures", "target"} | new_fields:
+            for field in (
+                set(_announcement_input()) | {"pictures", "target"} | new_fields
+            ):
                 assert field in ann["step"][step]["data"]
                 assert field in ann["step"][step]["data_description"]
         assert "preview" in ann["step"]
