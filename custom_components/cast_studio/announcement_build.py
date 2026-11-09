@@ -219,13 +219,26 @@ def _read_pictures(
     return pictures
 
 
-def _slide_prompt(announcement: Announcement, words: str) -> str:
+def _render_text_template(hass: HomeAssistant, raw_text: str) -> str:
+    """Evaluate Jinja2 templates in text if present."""
+    if "{" not in raw_text:
+        return raw_text
+    try:
+        return str(template.Template(raw_text, hass).async_render(parse_result=False))
+    except Exception:  # noqa: BLE001
+        return raw_text
+
+
+def _slide_prompt(hass: HomeAssistant, announcement: Announcement, words: str) -> str:
+    desc = _render_text_template(hass, announcement.description)
     return (
-        "A full-bleed 16:9 widescreen digital graphic (1024x600 resolution) for a household announcement.\n"
-        "CRITICAL REQUIREMENT: Render ONLY the direct screen graphic filling the entire 16:9 frame edge-to-edge. "
-        "Do NOT draw a physical device, monitor, tablet, screen bezel, frame, desk, table, room, or product mockup. "
+        "A full-bleed 16:9 widescreen digital graphic (1024x600 resolution) "
+        "for a household announcement.\n"
+        "CRITICAL REQUIREMENT: Render ONLY the direct screen graphic filling the "
+        "entire 16:9 frame edge-to-edge. Do NOT draw a physical device, monitor, "
+        "tablet, screen bezel, frame, desk, table, room, or product mockup. "
         "The image itself IS the direct display content.\n"
-        f"What the slide should show: {announcement.description}\n"
+        f"What the slide should show: {desc}\n"
         f'The announcement says: "{words}"\n'
         "Any text on the slide must be short, large and spelled exactly as "
         "given. Reference pictures, if any, are attached in the order the "
@@ -432,7 +445,7 @@ async def async_build_announcement(  # noqa: PLR0912, PLR0913, PLR0915
                 )
                 slide = await async_generate_ai_image(
                     hass,
-                    _slide_prompt(announcement, words),
+                    _slide_prompt(hass, announcement, words),
                     str(scratch / "slide.png"),
                     ai_creds,
                     reference_images=[(mime, data) for _, mime, data in pictures],
