@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.cast_studio.orchestrator import (
@@ -1613,20 +1614,20 @@ async def test_lifecycle_waits_extra_seconds_added_during_playback() -> None:
     assert loop.time() - started >= 0.28
 
 
-def _cast_state(state: str, media_id: str) -> MagicMock:
+def _cast_state(state: str, media_id: str, **attrs: Any) -> MagicMock:
     return MagicMock(
         state=state,
-        attributes={"app_id": "CC1AD845", "media_content_id": media_id},
+        attributes={"app_id": "CC1AD845", "media_content_id": media_id, **attrs},
     )
 
 
 @pytest.mark.asyncio
-async def test_post_actions_wait_for_media_still_playing_at_timer_end() -> None:
-    """A Hub that buffered first is still playing at the timer: wait it out."""
+async def test_post_actions_wait_for_media_left_at_timer_end() -> None:
+    """A Hub that buffered first still has media left at the timer: wait it out."""
     hass = MagicMock()
     hass.services.async_call = AsyncMock()
     media_id = "http://ha.local/local/morning.mp4"
-    hass.states.get.return_value = _cast_state("buffering", "http://other/x.mp4")
+    hass.states.get.return_value = _cast_state("idle", "http://other/x.mp4")
     metadata: dict = {
         "video_path": media_id,
         "prepare_player": False,
@@ -1635,6 +1636,7 @@ async def test_post_actions_wait_for_media_still_playing_at_timer_end() -> None:
             {"service": "cast.show_lovelace_view", "data": {"view_path": "home"}}
         ],
     }
+    loop = asyncio.get_running_loop()
     with (
         patch(
             "custom_components.cast_studio.orchestrator.async_track_state_change_event"
@@ -1648,33 +1650,45 @@ async def test_post_actions_wait_for_media_still_playing_at_timer_end() -> None:
         event = MagicMock()
         event.data = {"new_state": _cast_state("buffering", media_id)}
         mock_track.call_args[0][2](event)
+        started = loop.time()
 
-        # The timer runs out while the player still plays our media.
-        hass.states.get.return_value = _cast_state("playing", media_id)
+        # The audio really starts now: half a second of media is left.
+        hass.states.get.return_value = _cast_state(
+            "playing",
+            media_id,
+            media_position=0.0,
+            media_position_updated_at=dt_util.utcnow(),
+            media_duration=0.5,
+        )
         await asyncio.sleep(0.15)
         assert not task.done()
-        hass.services.async_call.assert_not_called()
-
-        # The media finishes: now the dashboard may be cast.
-        ended = MagicMock()
-        ended.data = {"new_state": _cast_state("idle", media_id)}
-        mock_track.call_args[0][2](ended)
-        await asyncio.wait_for(task, 1)
+        assert all(c.args[0] != "cast" for c in hass.services.async_call.call_args_list)
+        await asyncio.wait_for(task, 2)
+    assert loop.time() - started >= 0.45
     hass.services.async_call.assert_any_call(
         "cast",
         "show_lovelace_view",
-        service_data={"view_path": "home"},
+        service_data={
+            "view_path": "home",
+            "entity_id": "media_player.bathroom_display",
+        },
         target={"entity_id": "media_player.bathroom_display"},
     )
 
 
 @pytest.mark.asyncio
 async def test_post_actions_stop_waiting_for_media_end_at_cap() -> None:
-    """A player that never reports the end does not hold post actions forever."""
+    """A player that reports a long way to go does not hold post actions forever."""
     hass = MagicMock()
     hass.services.async_call = AsyncMock()
     media_id = "http://ha.local/local/morning.mp4"
-    hass.states.get.return_value = _cast_state("playing", media_id)
+    hass.states.get.return_value = _cast_state(
+        "playing",
+        media_id,
+        media_position=0.0,
+        media_position_updated_at=dt_util.utcnow(),
+        media_duration=600.0,
+    )
     metadata: dict = {
         "video_path": media_id,
         "prepare_player": False,
@@ -1692,4 +1706,4 @@ async def test_post_actions_stop_waiting_for_media_end_at_cap() -> None:
             hass, "morning", "media_player.bathroom_display", metadata, []
         )
         await asyncio.wait_for(task, 1)
-    hass.services.async_call.assert_called()
+    assert any(c.args[0] == "cast" for c in hass.services.async_call.call_args_list)

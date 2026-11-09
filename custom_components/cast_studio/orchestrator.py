@@ -20,6 +20,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.network import get_url
+from homeassistant.util import dt as dt_util
 
 from .const import LOGGER
 from .helpers import create_task
@@ -107,7 +108,8 @@ PLAY_RETRY_DELAY = 5.0
 # A Cast counts as started while it still buffers, so the timed end can come
 # before the audio does: wait this long at most for the player to finish.
 MEDIA_END_WAIT_MAX = 30.0
-_STILL_PLAYING_STATES = ("playing", "buffering")
+# Seconds left in the media that are not worth waiting for.
+MEDIA_END_TOLERANCE = 0.25
 
 
 def get_routine_sync_task(routine_name: str) -> asyncio.Task[Any] | None:
@@ -580,44 +582,62 @@ def _is_routine_media_playing(  # noqa: PLR0911
     return app_name not in ("backdrop", "ambient", "google cast", "homescreen")
 
 
-def _is_still_playing_media(state_obj: Any, media_url: str, media_path: str) -> bool:
-    """Return True if the player reports our media as still playing."""
-    if state_obj is None or state_obj.state not in _STILL_PLAYING_STATES:
-        return False
-    if not isinstance(getattr(state_obj, "attributes", None), dict):
-        return False
-    return _is_routine_media_playing(state_obj, media_url, media_path, strict=True)
+def _media_seconds_left(
+    state_obj: Any, media_url: str, media_path: str, duration: float
+) -> float | None:
+    """
+    Return how much of our media the player says is left to play.
+
+    None when the player is not playing our media or does not report where
+    it is.
+    """
+    if state_obj is None or state_obj.state != "playing":
+        return None
+    attrs = getattr(state_obj, "attributes", None)
+    if not isinstance(attrs, dict) or not _is_routine_media_playing(
+        state_obj, media_url, media_path, strict=True
+    ):
+        return None
+    position = attrs.get("media_position")
+    updated = attrs.get("media_position_updated_at")
+    if isinstance(updated, str):
+        updated = dt_util.parse_datetime(updated)
+    if position is None or updated is None:
+        return None
+    played = float(position) + (dt_util.utcnow() - updated).total_seconds()
+    return float(attrs.get("media_duration") or duration) - played
 
 
 async def _async_wait_media_end(
-    hass: HomeAssistant, target_player: str, media_url: str, media_path: str
+    hass: HomeAssistant,
+    target_player: str,
+    media_url: str,
+    media_path: str,
+    duration: float,
 ) -> None:
-    """Wait, up to MEDIA_END_WAIT_MAX, while the player still plays our media."""
-    if not _is_still_playing_media(
-        hass.states.get(target_player), media_url, media_path
-    ):
-        return
-    ended = asyncio.Event()
-
-    @callback
-    def _changed(event: Event) -> None:
-        if not _is_still_playing_media(
-            event.data.get("new_state"), media_url, media_path
-        ):
-            ended.set()
-
-    unsub = async_track_state_change_event(hass, [target_player], _changed)
-    try:
-        async with asyncio.timeout(MEDIA_END_WAIT_MAX):
-            await ended.wait()
-    except TimeoutError:
-        LOGGER.debug(
-            "'%s' still playing %.0fs after the routine's end; carrying on",
-            target_player,
-            MEDIA_END_WAIT_MAX,
+    """Wait, up to MEDIA_END_WAIT_MAX, for the player to finish our media."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + MEDIA_END_WAIT_MAX
+    while True:
+        left = _media_seconds_left(
+            hass.states.get(target_player), media_url, media_path, duration
         )
-    finally:
-        unsub()
+        if left is None or left <= MEDIA_END_TOLERANCE:
+            return
+        wait = min(left, deadline - loop.time())
+        if wait <= 0:
+            LOGGER.debug(
+                "'%s' still has %.1fs to play after the routine's end; carrying on",
+                target_player,
+                left,
+            )
+            return
+        LOGGER.debug(
+            "'%s' has %.1fs left to play; waiting before post actions",
+            target_player,
+            left,
+        )
+        await asyncio.sleep(wait)
 
 
 async def _async_prepare_player(
@@ -849,7 +869,7 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0913, PLR0915
             # The timer starts at 'buffering'; let the media itself finish
             # before post actions (a dashboard cast) cut it off.
             await _async_wait_media_end(
-                hass, target_player, resolved_media_url, media_path
+                hass, target_player, resolved_media_url, media_path, duration
             )
         except asyncio.CancelledError:
             if not playing_future.done():
