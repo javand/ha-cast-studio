@@ -221,8 +221,10 @@ def _read_pictures(
 
 def _slide_prompt(announcement: Announcement, words: str) -> str:
     return (
-        "Paint one 16:9 landscape slide for a smart display (shown at 1024x600) "
-        "for a household announcement.\n"
+        "A full-bleed 16:9 widescreen digital graphic (1024x600 resolution) for a household announcement.\n"
+        "CRITICAL REQUIREMENT: Render ONLY the direct screen graphic filling the entire 16:9 frame edge-to-edge. "
+        "Do NOT draw a physical device, monitor, tablet, screen bezel, frame, desk, table, room, or product mockup. "
+        "The image itself IS the direct display content.\n"
         f"What the slide should show: {announcement.description}\n"
         f'The announcement says: "{words}"\n'
         "Any text on the slide must be short, large and spelled exactly as "
