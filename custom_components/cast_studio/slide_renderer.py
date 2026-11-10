@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from homeassistant.util import dt as dt_util
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 _LOGGER = logging.getLogger(__name__)
 BUNDLED_ASSETS_DIR = Path(__file__).parent / "assets"
@@ -2328,3 +2328,91 @@ def render_slide(  # noqa: PLR0912, PLR0915
     else:
         canvas.save(str(output_path), "JPEG", quality=95)
     return str(output_path)
+
+
+def render_template_slide(  # noqa: PLR0912, PLR0915
+    background_path: str,
+    elements: list[dict[str, Any]],
+    output_path: str,
+) -> str:
+    """Render a 1024x600 template slide using a background image and layout elements."""
+    bg = Image.open(background_path).convert("RGB")
+    if bg.size != (1024, 600):
+        bg = ImageOps.fit(bg, (1024, 600), method=Image.Resampling.LANCZOS)
+
+    draw = ImageDraw.Draw(bg, "RGBA")
+
+    for elem in elements:
+        text = str(elem.get("text") or "").strip()
+        if not text:
+            continue
+
+        box = elem.get("box") or [0, 0, 1024, 600]
+        bx, by, bw, bh = box[0], box[1], box[2], box[3]
+        font_size = int(elem.get("font_size") or 32)
+        font_weight = str(elem.get("font_weight") or "regular").lower()
+        bold = "bold" in font_weight
+        font = _get_font(font_size, bold=bold)
+        color = elem.get("color") or "#ffffff"
+        align = str(elem.get("align") or "left").lower()
+        is_badge = bool(elem.get("badge", False))
+
+        if is_badge:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            pad_x, pad_y = 16, 6
+            pill_w = tw + pad_x * 2
+            pill_h = th + pad_y * 2
+            pill_x = bx
+            pill_y = by
+            draw.rounded_rectangle(
+                [pill_x, pill_y, pill_x + pill_w, pill_y + pill_h],
+                radius=min(pill_h // 2, 16),
+                fill=(255, 255, 255, 40),
+            )
+            draw.text(
+                (pill_x + pad_x, pill_y + pad_y - 2),
+                text,
+                fill=color,
+                font=font,
+            )
+            continue
+
+        words = text.split(" ")
+        lines: list[str] = []
+        curr_line = ""
+        for word in words:
+            test_line = f"{curr_line} {word}".strip()
+            tb = draw.textbbox((0, 0), test_line, font=font)
+            if (tb[2] - tb[0]) <= bw or not curr_line:
+                curr_line = test_line
+            else:
+                lines.append(curr_line)
+                curr_line = word
+        if curr_line:
+            lines.append(curr_line)
+
+        line_height = int(font_size * 1.25)
+        curr_y = by
+        for line in lines:
+            if curr_y + line_height > by + bh and lines.index(line) > 0:
+                break
+            tb = draw.textbbox((0, 0), line, font=font)
+            lw = tb[2] - tb[0]
+            if align == "center":
+                lx = bx + (bw - lw) // 2
+            elif align == "right":
+                lx = bx + bw - lw
+            else:
+                lx = bx
+            draw.text((lx, curr_y), line, fill=color, font=font)
+            curr_y += line_height
+
+    out = Path(output_path).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.suffix.lower() == ".png":
+        bg.save(str(out), "PNG")
+    else:
+        bg.save(str(out), "JPEG", quality=95)
+    return str(out)

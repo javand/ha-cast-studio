@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass
 from datetime import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from homeassistant.exceptions import HomeAssistantError
 
@@ -39,11 +39,21 @@ ANN_REBUILD_TIME = "rebuild_time"
 ANN_PICTURES = "pictures"
 ANN_OUTPUT_FORMAT = "output_format"
 ANN_TARGET = "target"
+ANN_VISUAL_MODE = "visual_mode"
+ANN_TEMPLATE_IMAGE = "template_image"
+ANN_TEMPLATE_PROMPT = "template_prompt"
+ANN_TEMPLATE_LAYOUT = "template_layout"
+ANN_AUDIO_MODE = "audio_mode"
+ANN_CHIME_SOUND = "chime_sound"
+ANN_HOLD_SECONDS = "hold_seconds"
 
 WORDINGS: tuple[str, ...] = ("verbatim", "creative")
 FRESHNESS: tuple[str, ...] = ("static", "daily")
+VISUAL_MODES: tuple[str, ...] = ("ai_painted", "template")
+AUDIO_MODES: tuple[str, ...] = ("voice", "sound", "chime_and_voice")
 DEFAULT_REBUILD_TIME = "03:00:00"
 DEFAULT_PERSONA = "default_host"
+DEFAULT_HOLD_SECONDS = 5.0
 MAX_PICTURES = 4
 LOCAL_MEDIA_PREFIX = "media-source://media_source/"
 
@@ -64,6 +74,13 @@ class Announcement:
     output_format: Literal["audio", "visual"]
     # The media player it plays on when none is given.
     target: str | None = None
+    visual_mode: Literal["ai_painted", "template"] = "ai_painted"
+    template_image: str | None = None
+    template_prompt: str | None = None
+    template_layout: dict[str, Any] | None = None
+    audio_mode: Literal["voice", "sound", "chime_and_voice"] = "voice"
+    chime_sound: str | None = None
+    hold_seconds: float = DEFAULT_HOLD_SECONDS
 
 
 def _announcement_from_subentry(subentry: ConfigSubentry) -> Announcement:
@@ -82,6 +99,17 @@ def _announcement_from_subentry(subentry: ConfigSubentry) -> Announcement:
         pictures=tuple(data.get(ANN_PICTURES) or ()),
         output_format=data.get(ANN_OUTPUT_FORMAT) or "visual",
         target=data.get(ANN_TARGET) or None,
+        visual_mode=data.get(ANN_VISUAL_MODE) or "ai_painted",
+        template_image=data.get(ANN_TEMPLATE_IMAGE) or None,
+        template_prompt=data.get(ANN_TEMPLATE_PROMPT) or None,
+        template_layout=data.get(ANN_TEMPLATE_LAYOUT) or None,
+        audio_mode=data.get(ANN_AUDIO_MODE) or "voice",
+        chime_sound=data.get(ANN_CHIME_SOUND) or None,
+        hold_seconds=float(
+            data.get(ANN_HOLD_SECONDS)
+            if data.get(ANN_HOLD_SECONDS) is not None
+            else DEFAULT_HOLD_SECONDS
+        ),
     )
 
 
@@ -119,6 +147,13 @@ def settings_fingerprint(announcement: Announcement) -> str:
         "persona_ids": list(announcement.persona_ids),
         "pictures": list(announcement.pictures),
         "output_format": announcement.output_format,
+        "visual_mode": announcement.visual_mode,
+        "template_image": announcement.template_image,
+        "template_prompt": announcement.template_prompt,
+        "template_layout": announcement.template_layout,
+        "audio_mode": announcement.audio_mode,
+        "chime_sound": announcement.chime_sound,
+        "hold_seconds": announcement.hold_seconds,
     }
     encoded = json.dumps(payload, sort_keys=True).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -160,6 +195,12 @@ def pick_build_persona(
     return persona
 
 
+IMAGE_UPLOAD_PREFIXES: tuple[str, ...] = (
+    "media-source://image_upload/",
+    "media-source://image/",
+)
+
+
 def resolve_local_picture(hass: HomeAssistant, media_content_id: str) -> Path | None:
     """
     Return the file behind a local media-source id, or None.
@@ -171,7 +212,12 @@ def resolve_local_picture(hass: HomeAssistant, media_content_id: str) -> Path | 
     dir_id, _, relative = media_content_id.removeprefix(LOCAL_MEDIA_PREFIX).partition(
         "/"
     )
-    base = hass.config.media_dirs.get(dir_id)
+    base = (hass.config.media_dirs or {}).get(dir_id)
+    if not base and dir_id == "local":
+        for candidate_base in (hass.config.path("media"), "/media"):
+            if Path(candidate_base).is_dir():
+                base = candidate_base
+                break
     if not base or not relative:
         return None
     root = Path(base).resolve()
@@ -179,3 +225,31 @@ def resolve_local_picture(hass: HomeAssistant, media_content_id: str) -> Path | 
     if not path.is_relative_to(root) or not path.is_file():
         return None
     return path
+
+
+def resolve_local_media_file(
+    hass: HomeAssistant, media_id_or_path: str | None
+) -> Path | None:
+    """Resolve a media-source id, /local/ URL path, or local path to a Path."""
+    if not media_id_or_path:
+        return None
+    if media_id_or_path.startswith(LOCAL_MEDIA_PREFIX):
+        return resolve_local_picture(hass, media_id_or_path)
+    for prefix in IMAGE_UPLOAD_PREFIXES:
+        if media_id_or_path.startswith(prefix):
+            img_id = media_id_or_path.removeprefix(prefix).split("/")[0]
+            for candidate in (
+                Path(hass.config.path("image", img_id, "original")),
+                Path(hass.config.path("image", img_id)),
+            ):
+                if candidate.is_file():
+                    return candidate
+    p = Path(media_id_or_path)
+    if p.is_file():
+        return p
+    if media_id_or_path.startswith("/local/"):
+        rel = media_id_or_path.removeprefix("/local/")
+        www_p = Path(hass.config.path("www", rel))
+        if www_p.is_file():
+            return www_p
+    return None

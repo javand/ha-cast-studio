@@ -38,7 +38,11 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from .const import LOGGER
-from .ffmpeg_runner import async_run_ffmpeg, build_slide_clip_command
+from .ffmpeg_runner import (
+    async_run_ffmpeg,
+    build_concat_audio_command,
+    build_slide_clip_command,
+)
 from .generator import (
     DEFAULT_SLIDE_PAD_SECONDS,
     FINAL_SLIDE_PAD_SECONDS,
@@ -124,6 +128,19 @@ async def async_encode_segment_audio(
     return await async_run_ffmpeg(
         hass, ["ffmpeg", "-y", "-i", source, *SEGMENT_AUDIO_ARGS, output]
     )
+
+
+async def async_concat_audio(
+    hass: HomeAssistant,
+    chime: str,
+    speech: str,
+    output: str,
+    *,
+    gap_seconds: float = 0.3,
+) -> bool:
+    """Concatenate ``chime`` and ``speech`` into ``output``; False if FFmpeg fails."""
+    cmd = build_concat_audio_command(chime, speech, output, gap_seconds=gap_seconds)
+    return await async_run_ffmpeg(hass, cmd)
 
 
 async def async_encode_segment_clip(  # noqa: PLR0913

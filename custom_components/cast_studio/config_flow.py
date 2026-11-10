@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 from datetime import time
+from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
-from homeassistant.helpers import selector
+from homeassistant.helpers import selector, template
 
+from .ai_client import async_discover_ai_credentials
+from .announcement_layout import async_plan_announcement_layout
 from .announcements import (
+    ANN_AUDIO_MODE,
+    ANN_CHIME_SOUND,
     ANN_DESCRIPTION,
     ANN_FRESHNESS,
+    ANN_HOLD_SECONDS,
     ANN_MESSAGE,
     ANN_NAME,
     ANN_OUTPUT_FORMAT,
@@ -21,15 +27,23 @@ from .announcements import (
     ANN_PICTURES,
     ANN_REBUILD_TIME,
     ANN_TARGET,
+    ANN_TEMPLATE_IMAGE,
+    ANN_TEMPLATE_LAYOUT,
+    ANN_TEMPLATE_PROMPT,
+    ANN_VISUAL_MODE,
     ANN_WORDING,
+    AUDIO_MODES,
+    DEFAULT_HOLD_SECONDS,
     DEFAULT_PERSONA,
     DEFAULT_REBUILD_TIME,
     FRESHNESS,
     LOCAL_MEDIA_PREFIX,
     MAX_PICTURES,
     SUBENTRY_ANNOUNCEMENT,
+    VISUAL_MODES,
     WORDINGS,
     get_announcements,
+    resolve_local_media_file,
 )
 from .const import (
     CONF_API_KEY,
@@ -105,6 +119,7 @@ from .personas import (
     get_persona,
 )
 from .segments import default_refresh_segments
+from .slide_renderer import render_template_slide
 
 ADVANCED_SECTION = "advanced"
 
@@ -836,6 +851,9 @@ def _voice_changes_selector(segment_choices: list[str]) -> selector.ObjectSelect
 class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
     """Add or edit a household announcement."""
 
+    _staged_data: dict[str, Any] | None = None
+    _staged_subentry: config_entries.ConfigSubentry | None = None
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
@@ -849,6 +867,112 @@ class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
         return await self._async_step_form(
             "reconfigure", self._get_reconfigure_subentry(), user_input
         )
+
+    async def async_step_preview(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Show preview and confirm creation/update."""
+        if user_input is not None:
+            data = getattr(self, "_staged_data", None)
+            if data is None:
+                return self.async_abort(reason="unknown_error")
+            subentry = getattr(self, "_staged_subentry", None)
+            entry = self._get_entry()
+            if subentry is None:
+                return self.async_create_entry(title=data[ANN_NAME], data=data)
+            return self.async_update_and_abort(
+                entry, subentry, title=data[ANN_NAME], data=data
+            )
+
+        preview_url = f"/local/cast_studio_previews/preview_{self.flow_id}.jpg"
+        return self.async_show_form(
+            step_id="preview",
+            data_schema=vol.Schema({}),
+            description_placeholders={"preview_url": preview_url},
+        )
+
+    async def _async_plan_and_show_preview(
+        self,
+        entry: config_entries.ConfigEntry,
+        subentry: config_entries.ConfigSubentry | None,
+        data: dict[str, Any],
+    ) -> config_entries.SubentryFlowResult:
+        """Plan layout via Gemini and show preview step."""
+        template_img_id = data.get(ANN_TEMPLATE_IMAGE)
+        bg_path = (
+            resolve_local_media_file(self.hass, template_img_id)
+            if template_img_id
+            else None
+        )
+        if bg_path is None or not Path(bg_path).is_file():
+            return self.async_show_form(
+                step_id="user" if subentry is None else "reconfigure",
+                data_schema=_announcement_schema(data),
+                errors={ANN_TEMPLATE_IMAGE: "template_image_required"},
+            )
+
+        image_path = Path(bg_path)
+        image_bytes = await self.hass.async_add_executor_job(image_path.read_bytes)
+        suffix = image_path.suffix.lower()
+        image_mime = (
+            "image/png"
+            if suffix == ".png"
+            else "image/webp"
+            if suffix == ".webp"
+            else "image/jpeg"
+        )
+
+        ai_creds = await async_discover_ai_credentials(self.hass)
+        if explicit_key := (
+            entry.options.get(CONF_API_KEY) or entry.data.get(CONF_API_KEY)
+        ):
+            ai_creds["api_key"] = explicit_key
+
+        try:
+            layout = await async_plan_announcement_layout(
+                hass=self.hass,
+                image_bytes=image_bytes,
+                image_mime=image_mime,
+                prompt=data.get(ANN_TEMPLATE_PROMPT, ""),
+                ai_creds=ai_creds,
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to plan announcement layout with AI")
+            return self.async_show_form(
+                step_id="user" if subentry is None else "reconfigure",
+                data_schema=_announcement_schema(data),
+                errors={"base": "template_planning_failed"},
+            )
+
+        # Render preview slide with live Jinja rendering
+        evaluated_elements = []
+        for el in layout.get("elements", []):
+            tmpl = el.get("template", "")
+            try:
+                rendered_text = template.Template(tmpl, self.hass).async_render(
+                    parse_result=False
+                )
+            except Exception as err:  # noqa: BLE001
+                LOGGER.warning("Failed to render preview template '%s': %s", tmpl, err)
+                rendered_text = tmpl
+            elem_copy = dict(el)
+            elem_copy["text"] = str(rendered_text)
+            evaluated_elements.append(elem_copy)
+
+        preview_dir = Path(self.hass.config.path("www", "cast_studio_previews"))
+        preview_file = preview_dir / f"preview_{self.flow_id}.jpg"
+
+        def _render_preview() -> None:
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            render_template_slide(bg_path, evaluated_elements, preview_file)
+
+        await self.hass.async_add_executor_job(_render_preview)
+
+        data[ANN_TEMPLATE_LAYOUT] = layout
+        self._staged_data = data
+        self._staged_subentry = subentry
+
+        return await self.async_step_preview()
 
     async def _async_step_form(
         self,
@@ -871,6 +995,27 @@ class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
             ):
                 errors = {"base": "duplicate_announcement"}
             if not errors:
+                prompt_changed = subentry is not None and (
+                    subentry.data.get(ANN_TEMPLATE_PROMPT)
+                    != data.get(ANN_TEMPLATE_PROMPT)
+                    or subentry.data.get(ANN_TEMPLATE_IMAGE)
+                    != data.get(ANN_TEMPLATE_IMAGE)
+                )
+                if (
+                    subentry
+                    and not data.get(ANN_TEMPLATE_LAYOUT)
+                    and subentry.data.get(ANN_TEMPLATE_LAYOUT)
+                    and not prompt_changed
+                ):
+                    data[ANN_TEMPLATE_LAYOUT] = subentry.data[ANN_TEMPLATE_LAYOUT]
+
+                if data.get(ANN_VISUAL_MODE) == "template" and not data.get(
+                    ANN_TEMPLATE_LAYOUT
+                ):
+                    return await self._async_plan_and_show_preview(
+                        entry, subentry, data
+                    )
+
                 # No reload: the update listener rebuilds what changed.
                 if subentry is None:
                     return self.async_create_entry(title=data[ANN_NAME], data=data)
@@ -882,11 +1027,19 @@ class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):
         )
 
 
+def _extract_media_id(val: Any) -> str | None:
+    if isinstance(val, dict):
+        return val.get("media_content_id")
+    if isinstance(val, str) and val:
+        return val
+    return None
+
+
 def _announcement_data(user_input: dict[str, Any]) -> dict[str, Any]:
     pictures = user_input.get(ANN_PICTURES) or []
     if isinstance(pictures, dict):
         pictures = [pictures]
-    return {
+    data: dict[str, Any] = {
         ANN_NAME: (user_input.get(ANN_NAME) or "").strip(),
         ANN_DESCRIPTION: (user_input.get(ANN_DESCRIPTION) or "").strip(),
         ANN_WORDING: user_input.get(ANN_WORDING) or "verbatim",
@@ -902,12 +1055,33 @@ def _announcement_data(user_input: dict[str, Any]) -> dict[str, Any]:
         ANN_OUTPUT_FORMAT: user_input.get(ANN_OUTPUT_FORMAT) or DEFAULT_OUTPUT_FORMAT,
         **({ANN_TARGET: target} if (target := user_input.get(ANN_TARGET)) else {}),
     }
+    if ANN_VISUAL_MODE in user_input:
+        data[ANN_VISUAL_MODE] = user_input[ANN_VISUAL_MODE]
+    if (
+        template_image := _extract_media_id(user_input.get(ANN_TEMPLATE_IMAGE))
+    ) is not None:
+        data[ANN_TEMPLATE_IMAGE] = template_image
+    if user_input.get(ANN_TEMPLATE_PROMPT):
+        data[ANN_TEMPLATE_PROMPT] = user_input[ANN_TEMPLATE_PROMPT].strip()
+    if user_input.get(ANN_TEMPLATE_LAYOUT):
+        data[ANN_TEMPLATE_LAYOUT] = user_input[ANN_TEMPLATE_LAYOUT]
+    if ANN_AUDIO_MODE in user_input:
+        data[ANN_AUDIO_MODE] = user_input[ANN_AUDIO_MODE]
+    if (chime_sound := _extract_media_id(user_input.get(ANN_CHIME_SOUND))) is not None:
+        data[ANN_CHIME_SOUND] = chime_sound
+    if ANN_HOLD_SECONDS in user_input and user_input[ANN_HOLD_SECONDS] is not None:
+        data[ANN_HOLD_SECONDS] = float(user_input[ANN_HOLD_SECONDS])
+    return data
 
 
-def _validate_announcement(data: dict[str, Any]) -> dict[str, str]:
+def _validate_announcement(data: dict[str, Any]) -> dict[str, str]:  # noqa: PLR0911
     if not is_valid_name(data[ANN_NAME]):
         return {"base": "invalid_name"}
-    if data[ANN_WORDING] == "verbatim" and not data[ANN_MESSAGE]:
+    if (
+        data[ANN_WORDING] == "verbatim"
+        and not data[ANN_MESSAGE]
+        and data.get(ANN_AUDIO_MODE, "voice") != "sound"
+    ):
         return {ANN_MESSAGE: "message_required"}
     if data[ANN_FRESHNESS] == "static" and len(data[ANN_PERSONAS]) > 1:
         return {ANN_PERSONAS: "one_persona"}
@@ -915,6 +1089,14 @@ def _validate_announcement(data: dict[str, Any]) -> dict[str, str]:
         return {ANN_PICTURES: "too_many_pictures"}
     if any(not p.startswith(LOCAL_MEDIA_PREFIX) for p in data[ANN_PICTURES]):
         return {ANN_PICTURES: "local_pictures_only"}
+    if data.get(ANN_VISUAL_MODE) == "template" and not data.get(ANN_TEMPLATE_IMAGE):
+        return {ANN_TEMPLATE_IMAGE: "template_image_required"}
+    if data.get(ANN_VISUAL_MODE) == "template" and not data.get(ANN_TEMPLATE_PROMPT):
+        return {ANN_TEMPLATE_PROMPT: "template_prompt_required"}
+    if data.get(ANN_AUDIO_MODE) in ("sound", "chime_and_voice") and not data.get(
+        ANN_CHIME_SOUND
+    ):
+        return {ANN_CHIME_SOUND: "chime_sound_required"}
     return {}
 
 
@@ -933,6 +1115,22 @@ def _announcement_schema(current: dict[str, Any]) -> vol.Schema:
         {"media_content_id": media_id, "media_content_type": "image/jpeg"}
         for media_id in current.get(ANN_PICTURES) or []
     ]
+    template_image = (
+        {
+            "media_content_id": current[ANN_TEMPLATE_IMAGE],
+            "media_content_type": "image/jpeg",
+        }
+        if current.get(ANN_TEMPLATE_IMAGE)
+        else None
+    )
+    chime_sound = (
+        {
+            "media_content_id": current[ANN_CHIME_SOUND],
+            "media_content_type": "audio/mpeg",
+        }
+        if current.get(ANN_CHIME_SOUND)
+        else None
+    )
     return vol.Schema(
         {
             vol.Required(
@@ -941,6 +1139,34 @@ def _announcement_schema(current: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 ANN_DESCRIPTION, description=_suggested(current.get(ANN_DESCRIPTION))
             ): _text_selector(multiline=True),
+            vol.Required(
+                ANN_VISUAL_MODE, default=current.get(ANN_VISUAL_MODE, "ai_painted")
+            ): _list_selector(VISUAL_MODES, "announcement_visual_mode"),
+            vol.Optional(
+                ANN_TEMPLATE_IMAGE, description=_suggested(template_image)
+            ): selector.MediaSelector(selector.MediaSelectorConfig(accept=["image/*"])),
+            vol.Optional(
+                ANN_TEMPLATE_PROMPT,
+                description=_suggested(current.get(ANN_TEMPLATE_PROMPT)),
+            ): _text_selector(multiline=True),
+            vol.Required(
+                ANN_AUDIO_MODE, default=current.get(ANN_AUDIO_MODE, "voice")
+            ): _list_selector(AUDIO_MODES, "announcement_audio_mode"),
+            vol.Optional(
+                ANN_CHIME_SOUND, description=_suggested(chime_sound)
+            ): selector.MediaSelector(selector.MediaSelectorConfig(accept=["audio/*"])),
+            vol.Optional(
+                ANN_HOLD_SECONDS,
+                default=float(current.get(ANN_HOLD_SECONDS, DEFAULT_HOLD_SECONDS)),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1,
+                    max=60,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="seconds",
+                )
+            ),
             vol.Required(
                 ANN_WORDING, default=current.get(ANN_WORDING, "verbatim")
             ): _list_selector(WORDINGS, "announcement_wording"),

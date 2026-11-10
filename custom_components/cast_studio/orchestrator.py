@@ -20,6 +20,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.network import get_url
+from homeassistant.util import dt as dt_util
 
 from .const import LOGGER
 from .helpers import create_task
@@ -103,6 +104,12 @@ _NOT_STARTED_STATES = ("off", "unavailable")
 # A dropped Cast connection reconnects within seconds: try again once.
 PLAY_DISPATCH_ATTEMPTS = 2
 PLAY_RETRY_DELAY = 5.0
+
+# A Cast counts as started while it still buffers, so the timed end can come
+# before the audio does: wait this long at most for the player to finish.
+MEDIA_END_WAIT_MAX = 30.0
+# Seconds left in the media that are not worth waiting for.
+MEDIA_END_TOLERANCE = 0.25
 
 
 def get_routine_sync_task(routine_name: str) -> asyncio.Task[Any] | None:
@@ -575,16 +582,82 @@ def _is_routine_media_playing(  # noqa: PLR0911
     return app_name not in ("backdrop", "ambient", "google cast", "homescreen")
 
 
+def _media_seconds_left(
+    state_obj: Any, media_url: str, media_path: str, duration: float
+) -> float | None:
+    """
+    Return how much of our media the player says is left to play.
+
+    None when the player is not playing our media or does not report where
+    it is.
+    """
+    if state_obj is None or state_obj.state != "playing":
+        return None
+    attrs = getattr(state_obj, "attributes", None)
+    if not isinstance(attrs, dict) or not _is_routine_media_playing(
+        state_obj, media_url, media_path, strict=True
+    ):
+        return None
+    position = attrs.get("media_position")
+    updated = attrs.get("media_position_updated_at")
+    if isinstance(updated, str):
+        updated = dt_util.parse_datetime(updated)
+    if position is None or updated is None:
+        return None
+    played = float(position) + (dt_util.utcnow() - updated).total_seconds()
+    return float(attrs.get("media_duration") or duration) - played
+
+
+async def _async_wait_media_end(
+    hass: HomeAssistant,
+    target_player: str,
+    media_url: str,
+    media_path: str,
+    duration: float,
+) -> None:
+    """Wait, up to MEDIA_END_WAIT_MAX, for the player to finish our media."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + MEDIA_END_WAIT_MAX
+    while True:
+        left = _media_seconds_left(
+            hass.states.get(target_player), media_url, media_path, duration
+        )
+        if left is None or left <= MEDIA_END_TOLERANCE:
+            return
+        wait = min(left, deadline - loop.time())
+        if wait <= 0:
+            LOGGER.debug(
+                "'%s' still has %.1fs to play after the routine's end; carrying on",
+                target_player,
+                left,
+            )
+            return
+        LOGGER.debug(
+            "'%s' has %.1fs left to play; waiting before post actions",
+            target_player,
+            left,
+        )
+        await asyncio.sleep(wait)
+
+
 async def _async_prepare_player(
     hass: HomeAssistant, target_player: str, metadata: dict[str, Any]
 ) -> None:
-    """Wake up, unmute, and initialize volume if configured."""
+    """
+    Wake up, unmute, and initialize volume if configured.
+
+    Each call blocks until done: the Cast library HA uses writes to the
+    player's socket without a lock, so overlapping commands corrupt it.
+    """
     if not (metadata.get("prepare_player", True) and target_player):
         return
     if not is_cast_player(hass, target_player):
         with contextlib.suppress(Exception):
             await hass.services.async_call(
-                "media_player", "turn_on", {"entity_id": target_player}
+                "media_player",
+                "turn_on",
+                {"entity_id": target_player},
+                blocking=True,
             )
     if metadata.get("unmute", True):
         with contextlib.suppress(Exception):
@@ -592,6 +665,7 @@ async def _async_prepare_player(
                 "media_player",
                 "volume_mute",
                 {"entity_id": target_player, "is_volume_muted": False},
+                blocking=True,
             )
     with contextlib.suppress(Exception):
         vol_val = metadata.get("volume_level")
@@ -600,6 +674,7 @@ async def _async_prepare_player(
             "media_player",
             "volume_set",
             {"entity_id": target_player, "volume_level": target_vol},
+            blocking=True,
         )
 
 
@@ -801,6 +876,11 @@ async def async_play_and_sync_routine(  # noqa: C901, PLR0913, PLR0915
                 await control.async_wait_released()
                 if control.extra_seconds == extra:
                     break
+            # The timer starts at 'buffering'; let the media itself finish
+            # before post actions (a dashboard cast) cut it off.
+            await _async_wait_media_end(
+                hass, target_player, resolved_media_url, media_path, duration
+            )
         except asyncio.CancelledError:
             if not playing_future.done():
                 playing_future.cancel()

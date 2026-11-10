@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.cast_studio.orchestrator import (
@@ -1103,17 +1104,22 @@ async def test_async_play_and_sync_routine_prepares_player():
         )
 
         hass.services.async_call.assert_any_call(
-            "media_player", "turn_on", {"entity_id": "media_player.bathroom_display"}
+            "media_player",
+            "turn_on",
+            {"entity_id": "media_player.bathroom_display"},
+            blocking=True,
         )
         hass.services.async_call.assert_any_call(
             "media_player",
             "volume_mute",
             {"entity_id": "media_player.bathroom_display", "is_volume_muted": False},
+            blocking=True,
         )
         hass.services.async_call.assert_any_call(
             "media_player",
             "volume_set",
             {"entity_id": "media_player.bathroom_display", "volume_level": 0.75},
+            blocking=True,
         )
 
 
@@ -1138,6 +1144,7 @@ async def test_async_play_and_sync_routine_prepares_player_default_volume_and_di
             "media_player",
             "volume_set",
             {"entity_id": "media_player.display", "volume_level": 0.60},
+            blocking=True,
         )
 
         # 2. Disabled prepare_player
@@ -1611,3 +1618,123 @@ async def test_lifecycle_waits_extra_seconds_added_during_playback() -> None:
         control.extra_seconds = 0.2
         await task
     assert loop.time() - started >= 0.28
+
+
+def _cast_state(state: str, media_id: str, **attrs: Any) -> MagicMock:
+    return MagicMock(
+        state=state,
+        attributes={"app_id": "CC1AD845", "media_content_id": media_id, **attrs},
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_actions_wait_for_media_left_at_timer_end() -> None:
+    """A Hub that buffered first still has media left at the timer: wait it out."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    media_id = "http://ha.local/local/morning.mp4"
+    hass.states.get.return_value = _cast_state("idle", "http://other/x.mp4")
+    metadata: dict = {
+        "video_path": media_id,
+        "prepare_player": False,
+        "duration": 0.05,
+        "post_routine_actions": [
+            {"service": "cast.show_lovelace_view", "data": {"view_path": "home"}}
+        ],
+    }
+    loop = asyncio.get_running_loop()
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ) as mock_track,
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        # 'buffering' of our media counts as started; the audio is not out yet.
+        event = MagicMock()
+        event.data = {"new_state": _cast_state("buffering", media_id)}
+        mock_track.call_args[0][2](event)
+        started = loop.time()
+
+        # The audio really starts now: half a second of media is left.
+        hass.states.get.return_value = _cast_state(
+            "playing",
+            media_id,
+            media_position=0.0,
+            media_position_updated_at=dt_util.utcnow(),
+            media_duration=0.5,
+        )
+        await asyncio.sleep(0.15)
+        assert not task.done()
+        assert all(c.args[0] != "cast" for c in hass.services.async_call.call_args_list)
+        await asyncio.wait_for(task, 2)
+    assert loop.time() - started >= 0.45
+    hass.services.async_call.assert_any_call(
+        "cast",
+        "show_lovelace_view",
+        service_data={
+            "view_path": "home",
+            "entity_id": "media_player.bathroom_display",
+        },
+        target={"entity_id": "media_player.bathroom_display"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_actions_stop_waiting_for_media_end_at_cap() -> None:
+    """A player that reports a long way to go does not hold post actions forever."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    media_id = "http://ha.local/local/morning.mp4"
+    hass.states.get.return_value = _cast_state(
+        "playing",
+        media_id,
+        media_position=0.0,
+        media_position_updated_at=dt_util.utcnow(),
+        media_duration=600.0,
+    )
+    metadata: dict = {
+        "video_path": media_id,
+        "prepare_player": False,
+        "duration": 0.02,
+        "post_routine_actions": [{"service": "cast.show_lovelace_view"}],
+    }
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+        patch("custom_components.cast_studio.orchestrator.MEDIA_END_WAIT_MAX", 0.1),
+    ):
+        task = await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+        await asyncio.wait_for(task, 1)
+    assert any(c.args[0] == "cast" for c in hass.services.async_call.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_prepare_player_commands_finish_before_play_media() -> None:
+    """Each command must finish before the next: a Cast socket takes one write at a time."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    metadata = {"video_path": "/local/morning.mp4", "volume_level": 0.7}
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+    calls = hass.services.async_call.call_args_list
+    assert [c.args[1] for c in calls] == [
+        "turn_on",
+        "volume_mute",
+        "volume_set",
+        "play_media",
+    ]
+    assert all(c.kwargs.get("blocking") is True for c in calls)

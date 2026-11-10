@@ -148,6 +148,46 @@ def build_concat_command(
     ]
 
 
+def build_concat_audio_command(
+    chime_path: str,
+    speech_path: str,
+    output_path: str,
+    ffmpeg_bin: str = "ffmpeg",
+    gap_seconds: float = 0.3,
+) -> list[str]:
+    """Build FFmpeg command to concatenate chime audio and speech audio."""
+    if not chime_path or not str(chime_path).strip():
+        msg = "chime_path cannot be empty or whitespace"
+        raise ValueError(msg)
+    if not speech_path or not str(speech_path).strip():
+        msg = "speech_path cannot be empty or whitespace"
+        raise ValueError(msg)
+    if not output_path or not str(output_path).strip():
+        msg = "output_path cannot be empty or whitespace"
+        raise ValueError(msg)
+
+    delay_ms = max(0, int(gap_seconds * 1000))
+    filter_complex = (
+        f"[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0];"
+        f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,adelay={delay_ms}|{delay_ms}[a1];"
+        f"[a0][a1]concat=n=2:v=0:a=1[outa]"
+    )
+
+    return [
+        ffmpeg_bin,
+        "-y",
+        "-i",
+        str(chime_path),
+        "-i",
+        str(speech_path),
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[outa]",
+        str(output_path),
+    ]
+
+
 def write_concat_file(
     clip_paths: Sequence[str],
     concat_file_path: str,
