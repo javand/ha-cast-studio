@@ -209,6 +209,21 @@
               },
               "description": "Optional changes for this routine only."
             }
+          },
+          "menu_options": {
+            "new": "Start from scratch",
+            "copy": "Copy an existing routine"
+          },
+          "description": "Start a new routine from scratch, or copy one you already have and change what's different."
+        },
+        "copy": {
+          "title": "Copy a routine",
+          "description": "The Add routine form opens filled in from this routine. Give the copy its own name, then add or remove segments.",
+          "data": {
+            "source": "Routine to copy"
+          },
+          "data_description": {
+            "source": "Its person, segments, voice changes and dashboard are copied. The original routine is not changed."
           }
         },
         "reconfigure": {
@@ -242,7 +257,12 @@
               },
               "description": "Optional changes for this routine only."
             }
-          }
+          },
+          "menu_options": {
+            "edit": "Edit this routine",
+            "duplicate": "Duplicate this routine"
+          },
+          "description": "Change this routine, or duplicate it to start a new routine from a copy."
         }
       },
       "error": {
@@ -254,7 +274,8 @@
       },
       "abort": {
         "no_people": "Add a person before adding a routine.",
-        "reconfigure_successful": "Routine updated."
+        "reconfigure_successful": "Routine updated.",
+        "routine_duplicated": "Routine duplicated. The copy is listed with your other routines."
       }
     },
     "announcement": {

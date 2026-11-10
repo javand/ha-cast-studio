@@ -560,10 +560,32 @@ async def test_add_routine_form_selectors(
     assert schema["dashboard_display"].config["integration"] == "cast"
 
 
+async def _start_new_routine(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> dict[str, Any]:
+    """Open a blank Add routine form, past the copy menu if one shows."""
+    result = await _start_subentry(hass, entry, "routine")
+    if result["type"] == data_entry_flow.FlowResultType.MENU:
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"], {"next_step_id": "new"}
+        )
+    return result
+
+
+async def _start_routine_edit(
+    hass: HomeAssistant, entry: MockConfigEntry, routine_id: str
+) -> dict[str, Any]:
+    """Open a routine's gear, then Edit this routine."""
+    result = await entry.start_subentry_reconfigure_flow(hass, routine_id)
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "edit"}
+    )
+
+
 async def _add_routine(
     hass: HomeAssistant, entry: MockConfigEntry, user_input: dict[str, Any]
 ) -> dict[str, Any]:
-    result = await _start_subentry(hass, entry, "routine")
+    result = await _start_new_routine(hass, entry)
     return await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input=user_input
     )
@@ -664,9 +686,7 @@ async def test_routine_form_sets_output_format(
     (routine,) = get_routines(entry_with_sam)
     assert routine.output_format == "audio"
 
-    result = await entry_with_sam.start_subentry_reconfigure_flow(
-        hass, routine.routine_id
-    )
+    result = await _start_routine_edit(hass, entry_with_sam, routine.routine_id)
     schema = {str(k): k for k in result["data_schema"].schema}
     assert schema["output_format"].default() == "audio"
     await hass.config_entries.subentries.async_configure(
@@ -707,9 +727,7 @@ async def test_reconfigure_routine_keeps_own_name_but_rejects_duplicate(
         )
     quick = find_routine(entry_with_sam, "Quick")
 
-    result = await entry_with_sam.start_subentry_reconfigure_flow(
-        hass, quick.routine_id
-    )
+    result = await _start_routine_edit(hass, entry_with_sam, quick.routine_id)
     assert result["step_id"] == "reconfigure"
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
@@ -1185,9 +1203,7 @@ async def test_reconfigure_routine_prefills_and_clears_dashboard(
     (routine,) = get_routines(entry_with_sam)
     assert (routine.dashboard_path, routine.dashboard_view) == ("dashboard-home", None)
 
-    result = await entry_with_sam.start_subentry_reconfigure_flow(
-        hass, routine.routine_id
-    )
+    result = await _start_routine_edit(hass, entry_with_sam, routine.routine_id)
     schema = result["data_schema"].schema
     (key,) = [k for k in schema if k == "dashboard"]
     assert key.description == {"suggested_value": "dashboard-home"}
@@ -1784,9 +1800,7 @@ async def test_edit_routine_lists_only_its_segments(
 ) -> None:
     await _sam_routine(hass, entry_with_sam)
     routine = find_routine(entry_with_sam, "Morning")
-    result = await entry_with_sam.start_subentry_reconfigure_flow(
-        hass, routine.routine_id
-    )
+    result = await _start_routine_edit(hass, entry_with_sam, routine.routine_id)
     assert _voice_change_segments(result["data_schema"]) == [
         "greeting",
         "weather",
@@ -1833,9 +1847,7 @@ async def test_edit_routine_drops_change_for_removed_segment(
     routine = find_routine(entry_with_sam, "Morning")
     assert routine.voice_changes == (("weather", ("theo",)),)
 
-    result = await entry_with_sam.start_subentry_reconfigure_flow(
-        hass, routine.routine_id
-    )
+    result = await _start_routine_edit(hass, entry_with_sam, routine.routine_id)
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         user_input={
@@ -1885,9 +1897,7 @@ async def test_edit_routine_suggests_saved_voice_changes(
     change = {"segment": "weather", "personas": ["theo"]}
     await _sam_routine(hass, entry_with_sam, advanced={"voice_changes": [change]})
     routine = find_routine(entry_with_sam, "Morning")
-    result = await entry_with_sam.start_subentry_reconfigure_flow(
-        hass, routine.routine_id
-    )
+    result = await _start_routine_edit(hass, entry_with_sam, routine.routine_id)
     advanced = next(
         value
         for key, value in result["data_schema"].schema.items()
@@ -1991,9 +2001,7 @@ async def test_refresh_segments_offer_the_routines_segments_and_default(
     routine = find_routine(entry_with_sam, "Morning")
     data = entry_with_sam.subentries[routine.routine_id].data
     assert data["refresh_segments"] == ["weather"]
-    result = await entry_with_sam.start_subentry_reconfigure_flow(
-        hass, routine.routine_id
-    )
+    result = await _start_routine_edit(hass, entry_with_sam, routine.routine_id)
     key, sel = _refresh_field(result["data_schema"])
     assert sel.config["options"] == ["agenda", "weather"]
     assert sel.config["multiple"] is True
@@ -2039,9 +2047,7 @@ async def test_routine_refresh_segments_saved_and_trimmed_on_edit(
     assert data["refresh_segments"] == ["agenda", "fun_fact"]
     assert "advanced" not in data
 
-    result = await entry_with_sam.start_subentry_reconfigure_flow(
-        hass, routine.routine_id
-    )
+    result = await _start_routine_edit(hass, entry_with_sam, routine.routine_id)
     await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         user_input={
@@ -2093,3 +2099,245 @@ async def test_new_routine_refresh_has_no_empty_suggestion(
     result = await _start_subentry(hass, entry_with_sam, "routine")
     key, _ = _refresh_field(result["data_schema"])
     assert not key.description
+
+
+async def _copy_routine(
+    hass: HomeAssistant, entry: MockConfigEntry, routine_id: str
+) -> dict[str, Any]:
+    """Pick Copy an existing routine, then the routine to copy."""
+    result = await _start_subentry(hass, entry, "routine")
+    assert result["type"] == data_entry_flow.FlowResultType.MENU
+    assert result["menu_options"] == ["new", "copy"]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "copy"}
+    )
+    assert result["step_id"] == "copy"
+    return await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"source": routine_id}
+    )
+
+
+async def _commute_routine(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
+    await _add_routine(
+        hass,
+        entry,
+        {
+            "person_id": SAM_ID,
+            "name": "Morning",
+            "segments": ["greeting", "weather", "commute", "closing"],
+            "output_format": "audio",
+            "dashboard": "dashboard-home/morning",
+            "dashboard_display": "media_player.kitchen_display",
+            "advanced": {
+                "voice_changes": [{"segment": "commute", "personas": ["theo"]}],
+                "refresh_segments": ["weather", "commute"],
+            },
+        },
+    )
+    return find_routine(entry, "Morning")
+
+
+@pytest.mark.asyncio
+async def test_first_routine_skips_the_copy_menu(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """With nothing to copy, Add routine opens the blank form."""
+    result = await _start_subentry(hass, entry_with_sam, "routine")
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_copy_menu_lists_routines_and_new_opens_blank_form(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    routine = await _commute_routine(hass, entry_with_sam)
+    result = await _start_subentry(hass, entry_with_sam, "routine")
+    assert result["type"] == data_entry_flow.FlowResultType.MENU
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "copy"}
+    )
+    (key,) = result["data_schema"].schema
+    assert result["data_schema"].schema[key].config["options"] == [
+        {"value": routine.routine_id, "label": "Morning (Sam)"}
+    ]
+
+    result = await _start_new_routine(hass, entry_with_sam)
+    assert result["step_id"] == "user"
+    selectors = {str(k): k for k in result["data_schema"].schema}
+    assert not selectors["name"].description
+    assert selectors["segments"].default() == []
+
+
+@pytest.mark.asyncio
+async def test_copy_routine_prefills_the_form(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    routine = await _commute_routine(hass, entry_with_sam)
+    result = await _copy_routine(hass, entry_with_sam, routine.routine_id)
+
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "user"
+    keys = {str(k): k for k in result["data_schema"].schema}
+    assert keys["person_id"].default() == SAM_ID
+    assert keys["name"].description == {"suggested_value": "Morning copy"}
+    assert keys["segments"].default() == ["greeting", "weather", "commute", "closing"]
+    assert keys["output_format"].default() == "audio"
+    assert keys["dashboard"].description == {
+        "suggested_value": "dashboard-home/morning"
+    }
+    assert keys["dashboard_display"].description == {
+        "suggested_value": "media_player.kitchen_display"
+    }
+    advanced = next(
+        v for k, v in result["data_schema"].schema.items() if str(k) == "advanced"
+    )
+    fields = {str(k): k for k in advanced.schema.schema}
+    assert fields["voice_changes"].description == {
+        "suggested_value": [{"segment": "commute", "personas": ["theo"]}]
+    }
+    assert fields["refresh_segments"].description == {
+        "suggested_value": ["weather", "commute"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_copy_routine_without_commute_saves_a_new_routine(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    """Dropping a segment from the copy drops its voice change and refresh."""
+    routine = await _commute_routine(hass, entry_with_sam)
+    result = await _copy_routine(hass, entry_with_sam, routine.routine_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "person_id": SAM_ID,
+            "name": "Morning WFH",
+            "segments": ["greeting", "weather", "closing"],
+            "output_format": "audio",
+            "dashboard": "dashboard-home/morning",
+            "advanced": {
+                "voice_changes": [{"segment": "commute", "personas": ["theo"]}],
+                "refresh_segments": ["weather", "commute"],
+            },
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Morning WFH (Sam)"
+
+    copy = find_routine(entry_with_sam, "Morning WFH")
+    assert copy.routine_id != routine.routine_id
+    assert copy.segments == ("greeting", "weather", "closing")
+    assert copy.voice_changes == ()
+    assert entry_with_sam.subentries[copy.routine_id].data["refresh_segments"] == [
+        "weather"
+    ]
+    original = find_routine(entry_with_sam, "Morning")
+    assert original.segments == ("greeting", "weather", "commute", "closing")
+    assert original.voice_changes == (("commute", ("theo",)),)
+
+
+@pytest.mark.asyncio
+async def test_copy_routine_needs_a_new_name(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    routine = await _commute_routine(hass, entry_with_sam)
+    result = await _copy_routine(hass, entry_with_sam, routine.routine_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={"person_id": SAM_ID, "name": "morning", "segments": ["weather"]},
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["errors"] == {"base": "duplicate_routine"}
+
+
+def test_copy_routine_strings() -> None:
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        steps = data["config_subentries"]["routine"]["step"]
+        assert set(steps["user"]["menu_options"]) == {"new", "copy"}
+        assert steps["copy"]["data"]["source"]
+
+
+@pytest.mark.asyncio
+async def test_gear_offers_edit_or_duplicate(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    routine = await _commute_routine(hass, entry_with_sam)
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.MENU
+    assert result["menu_options"] == ["edit", "duplicate"]
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "edit"}
+    )
+    assert result["step_id"] == "reconfigure"
+    keys = {str(k): k for k in result["data_schema"].schema}
+    assert keys["name"].description == {"suggested_value": "Morning"}
+
+
+@pytest.mark.asyncio
+async def test_gear_duplicate_adds_a_routine_and_keeps_the_original(
+    hass: HomeAssistant, entry_with_sam: MockConfigEntry
+) -> None:
+    routine = await _commute_routine(hass, entry_with_sam)
+    result = await entry_with_sam.start_subentry_reconfigure_flow(
+        hass, routine.routine_id
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {"next_step_id": "duplicate"}
+    )
+    assert result["step_id"] == "user"
+    keys = {str(k): k for k in result["data_schema"].schema}
+    assert keys["name"].description == {"suggested_value": "Morning copy"}
+    assert keys["segments"].default() == ["greeting", "weather", "commute", "closing"]
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "person_id": SAM_ID,
+            "name": "morning",
+            "segments": ["greeting", "weather", "closing"],
+        },
+    )
+    assert result["errors"] == {"base": "duplicate_routine"}
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            "person_id": SAM_ID,
+            "name": "Morning WFH",
+            "segments": ["greeting", "weather", "closing"],
+            "output_format": "audio",
+            "advanced": {
+                "voice_changes": [{"segment": "commute", "personas": ["theo"]}],
+                "refresh_segments": ["weather", "commute"],
+            },
+        },
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "routine_duplicated"
+
+    copy = find_routine(entry_with_sam, "Morning WFH")
+    assert copy.routine_id != routine.routine_id
+    assert entry_with_sam.subentries[copy.routine_id].title == "Morning WFH (Sam)"
+    assert copy.segments == ("greeting", "weather", "closing")
+    assert copy.voice_changes == ()
+    original = find_routine(entry_with_sam, "Morning")
+    assert original.segments == ("greeting", "weather", "commute", "closing")
+    assert entry_with_sam.subentries[routine.routine_id].title == "Morning (Sam)"
+
+
+def test_gear_duplicate_strings() -> None:
+    base = Path(__file__).parent.parent / "custom_components" / "cast_studio"
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        routine = data["config_subentries"]["routine"]
+        assert set(routine["step"]["reconfigure"]["menu_options"]) == {
+            "edit",
+            "duplicate",
+        }
+        assert routine["abort"]["routine_duplicated"]
