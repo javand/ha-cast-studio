@@ -643,13 +643,21 @@ async def _async_wait_media_end(
 async def _async_prepare_player(
     hass: HomeAssistant, target_player: str, metadata: dict[str, Any]
 ) -> None:
-    """Wake up, unmute, and initialize volume if configured."""
+    """
+    Wake up, unmute, and initialize volume if configured.
+
+    Each call blocks until done: the Cast library HA uses writes to the
+    player's socket without a lock, so overlapping commands corrupt it.
+    """
     if not (metadata.get("prepare_player", True) and target_player):
         return
     if not is_cast_player(hass, target_player):
         with contextlib.suppress(Exception):
             await hass.services.async_call(
-                "media_player", "turn_on", {"entity_id": target_player}
+                "media_player",
+                "turn_on",
+                {"entity_id": target_player},
+                blocking=True,
             )
     if metadata.get("unmute", True):
         with contextlib.suppress(Exception):
@@ -657,6 +665,7 @@ async def _async_prepare_player(
                 "media_player",
                 "volume_mute",
                 {"entity_id": target_player, "is_volume_muted": False},
+                blocking=True,
             )
     with contextlib.suppress(Exception):
         vol_val = metadata.get("volume_level")
@@ -665,6 +674,7 @@ async def _async_prepare_player(
             "media_player",
             "volume_set",
             {"entity_id": target_player, "volume_level": target_vol},
+            blocking=True,
         )
 
 

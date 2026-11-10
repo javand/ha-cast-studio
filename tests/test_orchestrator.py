@@ -1104,17 +1104,22 @@ async def test_async_play_and_sync_routine_prepares_player():
         )
 
         hass.services.async_call.assert_any_call(
-            "media_player", "turn_on", {"entity_id": "media_player.bathroom_display"}
+            "media_player",
+            "turn_on",
+            {"entity_id": "media_player.bathroom_display"},
+            blocking=True,
         )
         hass.services.async_call.assert_any_call(
             "media_player",
             "volume_mute",
             {"entity_id": "media_player.bathroom_display", "is_volume_muted": False},
+            blocking=True,
         )
         hass.services.async_call.assert_any_call(
             "media_player",
             "volume_set",
             {"entity_id": "media_player.bathroom_display", "volume_level": 0.75},
+            blocking=True,
         )
 
 
@@ -1139,6 +1144,7 @@ async def test_async_play_and_sync_routine_prepares_player_default_volume_and_di
             "media_player",
             "volume_set",
             {"entity_id": "media_player.display", "volume_level": 0.60},
+            blocking=True,
         )
 
         # 2. Disabled prepare_player
@@ -1707,3 +1713,28 @@ async def test_post_actions_stop_waiting_for_media_end_at_cap() -> None:
         )
         await asyncio.wait_for(task, 1)
     assert any(c.args[0] == "cast" for c in hass.services.async_call.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_prepare_player_commands_finish_before_play_media() -> None:
+    """Each command must finish before the next: a Cast socket takes one write at a time."""
+    hass = MagicMock()
+    hass.services.async_call = AsyncMock()
+    metadata = {"video_path": "/local/morning.mp4", "volume_level": 0.7}
+    with (
+        patch(
+            "custom_components.cast_studio.orchestrator.async_track_state_change_event"
+        ),
+        patch("custom_components.cast_studio.orchestrator.async_call_later"),
+    ):
+        await async_play_and_sync_routine(
+            hass, "morning", "media_player.bathroom_display", metadata, []
+        )
+    calls = hass.services.async_call.call_args_list
+    assert [c.args[1] for c in calls] == [
+        "turn_on",
+        "volume_mute",
+        "volume_set",
+        "play_media",
+    ]
+    assert all(c.kwargs.get("blocking") is True for c in calls)
