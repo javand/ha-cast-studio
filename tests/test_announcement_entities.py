@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant.components.image import async_get_image
 from homeassistant.config_entries import ConfigSubentry
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.cast_studio.announcement_build import (
@@ -164,3 +165,21 @@ async def test_restart_shows_existing_slide(
     state = hass.states.get(IMAGE)
     assert state.state == at(8).isoformat()
     assert state.attributes["status"] == "ready"
+
+
+async def test_renaming_an_announcement_renames_its_device(
+    hass: HomeAssistant, tmp_path: Path, builds: list[str]
+) -> None:
+    entry = make_entry(tmp_path, announcement_subentry("a1", "Freezer Door"))
+    await setup(hass, entry)
+    subentry = entry.subentries["a1"]
+    hass.config_entries.async_update_subentry(
+        entry,
+        subentry,
+        title="Fridge Door",
+        data={**subentry.data, "name": "Fridge Door"},
+    )
+    await hass.async_block_till_done()
+
+    device_id = er.async_get(hass).async_get(BUTTON).device_id
+    assert dr.async_get(hass).async_get(device_id).name == "Fridge Door"
