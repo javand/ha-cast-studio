@@ -123,6 +123,8 @@ from .segments import default_refresh_segments
 from .slide_renderer import render_template_slide
 
 ADVANCED_SECTION = "advanced"
+# Only a button: a Duplicate routine flow saves its copy as a routine.
+SUBENTRY_ROUTINE_DUPLICATE = "routine_duplicate"
 
 # Install-wide settings kept on the entry; everything per person is a subentry.
 SHARED_SETTINGS_KEYS: tuple[str, ...] = (
@@ -250,10 +252,11 @@ class CastStudioFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         cls,
         config_entry: config_entries.ConfigEntry,  # noqa: ARG003
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
-        """Return the person, routine and announcement subentry flows."""
+        """Return the person, routine, Duplicate routine and announcement flows."""
         return {
             SUBENTRY_PERSON: PersonSubentryFlow,
             SUBENTRY_ROUTINE: RoutineSubentryFlow,
+            SUBENTRY_ROUTINE_DUPLICATE: RoutineDuplicateSubentryFlow,
             SUBENTRY_ANNOUNCEMENT: AnnouncementSubentryFlow,
         }
 
@@ -529,104 +532,25 @@ class PersonSubentryFlow(config_entries.ConfigSubentryFlow):
 class RoutineSubentryFlow(config_entries.ConfigSubentryFlow):
     """Add or edit a routine: one person and an ordered list of segments."""
 
-    # The routine an Add starts from, set by the copy step.
-    _copy_from: config_entries.ConfigSubentry | None = None
-
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
-        """Add a routine, offering to start from a copy once one exists."""
-        if user_input is None and self._routine_subentries():
-            return self.async_show_menu(step_id="user", menu_options=["new", "copy"])
-        return await self._async_step_form("user", self._copy_from, user_input)
+        """Add a routine."""
+        return await self._async_step_form("user", None, user_input)
 
-    async def async_step_new(
-        self,
-        user_input: dict[str, Any] | None = None,  # noqa: ARG002
-    ) -> config_entries.SubentryFlowResult:
-        """Open a blank Add routine form."""
-        return await self._async_step_form("user", None, None)
-
-    async def async_step_copy(
+    async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
-        """Pick the routine to copy, then open the Add form filled from it."""
-        routines = self._routine_subentries()
-        if user_input is not None:
-            self._copy_from = routines[user_input["source"]]
-            return await self._async_step_form("user", self._copy_from, None)
-        return self.async_show_form(
-            step_id="copy",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("source"): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                selector.SelectOptionDict(
-                                    value=subentry_id, label=subentry.title
-                                )
-                                for subentry_id, subentry in routines.items()
-                            ],
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    )
-                }
-            ),
+        """Edit an existing routine."""
+        return await self._async_step_form(
+            "reconfigure", self._get_reconfigure_subentry(), user_input
         )
 
     def _async_add_routine(
         self, title: str, data: dict[str, Any]
     ) -> config_entries.SubentryFlowResult:
-        """Save a new routine, also from a Duplicate opened by the gear."""
-        if self.source == config_entries.SOURCE_USER:
-            return self.async_create_entry(title=title, data=data)
-        # A reconfigure flow may not create an entry, so add it directly.
-        self.hass.config_entries.async_add_subentry(
-            self._get_entry(),
-            config_entries.ConfigSubentry(
-                data=MappingProxyType(data),
-                subentry_type=SUBENTRY_ROUTINE,
-                title=title,
-                unique_id=None,
-            ),
-        )
-        return self.async_abort(reason="routine_duplicated")
-
-    def _routine_subentries(self) -> dict[str, config_entries.ConfigSubentry]:
-        return {
-            subentry_id: subentry
-            for subentry_id, subentry in self._get_entry().subentries.items()
-            if subentry.subentry_type == SUBENTRY_ROUTINE
-        }
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.SubentryFlowResult:
-        """Edit an existing routine, or duplicate it."""
-        if user_input is None:
-            return self.async_show_menu(
-                step_id="reconfigure", menu_options=["edit", "duplicate"]
-            )
-        return await self._async_step_form(
-            "reconfigure", self._get_reconfigure_subentry(), user_input
-        )
-
-    async def async_step_edit(
-        self,
-        user_input: dict[str, Any] | None = None,  # noqa: ARG002
-    ) -> config_entries.SubentryFlowResult:
-        """Open the Edit routine form."""
-        return await self._async_step_form(
-            "reconfigure", self._get_reconfigure_subentry(), None
-        )
-
-    async def async_step_duplicate(
-        self,
-        user_input: dict[str, Any] | None = None,  # noqa: ARG002
-    ) -> config_entries.SubentryFlowResult:
-        """Open the Add routine form filled from this routine."""
-        self._copy_from = self._get_reconfigure_subentry()
-        return await self._async_step_form("user", self._copy_from, None)
+        """Save a new routine."""
+        return self.async_create_entry(title=title, data=data)
 
     async def _async_step_form(
         self,
@@ -939,6 +863,70 @@ def _voice_changes_selector(segment_choices: list[str]) -> selector.ObjectSelect
             translation_key=ROUTINE_VOICE_CHANGES,
         )
     )
+
+
+class RoutineDuplicateSubentryFlow(RoutineSubentryFlow):
+    """The Duplicate routine button: a new routine filled from an existing one."""
+
+    # The routine being copied, set by the source step.
+    _copy_from: config_entries.ConfigSubentry | None = None
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Pick the routine to copy, then save the filled-in form."""
+        if user_input is not None:
+            return await self._async_step_form("user", self._copy_from, user_input)
+        routines = self._routine_subentries()
+        if not routines:
+            return self.async_abort(reason="no_routines")
+        return self.async_show_form(
+            step_id="source",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("source"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(
+                                    value=subentry_id, label=subentry.title
+                                )
+                                for subentry_id, subentry in routines.items()
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def async_step_source(
+        self, user_input: dict[str, Any]
+    ) -> config_entries.SubentryFlowResult:
+        """Open the Add routine form filled from the picked routine."""
+        self._copy_from = self._routine_subentries()[user_input["source"]]
+        return await self._async_step_form("user", self._copy_from, None)
+
+    def _async_add_routine(
+        self, title: str, data: dict[str, Any]
+    ) -> config_entries.SubentryFlowResult:
+        """Save the copy as a routine, not under this button's own type."""
+        self.hass.config_entries.async_add_subentry(
+            self._get_entry(),
+            config_entries.ConfigSubentry(
+                data=MappingProxyType(data),
+                subentry_type=SUBENTRY_ROUTINE,
+                title=title,
+                unique_id=None,
+            ),
+        )
+        return self.async_abort(reason="routine_duplicated")
+
+    def _routine_subentries(self) -> dict[str, config_entries.ConfigSubentry]:
+        return {
+            subentry_id: subentry
+            for subentry_id, subentry in self._get_entry().subentries.items()
+            if subentry.subentry_type == SUBENTRY_ROUTINE
+        }
 
 
 class AnnouncementSubentryFlow(config_entries.ConfigSubentryFlow):

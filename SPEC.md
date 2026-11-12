@@ -55,7 +55,7 @@ flowchart TD
 
 ## 3. User Experience
 
-- **Add person** and **Add routine** on the CastStudio entry configure everything (see §5.6 and the README).
+- **Add person**, **Add routine** and **Duplicate routine** on the CastStudio entry configure everything (see §5.6 and the README). **Duplicate routine** is its own subentry type (`routine_duplicate`, `RoutineDuplicateSubentryFlow`) only so it gets a button: it picks a routine, opens the Add routine form filled from it, and saves the copy as a `routine` subentry, so no `routine_duplicate` subentry is ever stored.
 - Automations call `cast_studio.prebuild` and `cast_studio.play`; the README gives examples for a 04:30 pre-build, a phone-alarm wake-up, a button with single and double press, and weekday-specific routines.
 
 ---
