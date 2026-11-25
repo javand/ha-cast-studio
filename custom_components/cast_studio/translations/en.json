@@ -257,6 +257,69 @@
         "reconfigure_successful": "Routine updated."
       }
     },
+    "routine_duplicate": {
+      "entry_type": "Duplicate routine",
+      "initiate_flow": {
+        "user": "Duplicate routine"
+      },
+      "step": {
+        "source": {
+          "title": "Duplicate routine",
+          "description": "Pick a routine. A new routine form opens filled in from it: give the copy its own name, then add or remove segments.",
+          "data": {
+            "source": "Routine to copy"
+          },
+          "data_description": {
+            "source": "Its person, segments, voice changes and dashboard are copied. The original routine is not changed."
+          }
+        },
+        "user": {
+          "title": "Duplicate routine",
+          "data": {
+            "person_id": "Person",
+            "name": "Routine name",
+            "segments": "Segments",
+            "output_format": "Output format",
+            "dashboard": "Dashboard to show afterwards (optional)",
+            "dashboard_display": "Dashboard display (optional)"
+          },
+          "data_description": {
+            "name": "Must be unique for this person.",
+            "segments": "Segments play in the order you pick them.",
+            "output_format": "Visual plays slides and video on a display and audio on a speaker. Audio builds sound only, for routines that only play on speakers.",
+            "dashboard": "Shown on a Cast display when the briefing finishes. Pick a dashboard (its first view) or one of its views.",
+            "dashboard_display": "Cast display for the dashboard. Defaults to the person's output device. When the routine plays on a different screen (Play on), the dashboard shows on that screen instead.",
+            "person_id": "Who this routine is for. It uses their voice, entities and output device."
+          },
+          "sections": {
+            "advanced": {
+              "name": "Advanced",
+              "data": {
+                "voice_changes": "Voice changes",
+                "refresh_segments": "Refresh segments"
+              },
+              "data_description": {
+                "voice_changes": "Give a segment of this routine a different voice. Segments not listed use the person's voice. Pick several personas to get a different one each day. The daily text is always read word for word; a persona only changes how it sounds.",
+                "refresh_segments": "Segments rebuilt by the Refresh button and the cast_studio.refresh action, so they are current when the briefing plays. Weather and commute only re-read sensors and are quick; any other segment is written again by the AI, which takes longer. Leave it as weather and commute unless you want more."
+              },
+              "description": "Optional changes for this routine only."
+            }
+          }
+        }
+      },
+      "error": {
+        "duplicate_routine": "This person already has a routine with that name.",
+        "no_segments": "Pick at least one segment.",
+        "invalid_name": "Enter a routine name with at least one letter or number.",
+        "voice_change_not_in_routine": "A voice change names a segment that isn't in this routine. Add the segment or remove the voice change.",
+        "refresh_not_in_routine": "Refresh segments names a segment that isn't in this routine. Add the segment or remove it from Refresh segments."
+      },
+      "abort": {
+        "no_people": "Add a person before adding a routine.",
+        "no_routines": "Add a routine before duplicating one.",
+        "routine_duplicated": "Routine duplicated. The copy is listed with your other routines."
+      }
+    },
     "announcement": {
       "entry_type": "Announcement",
       "initiate_flow": {

@@ -25,7 +25,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from . import briefing
 from .announcement_play import async_announce
 from .announcement_runtime import DATA_ANNOUNCEMENTS, AnnouncementManager, get_manager
-from .announcements import find_announcement
+from .announcements import find_announcement, get_announcements
 from .const import (
     CONF_COMMUTE_DESTINATION,
     CONF_DEFAULT_TRANSPORTATION_MODE,
@@ -49,6 +49,8 @@ from .people import (
     find_person,
     find_routine,
     get_loaded_entry,
+    get_people,
+    get_routines,
 )
 from .routine_entity import async_add_new_routine_entities
 
@@ -270,6 +272,15 @@ def _migrate_output_format_to_routines(hass: HomeAssistant, entry: ConfigEntry) 
         hass.config_entries.async_update_subentry(entry, sub, data=data)
 
 
+def _names(entry: ConfigEntry) -> dict[str, str]:
+    """Return each person's, routine's and announcement's name by subentry id."""
+    return {
+        **{person.person_id: person.name for person in get_people(entry)},
+        **{routine.routine_id: routine.name for routine in get_routines(entry)},
+        **{ann.announcement_id: ann.name for ann in get_announcements(entry)},
+    }
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -287,10 +298,19 @@ async def async_setup_entry(
     await briefing.async_refresh_sensors(hass, entry)
     await manager.async_setup()
 
+    names = _names(entry)
+
     # Not an update listener: those cannot be used with OptionsFlowWithReload.
     @callback
     def _entry_changed(change: ConfigEntryChange, changed: ConfigEntry) -> None:
         if change is ConfigEntryChange.UPDATED and changed is entry:
+            # Device names and the status sensors' bindings come from names,
+            # set as entities are added: a rename needs them added again.
+            current = _names(entry)
+            if any(current.get(key, name) != name for key, name in names.items()):
+                hass.config_entries.async_schedule_reload(entry.entry_id)
+                return
+            names.update(current)
             async_add_new_routine_entities(hass)
             hass.async_create_task(manager.async_sync(), f"{DOMAIN} announcement sync")
 

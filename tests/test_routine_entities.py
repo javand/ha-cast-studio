@@ -241,6 +241,34 @@ async def test_a_failed_rebuild_does_not_play(
     play.assert_not_awaited()
 
 
+async def test_renaming_a_routine_renames_its_device(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """The device and status follow the new name; entity ids stay for automations."""
+    routine = entry.subentries[ROUTINE_ID]
+    hass.config_entries.async_update_subentry(
+        entry, routine, title="Brief (Sam)", data={**routine.data, "name": "Brief"}
+    )
+    await hass.async_block_till_done()
+
+    device_id = er.async_get(hass).async_get(PLAY).device_id
+    assert dr.async_get(hass).async_get(device_id).name == "Brief (Sam)"
+    assert hass.states.get(SENSOR).attributes["routine"] == "Brief"
+
+
+async def test_renaming_a_person_renames_their_routines_devices(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    person = entry.subentries[SAM_ID]
+    hass.config_entries.async_update_subentry(
+        entry, person, title="Samantha", data={**person.data, "name": "Samantha"}
+    )
+    await hass.async_block_till_done()
+
+    device_id = er.async_get(hass).async_get(PLAY).device_id
+    assert dr.async_get(hass).async_get(device_id).name == "Quick (Samantha)"
+
+
 async def test_a_routine_added_later_gets_its_controls(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
