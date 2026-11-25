@@ -3639,3 +3639,30 @@ async def test_compile_step_passes_persona_to_tts(tmp_path: Path) -> None:
     _card, tts = await _run_compile_step_with_tts(tmp_path, step, llm, {"name": "Alex"})
     assert tts.call_args.kwargs["voice_profile"] == "P"
     assert tts.call_args.kwargs["openai_voice"] == "fable"
+
+
+@pytest.mark.parametrize("step_name", ["greeting", "fun_fact", "closing"])
+async def test_ai_images_ask_for_diverse_people(tmp_path: Path, step_name: str) -> None:
+    """Every AI briefing image asks that any people shown are a diverse mix."""
+    from custom_components.cast_studio.ai_client import PEOPLE_DIVERSITY_DIRECTION
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    def _gen(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(side_effect=_gen),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {"name": step_name, "type": step_name},
+            step_name,
+            {"title": "Octopuses have three hearts"},
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+        )
+    assert mock_gen.call_args.args[1].endswith(PEOPLE_DIVERSITY_DIRECTION)

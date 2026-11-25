@@ -26,6 +26,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .ai_client import (
+    PEOPLE_DIVERSITY_DIRECTION,
     _enforce_recipient_separation,
     async_generate_ai_image,
     async_generate_step_content,
@@ -1976,7 +1977,10 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
     if ai_img_path and ai_creds.get("platform") == "gemini" and ai_creds.get("api_key"):
         try:
             generated = await async_generate_ai_image(
-                hass, dynamic_prompt, ai_img_path, ai_creds=ai_creds
+                hass,
+                f"{dynamic_prompt}. {PEOPLE_DIVERSITY_DIRECTION}",
+                ai_img_path,
+                ai_creds=ai_creds,
             )
             if generated and Path(generated).is_file():
                 card_data["image_path"] = generated

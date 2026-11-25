@@ -555,6 +555,14 @@ async def _query_gemini_image_api(  # noqa: PLR0913
     raise AIClientError(msg)
 
 
+# Added to AI image prompts that are not built from the household's own
+# pictures: left alone, image models show mostly white people.
+PEOPLE_DIVERSITY_DIRECTION = (
+    "If the image shows people, show a diverse mix of people of different "
+    "ethnicities, skin tones and ages."
+)
+
+
 async def async_generate_ai_image(  # noqa: PLR0913
     hass: HomeAssistant,
     prompt: str,
