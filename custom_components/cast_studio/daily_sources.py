@@ -1,5 +1,5 @@
 """
-Daily content from the web: the fun fact of the day.
+Daily content from the web: the fun fact of the day and today's national days.
 
 Each source is read at most once a day and never fails a build: when it
 cannot be read, the segment is written without it.
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
@@ -21,10 +22,14 @@ from homeassistant.helpers.storage import Store
 from .const import DOMAIN, LOGGER
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from homeassistant.core import HomeAssistant
 
 FETCH_TIMEOUT_SECONDS = 15
 FUN_FACT_URL = "https://www.beagreatteacher.com/daily-fun-fact/"
+CHECKIDAY_DAY_URL = "https://www.checkiday.com/{day:%m}/{day:%d}/{day:%Y}"
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 DATA_DAILY = "daily_sources"
 DATA_FACT_HISTORY = "fun_fact_history"
 
@@ -166,3 +171,125 @@ async def async_remember_fun_fact(hass: HomeAssistant, fact: str | None) -> None
     """Remember a fun fact that was told, so the AI does not repeat it."""
     if fact and fact.strip():
         await _history(hass).async_add(fact.strip())
+
+
+@dataclass(frozen=True)
+class CheckidayEvent:
+    """One of the day's observances on checkiday.com, with its 16:9 photo."""
+
+    name: str
+    image_url: str
+
+
+# Each observance's card carries its 300 px photo; the same file is also
+# published at 1200 px (16:9), the size the slide needs.
+_CHECKIDAY_CARD_RE = re.compile(
+    r'<img src="(https://static\.checkiday\.com/img/)300/([^"]+)"[^>]*'
+    r'alt="Image for ([^"]*)"'
+)
+# Checkiday's own link to its history page, shown among the day's cards.
+_CHECKIDAY_NOT_EVENTS = frozenset({"On This Day in History"})
+# Words most observance names share; they say nothing about which day it is.
+_GENERIC_NAME_WORDS = frozenset(
+    [
+        "national",
+        "international",
+        "world",
+        "day",
+        "week",
+        "month",
+        "the",
+        "of",
+        "a",
+        "an",
+        "and",
+        "for",
+        "with",
+    ]
+)
+
+
+def parse_checkiday_events(page_html: str) -> list[CheckidayEvent]:
+    """Return the observances listed on a Checkiday date page."""
+    events: dict[str, CheckidayEvent] = {}
+    for base, file_name, raw_name in _CHECKIDAY_CARD_RE.findall(page_html):
+        name = html.unescape(raw_name).strip()
+        if name and name not in _CHECKIDAY_NOT_EVENTS and name not in events:
+            events[name] = CheckidayEvent(name, f"{base}1200/{file_name}")
+    return list(events.values())
+
+
+async def async_checkiday_events(
+    hass: HomeAssistant, day: date
+) -> list[CheckidayEvent]:
+    """Return checkiday.com's observances for ``day``; empty when unreadable."""
+    cache = _cache(hass)
+    if (key := ("checkiday", day)) in cache:
+        return cache[key]
+    page = await _async_fetch_text(hass, CHECKIDAY_DAY_URL.format(day=day))
+    events = parse_checkiday_events(page) if page else []
+    if events:
+        cache[key] = events
+    return events
+
+
+def national_day_context(events: list[CheckidayEvent]) -> str:
+    """Return the national day segment's context: the day's observances."""
+    names = "; ".join(event.name for event in events)
+    return f"Today's national days (choose only from this list): {names}"
+
+
+def _name_words(name: str) -> set[str]:
+    words = re.findall(r"[a-z]+", html.unescape(name).lower())
+    return {w for w in words if w not in _GENERIC_NAME_WORDS}
+
+
+def match_event(picked: str, events: list[CheckidayEvent]) -> CheckidayEvent | None:
+    """
+    Return the event the writer picked, by the name it gave.
+
+    Names are compared by their distinctive words, so "Parfait Day" and
+    'National "Eat with a Friend" Day!' still find their day, while two days
+    that only share "National ... Day" never match.
+    """
+    wanted = _name_words(picked)
+    if not wanted:
+        return None
+    best: tuple[float, CheckidayEvent] | None = None
+    for event in events:
+        words = _name_words(event.name)
+        if not words:
+            continue
+        overlap = len(wanted & words) / len(wanted | words)
+        if overlap >= 0.5 and (best is None or overlap > best[0]):  # noqa: PLR2004
+            best = (overlap, event)
+    return best[1] if best else None
+
+
+async def async_download_image(hass: HomeAssistant, url: str, path: Path) -> bool:
+    """Save the image at ``url`` to ``path``; return whether it was saved."""
+    try:
+        async with (
+            asyncio.timeout(FETCH_TIMEOUT_SECONDS),
+            async_get_clientsession(hass).get(url) as resp,
+        ):
+            if resp.status != HTTPStatus.OK or not str(resp.content_type).startswith(
+                "image/"
+            ):
+                LOGGER.warning("Could not download %s: status %s", url, resp.status)
+                return False
+            if (resp.content_length or 0) > MAX_IMAGE_BYTES:
+                return False
+            body = await resp.read()
+    except (TimeoutError, aiohttp.ClientError) as err:
+        LOGGER.warning("Could not download %s: %s", url, err)
+        return False
+    if not body or len(body) > MAX_IMAGE_BYTES:
+        return False
+
+    def _write() -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+
+    await asyncio.to_thread(_write)
+    return True

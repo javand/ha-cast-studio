@@ -325,6 +325,7 @@ def _build_patches(**overrides: Any) -> dict[str, Any]:
         "ffmpeg": _fake_ffmpeg(),
         "fun_fact_context": AsyncMock(return_value="Share a fun fact."),
         "remember_fun_fact": AsyncMock(),
+        "checkiday_events": AsyncMock(return_value=[]),
     }
     mocks.update(overrides)
     return mocks
@@ -349,6 +350,7 @@ class _Patched:
             patch(f"{SEG}.async_run_ffmpeg", new=mocks["ffmpeg"]),
             patch(f"{SEG}.async_fun_fact_context", new=mocks["fun_fact_context"]),
             patch(f"{SEG}.async_remember_fun_fact", new=mocks["remember_fun_fact"]),
+            patch(f"{SEG}.async_checkiday_events", new=mocks["checkiday_events"]),
         ]
 
     def __enter__(self) -> dict[str, Any]:
@@ -1287,3 +1289,31 @@ async def test_fun_fact_uses_the_fact_of_the_day_and_remembers_it(
     step = mocks["llm"].await_args.args[1]
     assert step["context"] == "Today's fun fact: TV dinners."
     mocks["remember_fun_fact"].assert_awaited_once_with(hass, "Some narration here.")
+
+
+async def test_national_day_picks_from_checkidays_list(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    from custom_components.cast_studio.daily_sources import CheckidayEvent
+
+    events = [CheckidayEvent("National Parfait Day", "https://x/1200/y.jpg")]
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    now = at(8)
+    with _Patched(
+        _build_patches(checkiday_events=AsyncMock(return_value=events))
+    ) as mocks:
+        await async_build_segments(
+            hass,
+            store,
+            person,
+            ["national_day"],
+            {"platform": "gemini", "api_key": "k"},
+            now=now,
+        )
+    mocks["checkiday_events"].assert_awaited_once_with(hass, now.date())
+    step = mocks["llm"].await_args.args[1]
+    assert step["checkiday_events"] == events
+    assert step["context"] == (
+        "Today's national days (choose only from this list): National Parfait Day"
+    )

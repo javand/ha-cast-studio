@@ -38,7 +38,12 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from .const import LOGGER
-from .daily_sources import async_fun_fact_context, async_remember_fun_fact
+from .daily_sources import (
+    async_checkiday_events,
+    async_fun_fact_context,
+    async_remember_fun_fact,
+    national_day_context,
+)
 from .ffmpeg_runner import (
     async_run_ffmpeg,
     build_concat_audio_command,
@@ -735,6 +740,11 @@ async def _async_build_one(  # noqa: PLR0913
         raise GeneratorError(msg)
     if segment_type_of(key) == "fun_fact":
         step["context"] = await async_fun_fact_context(hass, briefing_day(person, now))
+    if segment_type_of(key) == "national_day" and (
+        events := await async_checkiday_events(hass, briefing_day(person, now))
+    ):
+        step["checkiday_events"] = events
+        step["context"] = national_day_context(events)
     if context := await async_extract_entity_context(hass, step):
         step["context"] = context
 

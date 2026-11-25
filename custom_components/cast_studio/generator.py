@@ -41,6 +41,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
+from .daily_sources import async_download_image, match_event
 from .ffmpeg_runner import (
     async_run_ffmpeg,
     build_slide_clip_command,
@@ -94,7 +95,7 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
     return eids
 
 
-DYNAMIC_IMAGE_STEP_KEYS = frozenset({"greeting", "fun_fact", "national_day", "closing"})
+DYNAMIC_IMAGE_STEP_KEYS = frozenset({"greeting", "fun_fact", "closing"})
 
 # The closing slide's AI image follows the day of the week and the season.
 _CLOSING_WEEKDAY_MOODS = (
@@ -1809,21 +1810,20 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
         "holiday",
         "observance",
     ):
-        fallback_asset = "national_day.jpg"
-        topic = (
-            card_data.get("subtitle")
-            or card_data.get("title")
-            or step_to_process.get("context")
-            or "National Day celebration"
+        # Checkiday's photo of the picked day, else the bundled one: no AI.
+        events = step_to_process.get("checkiday_events") or []
+        event = match_event(str(card_data.get("subtitle") or ""), events) or (
+            match_event(str(card_data.get("title") or ""), events)
         )
-        today = dt_util.now()
-        dynamic_prompt = (
-            f"A vibrant, festive cinematic photograph celebrating {topic}, "
-            "holiday atmosphere, joyful, detailed, beautiful natural lighting, "
-            "16:9 widescreen aspect ratio. "
-            f"Today is {today:%B} {today.day}: any date shown on a sign or "
-            "banner must read exactly that, with no other dates or numbers"
-        )
+        photo = Path(scratch_dir) / "bg_national_day.jpg" if scratch_dir else None
+        if event and photo and await async_download_image(hass, event.image_url, photo):
+            card_data["image_path"] = str(photo)
+        else:
+            card_data["image_path"] = "national_day.jpg"
+        card_data["image_type"] = "static"
+        card_data["dynamic_image"] = False
+        card_data.setdefault("layout", "photo")
+        return
     elif step_key in ("fun_fact", "trivia") or name_key in ("fun_fact", "trivia"):
         fallback_asset = "fun_fact.jpg"
         bullets = card_data.get("bullet_points") or []

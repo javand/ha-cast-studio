@@ -7,14 +7,21 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.cast_studio import daily_sources
 from custom_components.cast_studio.daily_sources import (
+    CheckidayEvent,
+    async_checkiday_events,
+    async_download_image,
     async_fun_fact_context,
     async_fun_fact_of_the_day,
     async_remember_fun_fact,
     fun_fact_context,
+    match_event,
+    national_day_context,
+    parse_checkiday_events,
     parse_fun_fact,
 )
 
@@ -115,3 +122,104 @@ async def test_fun_fact_history_keeps_the_last_sixty(hass: HomeAssistant) -> Non
     recent: Any = await daily_sources._history(hass).async_recent()
     assert len(recent) == 60
     assert recent[0] == "Fact 5."
+
+
+PARFAIT = CheckidayEvent(
+    "National Parfait Day", "https://static.checkiday.com/img/1200/yogurt-924880.jpg"
+)
+
+
+def test_parse_checkiday_events_lists_the_days_with_large_photos() -> None:
+    events = parse_checkiday_events(_page("checkiday_2026-11-25.html"))
+    names = [e.name for e in events]
+    assert len(events) == 10
+    assert PARFAIT in events
+    assert 'National "Eat with a Friend" Day' in names
+    assert "Blasé Day" in names
+    assert "On This Day in History" not in names
+
+
+async def test_checkiday_events_are_read_once_per_day(hass: HomeAssistant) -> None:
+    session = _session(_page("checkiday_2026-11-25.html"))
+    with patch(
+        f"{daily_sources.__name__}.async_get_clientsession", return_value=session
+    ):
+        first = await async_checkiday_events(hass, NOV_25)
+        assert await async_checkiday_events(hass, NOV_25) == first
+    assert session.get.call_count == 1
+    assert session.get.call_args.args[0] == "https://www.checkiday.com/11/25/2026"
+
+
+async def test_checkiday_events_are_empty_when_the_site_fails(
+    hass: HomeAssistant,
+) -> None:
+    with patch(
+        f"{daily_sources.__name__}.async_get_clientsession",
+        return_value=_session("down", status=500),
+    ):
+        assert await async_checkiday_events(hass, NOV_25) == []
+
+
+def test_national_day_context_lists_the_days() -> None:
+    context = national_day_context([PARFAIT, CheckidayEvent("Tie One On Day", "u")])
+    assert context == (
+        "Today's national days (choose only from this list): "
+        "National Parfait Day; Tie One On Day"
+    )
+
+
+@pytest.mark.parametrize(
+    "picked",
+    [
+        "National Parfait Day",
+        "national parfait day!",
+        "Parfait Day",
+        "National Parfait Day 2026",
+    ],
+)
+def test_match_event_finds_the_picked_day(picked: str) -> None:
+    events = parse_checkiday_events(_page("checkiday_2026-11-25.html"))
+    assert match_event(picked, events) == PARFAIT
+
+
+def test_match_event_handles_quotes_and_misses() -> None:
+    events = parse_checkiday_events(_page("checkiday_2026-11-25.html"))
+    eat = match_event("National Eat with a Friend Day", events)
+    assert eat is not None
+    assert eat.name == 'National "Eat with a Friend" Day'
+    assert match_event("National Pizza Day", events) is None
+    assert match_event("", events) is None
+
+
+def _image_session(status: int, content_type: str, body: bytes) -> MagicMock:
+    resp = AsyncMock()
+    resp.status = status
+    resp.content_type = content_type
+    resp.content_length = len(body)
+    resp.read = AsyncMock(return_value=body)
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock()
+    session.get.return_value = ctx
+    return session
+
+
+@pytest.mark.parametrize(
+    ("status", "content_type", "saved"),
+    [(200, "image/jpeg", True), (404, "text/html", False), (200, "text/html", False)],
+)
+async def test_download_image_saves_only_images(
+    hass: HomeAssistant,
+    tmp_path: Path,
+    status: int,
+    content_type: str,
+    saved: bool,  # noqa: FBT001
+) -> None:
+    target = tmp_path / "bg.jpg"
+    with patch(
+        f"{daily_sources.__name__}.async_get_clientsession",
+        return_value=_image_session(status, content_type, b"jpgdata"),
+    ):
+        assert await async_download_image(hass, PARFAIT.image_url, target) is saved
+    assert target.exists() is saved
