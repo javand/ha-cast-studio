@@ -29,10 +29,10 @@ from .const import (
     LOGGER,
 )
 from .speech_check import (
-    MATCH_THRESHOLD,
     SPEECH_CHECK_ATTEMPTS,
     async_transcribe,
-    speech_match_score,
+    speech_distance,
+    speech_matches,
 )
 
 if TYPE_CHECKING:
@@ -648,25 +648,25 @@ async def _async_check_speech(  # noqa: PLR0913
     cannot be checked, or a voicing that fails, keeps what is already there.
     """
     path = Path(wav_path)
-    best: tuple[float, bytes] | None = None
+    best: tuple[int, bytes] | None = None
     for attempt in range(1, SPEECH_CHECK_ATTEMPTS + 1):
         try:
             transcript = await async_transcribe(session, api_key, text_model, wav_path)
         except Exception as err:  # noqa: BLE001 - a check must never cost the voice
             LOGGER.debug("Could not check the speech in %s: %s", wav_path, err)
             return
-        score = speech_match_score(script, transcript)
-        if score >= MATCH_THRESHOLD:
+        if speech_matches(script, transcript):
             return
+        distance = speech_distance(script, transcript)
         LOGGER.warning(
-            "Voiced speech did not match its script (match %.2f, try %d of %d): %s",
-            score,
+            "Voiced speech strayed %d words from its script (try %d of %d): %s",
+            distance,
             attempt,
             SPEECH_CHECK_ATTEMPTS,
             transcript,
         )
-        if best is None or score > best[0]:
-            best = (score, await asyncio.to_thread(path.read_bytes))
+        if best is None or distance < best[0]:
+            best = (distance, await asyncio.to_thread(path.read_bytes))
         if attempt == SPEECH_CHECK_ATTEMPTS:
             break
         try:

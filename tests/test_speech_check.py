@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from custom_components.cast_studio.speech_check import (
-    MATCH_THRESHOLD,
     async_transcribe,
-    speech_match_score,
+    speech_distance,
+    speech_matches,
 )
 
 if TYPE_CHECKING:
@@ -25,29 +25,63 @@ PARFAIT = (
 )
 
 
-def test_identical_speech_scores_one() -> None:
-    assert speech_match_score(PARFAIT, PARFAIT) == 1.0
+def test_identical_speech_matches() -> None:
+    assert speech_matches(PARFAIT, PARFAIT)
+    assert speech_distance(PARFAIT, PARFAIT) == 0
 
 
 def test_script_read_twice_does_not_match() -> None:
-    assert speech_match_score(PARFAIT, f"{PARFAIT} {PARFAIT}") < MATCH_THRESHOLD
+    assert not speech_matches(PARFAIT, f"{PARFAIT} {PARFAIT}")
+
+
+def test_a_short_script_read_twice_does_not_match() -> None:
+    line = "Close the freezer door, it was left open."
+    assert not speech_matches(line, f"{line} {line}")
 
 
 def test_half_the_script_does_not_match() -> None:
     first_half = PARFAIT.split(" The word", maxsplit=1)[0]
-    assert speech_match_score(PARFAIT, first_half) < MATCH_THRESHOLD
+    assert not speech_matches(PARFAIT, first_half)
 
 
 def test_numbers_and_name_spellings_still_match() -> None:
     """A transcriber writes numbers and names its own way."""
     script = "It is 48 degrees this morning, Javen, with a high of 56."
     heard = "It is forty-eight degrees this morning, Jayven, with a high of fifty six."
-    assert speech_match_score(script, heard) >= MATCH_THRESHOLD
+    assert speech_matches(script, heard)
+
+
+def test_respelled_names_still_match() -> None:
+    """The voice reads a respelled name; the transcriber writes the real one."""
+    script = (
+        "Good morning, Shi-vawn. It is Wednesday, November 25th, 2026. "
+        "Shi-vawn, your day looks promising."
+    )
+    heard = (
+        "Good morning, Siobhan. It is Wednesday, November 25th, 2026. "
+        "Siobhan, your day looks promising."
+    )
+    assert speech_matches(script, heard)
+
+
+def test_units_and_contractions_still_match() -> None:
+    assert speech_matches(
+        "It is 72°F with 40% humidity and wind at 10 mph.",
+        "It is seventy-two degrees Fahrenheit with forty percent humidity and "
+        "wind at ten miles per hour.",
+    )
+    assert speech_matches("Dinner's ready, everyone!", "Dinner is ready, everyone!")
 
 
 def test_a_short_aside_still_matches() -> None:
     """One short added line is not worth voicing the segment again."""
-    assert speech_match_score(PARFAIT, f"{PARFAIT} What a treat.") >= MATCH_THRESHOLD
+    assert speech_matches(PARFAIT, f"{PARFAIT} What a treat.")
+
+
+def test_distance_ranks_how_far_speech_strays() -> None:
+    doubled = speech_distance(PARFAIT, f"{PARFAIT} {PARFAIT}")
+    aside = speech_distance(PARFAIT, f"{PARFAIT} What a treat.")
+    assert 0 < aside < doubled
 
 
 def _session(payload: dict, status: int = 200) -> MagicMock:

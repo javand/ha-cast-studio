@@ -3,7 +3,8 @@ Check that voiced speech says its script once, as written.
 
 Gemini voice models now and then read a script twice, add words of their own
 or drop some. The text model transcribes the audio and the transcript is
-compared with the script word by word.
+compared with the script word by word: speech that says many more or fewer
+words than its script is voiced again.
 """
 
 from __future__ import annotations
@@ -19,9 +20,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import aiohttp
 
-# Below this the speech is voiced again: a script read twice scores about
-# 0.67, one short added line about 0.95.
-MATCH_THRESHOLD = 0.85
+# Speech strays when it says this many more (or fewer) words than its script,
+# at least MIN_STRAY_WORDS: a script read twice says twice as many, while a
+# name or number the transcriber writes its own way only swaps words.
+STRAY_FRACTION = 0.25
+MIN_STRAY_WORDS = 4
 # The first voicing plus two more when the speech does not match.
 SPEECH_CHECK_ATTEMPTS = 3
 TRANSCRIBE_TIMEOUT_SECONDS = 30
@@ -78,11 +81,27 @@ def _words(text: str) -> list[str]:
     return [w for w in _WORD_RE.findall(text) if w.strip("'") not in _NUMBER_WORDS]
 
 
-def speech_match_score(script: str, transcript: str) -> float:
-    """Return how closely ``transcript`` follows ``script``, from 0 to 1."""
-    return SequenceMatcher(
-        None, _words(script), _words(transcript), autojunk=False
-    ).ratio()
+def speech_distance(script: str, transcript: str) -> int:
+    """
+    Return how many words ``transcript`` adds to or drops from ``script``.
+
+    Words the two share in order are matched; a word written differently
+    counts once as added and once as dropped, so it cancels out.
+    """
+    script_words, heard_words = _words(script), _words(transcript)
+    blocks = SequenceMatcher(
+        None, script_words, heard_words, autojunk=False
+    ).get_matching_blocks()
+    matched = sum(block.size for block in blocks)
+    added = len(heard_words) - matched
+    dropped = len(script_words) - matched
+    return abs(added - dropped)
+
+
+def speech_matches(script: str, transcript: str) -> bool:
+    """Return whether ``transcript`` says ``script`` once, without straying."""
+    allowed = max(MIN_STRAY_WORDS, STRAY_FRACTION * len(_words(script)))
+    return speech_distance(script, transcript) < allowed
 
 
 async def async_transcribe(

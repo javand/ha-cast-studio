@@ -1253,7 +1253,7 @@ async def test_gemini_keeps_the_closest_speech_after_three_misses(
     """When no voicing matches, the one closest to the script is kept."""
     no_transcriber.side_effect = [
         f"{SCRIPT} {SCRIPT}",
-        f"{SCRIPT} And do not forget your umbrella later.",
+        f"{SCRIPT} And do not forget to bring your umbrella along later.",
         "Something else entirely.",
     ]
     with patch(f"{TTS}._synthesize_gemini_tts", new=_voicings(tmp_path)) as gemini:
