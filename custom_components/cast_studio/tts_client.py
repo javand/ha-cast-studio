@@ -21,10 +21,18 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from . import ffmpeg_runner
 from .ai_health import async_report_ai_failure, async_report_ai_success
 from .const import (
+    CONF_TEXT_MODEL,
     CONF_VOICE_MODEL,
     DEFAULT_HOST_VOICE,
+    DEFAULT_TEXT_MODEL,
     DEFAULT_VOICE_MODEL,
     LOGGER,
+)
+from .speech_check import (
+    SPEECH_CHECK_ATTEMPTS,
+    async_transcribe,
+    speech_distance,
+    speech_matches,
 )
 
 if TYPE_CHECKING:
@@ -229,6 +237,45 @@ def register_personality_prompt(name: str, style_or_profile: str) -> None:
         )
 
 
+# Voice models before 3.8 take direction inside the prompt text and reject
+# speech metadata.
+_DIRECTOR_PROMPT_MODEL_PREFIXES = ("gemini-2.", "gemini-3.1")
+
+
+def uses_speech_metadata(model: str) -> bool:
+    """
+    Return whether ``model`` takes its style as speech metadata.
+
+    From 3.8 on, Gemini reads the prompt text as a verbatim transcript: the
+    director's notes and transcript markers sent with it there made it read
+    the script twice in about half of all requests.
+    """
+    return not model.startswith(_DIRECTOR_PROMPT_MODEL_PREFIXES)
+
+
+def _director_profile(personality: str, profile: str | None) -> str:
+    """Return ``profile``, or the built-in or wrapped one for ``personality``."""
+    if profile:
+        return profile
+    lookup_key = personality.strip().lower().replace(" ", "_")
+    return PERSONALITY_PROMPTS.get(personality) or PERSONALITY_PROMPTS.get(
+        lookup_key,
+        (
+            f"# AUDIO PROFILE: Narrator ({personality})\n"
+            "### DIRECTOR'S NOTES\n"
+            f"Style: {personality}, natural, clear, and expressive."
+        ),
+    )
+
+
+def gemini_style(personality: str, profile: str | None) -> str:
+    """Return the director profile's direction as one line, without headers."""
+    lines = _director_profile(personality, profile).splitlines()
+    return " ".join(
+        line.strip() for line in lines if line.strip() and not line.startswith("#")
+    )
+
+
 def _build_gemini_tts_prompt(
     script: str, personality: str, profile: str | None = None
 ) -> str:
@@ -238,16 +285,7 @@ def _build_gemini_tts_prompt(
     A persona's ``profile`` is used verbatim; otherwise ``personality`` picks a
     built-in profile or is wrapped as a style line.
     """
-    if not profile:
-        lookup_key = personality.strip().lower().replace(" ", "_")
-        profile = PERSONALITY_PROMPTS.get(personality) or PERSONALITY_PROMPTS.get(
-            lookup_key,
-            (
-                f"# AUDIO PROFILE: Narrator ({personality})\n"
-                "### DIRECTOR'S NOTES\n"
-                f"Style: {personality}, natural, clear, and expressive."
-            ),
-        )
+    profile = _director_profile(personality, profile)
     return (
         f"{profile}\n\n"
         "Speak only the transcript below. "
@@ -383,15 +421,15 @@ async def _synthesize_gemini_tts(  # noqa: PLR0913
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         f"?key={api_key}"
     )
-    prompt_text = _build_gemini_tts_prompt(script, personality, profile)
+    if uses_speech_metadata(model):
+        part: dict[str, Any] = {
+            "text": script,
+            "speech_metadata": {"style": gemini_style(personality, profile)},
+        }
+    else:
+        part = {"text": _build_gemini_tts_prompt(script, personality, profile)}
     payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt_text},
-                ],
-            },
-        ],
+        "contents": [{"parts": [part]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
@@ -595,6 +633,51 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
     return output_wav_path
 
 
+async def _async_check_speech(  # noqa: PLR0913
+    session: aiohttp.ClientSession,
+    script: str,
+    wav_path: str,
+    synthesize: Callable[[], Awaitable[str]],
+    api_key: str,
+    text_model: str,
+) -> None:
+    """
+    Voice ``script`` again while the speech at ``wav_path`` does not match it.
+
+    After SPEECH_CHECK_ATTEMPTS voicings the closest one is kept. Speech that
+    cannot be checked, or a voicing that fails, keeps what is already there.
+    """
+    path = Path(wav_path)
+    best: tuple[int, bytes] | None = None
+    for attempt in range(1, SPEECH_CHECK_ATTEMPTS + 1):
+        try:
+            transcript = await async_transcribe(session, api_key, text_model, wav_path)
+        except Exception as err:  # noqa: BLE001 - a check must never cost the voice
+            LOGGER.debug("Could not check the speech in %s: %s", wav_path, err)
+            return
+        if speech_matches(script, transcript):
+            return
+        distance = speech_distance(script, transcript)
+        LOGGER.warning(
+            "Voiced speech strayed %d words from its script (try %d of %d): %s",
+            distance,
+            attempt,
+            SPEECH_CHECK_ATTEMPTS,
+            transcript,
+        )
+        if best is None or distance < best[0]:
+            best = (distance, await asyncio.to_thread(path.read_bytes))
+        if attempt == SPEECH_CHECK_ATTEMPTS:
+            break
+        try:
+            await synthesize()
+        except (TTSClientError, TimeoutError, aiohttp.ClientError, OSError) as err:
+            LOGGER.warning("Voicing the speech again failed: %s", err)
+            break
+    if best is not None:
+        await asyncio.to_thread(path.write_bytes, best[1])
+
+
 async def async_synthesize_speech(  # noqa: PLR0913
     hass: HomeAssistant,
     script: str,
@@ -671,6 +754,15 @@ async def async_synthesize_speech(  # noqa: PLR0913
             _mark_voice_fallback()
         else:
             async_report_ai_success(hass, "voice")
+            if name == "Gemini":
+                await _async_check_speech(
+                    session,
+                    script,
+                    wav_path,
+                    synthesize,
+                    api_key,
+                    safe_creds.get(CONF_TEXT_MODEL) or DEFAULT_TEXT_MODEL,
+                )
             return wav_path
 
     return await _synthesize_ha_tts(

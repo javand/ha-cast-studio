@@ -392,3 +392,26 @@ async def test_build_template_announcement_chime_and_voice(
         assert build.clip_path is not None
         assert mock_concat.called
         assert build.words == "Tip off at 10 PM"
+
+
+async def test_ai_slide_without_pictures_asks_for_diverse_people(
+    hass: HomeAssistant, tmp_path: Path, mocks: dict[str, Any]
+) -> None:
+    from custom_components.cast_studio.ai_client import PEOPLE_DIVERSITY_DIRECTION
+
+    await _build(hass, tmp_path, _announcement(hass))
+    assert mocks["image"].call_args.args[1].endswith(PEOPLE_DIVERSITY_DIRECTION)
+
+
+async def test_ai_slide_from_own_pictures_is_left_alone(
+    hass: HomeAssistant, tmp_path: Path, mocks: dict[str, Any]
+) -> None:
+    from custom_components.cast_studio.ai_client import PEOPLE_DIVERSITY_DIRECTION
+
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "door.jpg").write_bytes(b"door")
+    hass.config.media_dirs = {"local": str(media)}
+    ann = _announcement(hass, pictures=["media-source://media_source/local/door.jpg"])
+    await _build(hass, tmp_path / "out", ann)
+    assert PEOPLE_DIVERSITY_DIRECTION not in mocks["image"].call_args.args[1]

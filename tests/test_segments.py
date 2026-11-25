@@ -323,6 +323,9 @@ def _build_patches(**overrides: Any) -> dict[str, Any]:
         "image": AsyncMock(return_value=None),
         "map": AsyncMock(return_value=None),
         "ffmpeg": _fake_ffmpeg(),
+        "fun_fact_context": AsyncMock(return_value="Share a fun fact."),
+        "remember_fun_fact": AsyncMock(),
+        "checkiday_events": AsyncMock(return_value=[]),
     }
     mocks.update(overrides)
     return mocks
@@ -345,6 +348,9 @@ class _Patched:
             ),
             patch(f"{GEN}.async_run_ffmpeg", new=mocks["ffmpeg"]),
             patch(f"{SEG}.async_run_ffmpeg", new=mocks["ffmpeg"]),
+            patch(f"{SEG}.async_fun_fact_context", new=mocks["fun_fact_context"]),
+            patch(f"{SEG}.async_remember_fun_fact", new=mocks["remember_fun_fact"]),
+            patch(f"{SEG}.async_checkiday_events", new=mocks["checkiday_events"]),
         ]
 
     def __enter__(self) -> dict[str, Any]:
@@ -1258,3 +1264,92 @@ async def test_manifest_without_persona_is_rebuilt(
     reloaded = SegmentStore(hass, str(tmp_path))
     await reloaded.async_load(person, at(8))
     assert reloaded.get_fresh(person, "greeting", at(8)) is None
+
+
+async def test_fun_fact_uses_the_fact_of_the_day_and_remembers_it(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    now = at(8)
+    patches = _build_patches(
+        fun_fact_context=AsyncMock(return_value="Today's fun fact: TV dinners.")
+    )
+    with _Patched(patches) as mocks:
+        result = await async_build_segments(
+            hass,
+            store,
+            person,
+            ["fun_fact"],
+            {"platform": "gemini", "api_key": "k"},
+            now=now,
+        )
+    assert isinstance(result["fun_fact"], StoredSegment)
+    mocks["fun_fact_context"].assert_awaited_once_with(hass, now.date())
+    step = mocks["llm"].await_args.args[1]
+    assert step["writer_brief"] == "Today's fun fact: TV dinners."
+    mocks["remember_fun_fact"].assert_awaited_once_with(hass, "Some narration here.")
+
+
+async def test_national_day_picks_from_checkidays_list(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    from custom_components.cast_studio.daily_sources import CheckidayEvent
+
+    events = [CheckidayEvent("National Parfait Day", "https://x/1200/y.jpg")]
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    now = at(8)
+    with _Patched(
+        _build_patches(checkiday_events=AsyncMock(return_value=events))
+    ) as mocks:
+        await async_build_segments(
+            hass,
+            store,
+            person,
+            ["national_day"],
+            {"platform": "gemini", "api_key": "k"},
+            now=now,
+        )
+    mocks["checkiday_events"].assert_awaited_once_with(hass, now.date())
+    step = mocks["llm"].await_args.args[1]
+    assert step["checkiday_events"] == events
+    assert step["writer_brief"] == (
+        "Today's national days (choose only from this list): National Parfait Day"
+    )
+
+
+@pytest.mark.parametrize("key", ["fun_fact", "national_day"])
+async def test_writer_instructions_are_never_spoken(
+    hass: HomeAssistant, tmp_path: Path, key: str
+) -> None:
+    """When the writer returns nothing, its instructions are not read aloud."""
+    from custom_components.cast_studio.daily_sources import CheckidayEvent
+
+    patches = _build_patches(
+        llm=AsyncMock(
+            return_value={
+                "visual_card": {"title": "Fun Fact", "bullet_points": []},
+                "narration_script": "",
+            }
+        ),
+        fun_fact_context=AsyncMock(
+            return_value="Do not use any of these recent facts: octopus"
+        ),
+        checkiday_events=AsyncMock(
+            return_value=[CheckidayEvent("National Parfait Day", "u")]
+        ),
+    )
+    with _Patched(patches) as mocks:
+        await async_build_segments(
+            hass,
+            SegmentStore(hass, str(tmp_path)),
+            make_person(),
+            [key],
+            {"platform": "gemini", "api_key": "k"},
+            now=at(8),
+            build_all_heard=False,
+        )
+    spoken = mocks["tts"].await_args.args[1]
+    assert "recent facts" not in spoken
+    assert "choose only from this list" not in spoken

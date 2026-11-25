@@ -29,7 +29,11 @@ from typing import TYPE_CHECKING, Any, Literal
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import template
 
-from .ai_client import async_generate_ai_image, async_generate_announcement_words
+from .ai_client import (
+    PEOPLE_DIVERSITY_DIRECTION,
+    async_generate_ai_image,
+    async_generate_announcement_words,
+)
 from .announcements import (
     MAX_PICTURES,
     announcement_day,
@@ -443,9 +447,12 @@ async def async_build_announcement(  # noqa: PLR0912, PLR0913, PLR0915
                 pictures = await async_run_in_executor(
                     hass, _read_pictures, hass, announcement
                 )
+                prompt = _slide_prompt(hass, announcement, words)
+                if not pictures:
+                    prompt = f"{prompt}\n{PEOPLE_DIVERSITY_DIRECTION}"
                 slide = await async_generate_ai_image(
                     hass,
-                    _slide_prompt(hass, announcement, words),
+                    prompt,
                     str(scratch / "slide.png"),
                     ai_creds,
                     reference_images=[(mime, data) for _, mime, data in pictures],

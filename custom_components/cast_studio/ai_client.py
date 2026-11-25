@@ -219,7 +219,11 @@ def _build_prompt(
         or step_config.get("personality")
         or "informative and clear"
     )
-    context = step_config.get("context", "")
+    context = "\n".join(
+        str(part).strip()
+        for part in (step_config.get("context"), step_config.get("writer_brief"))
+        if part and str(part).strip()
+    )
     now_str = datetime.now().astimezone().strftime("%A, %B %-d, %Y")
 
     step_key = str(step_type or step_name or "").strip().lower()
@@ -553,6 +557,14 @@ async def _query_gemini_image_api(  # noqa: PLR0913
             raise AIClientError(msg) from None
     msg = "Failed to query Gemini Image API after retries"
     raise AIClientError(msg)
+
+
+# Added to AI image prompts that are not built from the household's own
+# pictures: left alone, image models show mostly white people.
+PEOPLE_DIVERSITY_DIRECTION = (
+    "If the image shows people, show a diverse mix of people of different "
+    "ethnicities, skin tones and ages."
+)
 
 
 async def async_generate_ai_image(  # noqa: PLR0913

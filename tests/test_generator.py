@@ -18,6 +18,7 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.cast_studio.const import CONF_COMMUTE_DESTINATION, DOMAIN
+from custom_components.cast_studio.daily_sources import CheckidayEvent
 from custom_components.cast_studio.generator import (
     _ensure_encouragement_signoff,
     _extract_entity_context,
@@ -646,9 +647,10 @@ def test_is_step_image_dynamic_matrix() -> None:
     assert is_step_image_dynamic({"name": "bible"}, "bible") is False
     assert is_step_image_dynamic({"name": "weather"}, "weather") is False
 
-    # 2. Default rule: strict allowlist (greeting, fun_fact, national_day)
+    # 2. Default rule: strict allowlist (greeting, fun_fact); national_day uses
+    # Checkiday's photo, never an AI image.
     assert is_step_image_dynamic({"name": "greeting"}, "greeting") is True
-    assert is_step_image_dynamic({"name": "national_day"}, "national_day") is True
+    assert is_step_image_dynamic({"name": "national_day"}, "national_day") is False
     assert is_step_image_dynamic({"name": "fun_fact"}, "fun_fact") is True
     assert (
         is_step_image_dynamic({"name": "daily_encouragement"}, "daily_encouragement")
@@ -2083,10 +2085,17 @@ async def test_entity_context_for_weather_includes_advisory(
 
 
 def test_is_step_image_dynamic_allowlist() -> None:
-    """Dynamic Imagen: greeting, fun_fact, national_day only."""
-    for name in ("greeting", "fun_fact", "national_day"):
+    """Dynamic Imagen: greeting and fun_fact only."""
+    for name in ("greeting", "fun_fact"):
         assert is_step_image_dynamic({"name": name}) is True
-    for name in ("daily_encouragement", "weather", "agenda", "commute", "scripture"):
+    for name in (
+        "national_day",
+        "daily_encouragement",
+        "weather",
+        "agenda",
+        "commute",
+        "scripture",
+    ):
         assert is_step_image_dynamic({"name": name}) is False
     # Everything else (including custom steps) is static by default.
     assert is_step_image_dynamic({"name": "wind_down"}) is False
@@ -2104,34 +2113,6 @@ def test_daily_encouragement_never_skipped_when_scripture_absent() -> None:
         _is_unconfigured_optional_step(mock_hass, {"name": "daily_encouragement"})
         is False
     )
-
-
-@pytest.mark.asyncio
-async def test_national_day_image_prompt_includes_holiday_name(tmp_path: Path) -> None:
-    """The national_day Imagen prompt is built from the day's holiday name."""
-    from custom_components.cast_studio.generator import (
-        _async_resolve_step_visual_assets,
-    )
-
-    def _gen(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
-        Path(path).write_bytes(b"img")
-        return path
-
-    card: dict[str, Any] = {"title": "National Pancake Day"}
-    with patch(
-        "custom_components.cast_studio.generator.async_generate_ai_image",
-        new=AsyncMock(side_effect=_gen),
-    ) as mock_gen:
-        await _async_resolve_step_visual_assets(
-            MagicMock(),
-            {"name": "national_day"},
-            "national_day",
-            card,
-            {"platform": "gemini", "api_key": "k"},
-            scratch_dir=str(tmp_path),
-        )
-    assert "National Pancake Day" in mock_gen.call_args.args[1]
-    assert card["image_type"] == "dynamic"
 
 
 def test_step_prompt_guidelines_encouragement_and_weather_advice() -> None:
@@ -3577,46 +3558,6 @@ async def test_closing_image_prompt_follows_the_day(tmp_path: Path) -> None:
     assert "no text" in prompts[0]
 
 
-@pytest.mark.asyncio
-async def test_national_day_image_prompt_pins_todays_date(tmp_path: Path) -> None:
-    """Any date the image model paints on a sign must be today's."""
-    from custom_components.cast_studio.generator import (
-        _async_resolve_step_visual_assets,
-    )
-
-    prompts: list[str] = []
-
-    async def _fake_image(_hass: Any, prompt: str, path: str, **_kwargs: Any) -> str:
-        prompts.append(prompt)
-        Path(path).write_bytes(b"png")
-        return path
-
-    nov_3 = datetime(2026, 11, 3, 6, 0, tzinfo=dt_util.UTC)
-    with (
-        patch(
-            "custom_components.cast_studio.generator.async_generate_ai_image",
-            new=_fake_image,
-        ),
-        patch(
-            "custom_components.cast_studio.generator.dt_util.now",
-            return_value=nov_3,
-        ),
-    ):
-        card: dict = {"subtitle": "National Sandwich Day"}
-        await _async_resolve_step_visual_assets(
-            MagicMock(),
-            {"type": "national_day"},
-            "national_day",
-            card,
-            {"platform": "gemini", "api_key": "k"},
-            scratch_dir=str(tmp_path),
-        )
-
-    assert "National Sandwich Day" in prompts[0]
-    assert "November 3" in prompts[0]
-    assert "no other dates" in prompts[0]
-
-
 def test_closing_subtitle_names_the_day() -> None:
     from custom_components.cast_studio.generator import closing_subtitle
 
@@ -3639,3 +3580,99 @@ async def test_compile_step_passes_persona_to_tts(tmp_path: Path) -> None:
     _card, tts = await _run_compile_step_with_tts(tmp_path, step, llm, {"name": "Alex"})
     assert tts.call_args.kwargs["voice_profile"] == "P"
     assert tts.call_args.kwargs["openai_voice"] == "fable"
+
+
+@pytest.mark.parametrize("step_name", ["greeting", "fun_fact", "closing"])
+async def test_ai_images_ask_for_diverse_people(tmp_path: Path, step_name: str) -> None:
+    """Every AI briefing image asks that any people shown are a diverse mix."""
+    from custom_components.cast_studio.ai_client import PEOPLE_DIVERSITY_DIRECTION
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    def _gen(_h: Any, _prompt: str, path: str, *, ai_creds: Any = None) -> str:
+        Path(path).write_bytes(b"img")
+        return path
+
+    with patch(
+        "custom_components.cast_studio.generator.async_generate_ai_image",
+        new=AsyncMock(side_effect=_gen),
+    ) as mock_gen:
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {"name": step_name, "type": step_name},
+            step_name,
+            {"title": "Octopuses have three hearts"},
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+        )
+    assert mock_gen.call_args.args[1].endswith(PEOPLE_DIVERSITY_DIRECTION)
+
+
+PARFAIT_EVENT = CheckidayEvent(
+    "National Parfait Day", "https://static.checkiday.com/img/1200/yogurt-924880.jpg"
+)
+
+
+async def _national_day_visuals(
+    tmp_path: Path, card: dict[str, Any], download: AsyncMock
+) -> AsyncMock:
+    from custom_components.cast_studio.generator import (
+        _async_resolve_step_visual_assets,
+    )
+
+    with (
+        patch(
+            "custom_components.cast_studio.generator.async_generate_ai_image",
+            new=AsyncMock(return_value=None),
+        ) as mock_gen,
+        patch(
+            "custom_components.cast_studio.generator.async_download_image",
+            new=download,
+        ),
+    ):
+        await _async_resolve_step_visual_assets(
+            MagicMock(),
+            {"type": "national_day", "checkiday_events": [PARFAIT_EVENT]},
+            "national_day",
+            card,
+            {"platform": "gemini", "api_key": "k"},
+            scratch_dir=str(tmp_path),
+        )
+    return mock_gen
+
+
+async def test_national_day_shows_checkidays_photo(tmp_path: Path) -> None:
+    """The picked day's Checkiday photo is the slide, not an AI image."""
+
+    async def _download(_hass: Any, _url: str, path: Path) -> bool:
+        path.write_bytes(b"jpg")
+        return True
+
+    download = AsyncMock(side_effect=_download)
+    card: dict[str, Any] = {"title": "National Day", "subtitle": "National Parfait Day"}
+    mock_gen = await _national_day_visuals(tmp_path, card, download)
+
+    assert download.await_args.args[1] == PARFAIT_EVENT.image_url
+    assert card["image_path"] == str(tmp_path / "bg_national_day.jpg")
+    assert card["layout"] == "photo"
+    assert card["dynamic_image"] is False
+    mock_gen.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("subtitle", "downloaded"),
+    [("National Parfait Day", False), ("National Pizza Day", True)],
+)
+async def test_national_day_without_a_photo_uses_the_bundled_one(
+    tmp_path: Path,
+    subtitle: str,
+    downloaded: bool,  # noqa: FBT001
+) -> None:
+    """No Checkiday photo (none matched or download failed): bundled photo."""
+    download = AsyncMock(return_value=downloaded)
+    card: dict[str, Any] = {"title": "National Day", "subtitle": subtitle}
+    mock_gen = await _national_day_visuals(tmp_path, card, download)
+
+    assert card["image_path"] == "national_day.jpg"
+    mock_gen.assert_not_called()

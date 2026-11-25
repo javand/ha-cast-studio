@@ -38,6 +38,12 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from .const import LOGGER
+from .daily_sources import (
+    async_checkiday_events,
+    async_fun_fact_context,
+    async_remember_fun_fact,
+    national_day_context,
+)
 from .ffmpeg_runner import (
     async_run_ffmpeg,
     build_concat_audio_command,
@@ -732,6 +738,17 @@ async def _async_build_one(  # noqa: PLR0913
     if _is_unconfigured_optional_step(hass, step):
         msg = f"Segment '{key}' has no configured or available entity"
         raise GeneratorError(msg)
+    # Instructions for the writer only: unlike the context, a writer brief is
+    # never spoken when the writer returns no narration.
+    if segment_type_of(key) == "fun_fact":
+        step["writer_brief"] = await async_fun_fact_context(
+            hass, briefing_day(person, now)
+        )
+    if segment_type_of(key) == "national_day" and (
+        events := await async_checkiday_events(hass, briefing_day(person, now))
+    ):
+        step["checkiday_events"] = events
+        step["writer_brief"] = national_day_context(events)
     if context := await async_extract_entity_context(hass, step):
         step["context"] = context
 
@@ -755,6 +772,9 @@ async def _async_build_one(  # noqa: PLR0913
             audio_target_path=str(tts_path),
             slide_target_path=str(slide_path) if is_visual else None,
         )
+
+    if segment_type_of(key) == "fun_fact":
+        await async_remember_fun_fact(hass, step.get("_narration"))
 
     staged: dict[str, str] = {}
     audio_out = scratch / f"{key}.mp3"

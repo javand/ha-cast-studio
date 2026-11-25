@@ -969,3 +969,18 @@ async def test_images_use_the_configured_model(tmp_path: Path) -> None:
             {"platform": "gemini", "api_key": "k", "image_model": "gemini-img"},
         )
     assert query.await_args.kwargs["model"] == "gemini-img"
+
+
+def test_build_prompt_adds_the_writer_brief_to_the_context() -> None:
+    prompt = _build_prompt(
+        {
+            "name": "fun_fact",
+            "context": "Share an engaging, surprising morning fun fact.",
+            "writer_brief": "Today's fun fact: TV dinners.",
+        },
+        {"name": "Alex"},
+    )
+    assert (
+        "Context / State: Share an engaging, surprising morning fun fact.\n"
+        "Today's fun fact: TV dinners." in prompt
+    )

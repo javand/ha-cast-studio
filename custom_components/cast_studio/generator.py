@@ -26,6 +26,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .ai_client import (
+    PEOPLE_DIVERSITY_DIRECTION,
     _enforce_recipient_separation,
     async_generate_ai_image,
     async_generate_step_content,
@@ -40,6 +41,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
+from .daily_sources import async_download_image, match_event
 from .ffmpeg_runner import (
     async_run_ffmpeg,
     build_slide_clip_command,
@@ -93,7 +95,7 @@ def _get_step_entity_ids(step: dict[str, Any]) -> list[str]:
     return eids
 
 
-DYNAMIC_IMAGE_STEP_KEYS = frozenset({"greeting", "fun_fact", "national_day", "closing"})
+DYNAMIC_IMAGE_STEP_KEYS = frozenset({"greeting", "fun_fact", "closing"})
 
 # The closing slide's AI image follows the day of the week and the season.
 _CLOSING_WEEKDAY_MOODS = (
@@ -1808,21 +1810,20 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
         "holiday",
         "observance",
     ):
-        fallback_asset = "national_day.jpg"
-        topic = (
-            card_data.get("subtitle")
-            or card_data.get("title")
-            or step_to_process.get("context")
-            or "National Day celebration"
+        # Checkiday's photo of the picked day, else the bundled one: no AI.
+        events = step_to_process.get("checkiday_events") or []
+        event = match_event(str(card_data.get("subtitle") or ""), events) or (
+            match_event(str(card_data.get("title") or ""), events)
         )
-        today = dt_util.now()
-        dynamic_prompt = (
-            f"A vibrant, festive cinematic photograph celebrating {topic}, "
-            "holiday atmosphere, joyful, detailed, beautiful natural lighting, "
-            "16:9 widescreen aspect ratio. "
-            f"Today is {today:%B} {today.day}: any date shown on a sign or "
-            "banner must read exactly that, with no other dates or numbers"
-        )
+        photo = Path(scratch_dir) / "bg_national_day.jpg" if scratch_dir else None
+        if event and photo and await async_download_image(hass, event.image_url, photo):
+            card_data["image_path"] = str(photo)
+        else:
+            card_data["image_path"] = "national_day.jpg"
+        card_data["image_type"] = "static"
+        card_data["dynamic_image"] = False
+        card_data.setdefault("layout", "photo")
+        return
     elif step_key in ("fun_fact", "trivia") or name_key in ("fun_fact", "trivia"):
         fallback_asset = "fun_fact.jpg"
         bullets = card_data.get("bullet_points") or []
@@ -1976,7 +1977,10 @@ async def _async_resolve_step_visual_assets(  # noqa: PLR0912, PLR0913, PLR0915
     if ai_img_path and ai_creds.get("platform") == "gemini" and ai_creds.get("api_key"):
         try:
             generated = await async_generate_ai_image(
-                hass, dynamic_prompt, ai_img_path, ai_creds=ai_creds
+                hass,
+                f"{dynamic_prompt}. {PEOPLE_DIVERSITY_DIRECTION}",
+                ai_img_path,
+                ai_creds=ai_creds,
             )
             if generated and Path(generated).is_file():
                 card_data["image_path"] = generated
@@ -2208,6 +2212,8 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
         narration_script = _ensure_encouragement_signoff(
             str(narration_script), recipient
         )
+    # The segment builder remembers what was said (the fun fact history).
+    step_to_process["_narration"] = str(narration_script)
     if not narration_script:
         fallback_msg = (
             step_to_process.get("context")
