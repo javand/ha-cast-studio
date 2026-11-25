@@ -38,6 +38,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from .const import LOGGER
+from .daily_sources import async_fun_fact_context, async_remember_fun_fact
 from .ffmpeg_runner import (
     async_run_ffmpeg,
     build_concat_audio_command,
@@ -732,6 +733,8 @@ async def _async_build_one(  # noqa: PLR0913
     if _is_unconfigured_optional_step(hass, step):
         msg = f"Segment '{key}' has no configured or available entity"
         raise GeneratorError(msg)
+    if segment_type_of(key) == "fun_fact":
+        step["context"] = await async_fun_fact_context(hass, briefing_day(person, now))
     if context := await async_extract_entity_context(hass, step):
         step["context"] = context
 
@@ -755,6 +758,9 @@ async def _async_build_one(  # noqa: PLR0913
             audio_target_path=str(tts_path),
             slide_target_path=str(slide_path) if is_visual else None,
         )
+
+    if segment_type_of(key) == "fun_fact":
+        await async_remember_fun_fact(hass, step.get("_narration"))
 
     staged: dict[str, str] = {}
     audio_out = scratch / f"{key}.mp3"

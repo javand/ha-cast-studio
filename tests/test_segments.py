@@ -323,6 +323,8 @@ def _build_patches(**overrides: Any) -> dict[str, Any]:
         "image": AsyncMock(return_value=None),
         "map": AsyncMock(return_value=None),
         "ffmpeg": _fake_ffmpeg(),
+        "fun_fact_context": AsyncMock(return_value="Share a fun fact."),
+        "remember_fun_fact": AsyncMock(),
     }
     mocks.update(overrides)
     return mocks
@@ -345,6 +347,8 @@ class _Patched:
             ),
             patch(f"{GEN}.async_run_ffmpeg", new=mocks["ffmpeg"]),
             patch(f"{SEG}.async_run_ffmpeg", new=mocks["ffmpeg"]),
+            patch(f"{SEG}.async_fun_fact_context", new=mocks["fun_fact_context"]),
+            patch(f"{SEG}.async_remember_fun_fact", new=mocks["remember_fun_fact"]),
         ]
 
     def __enter__(self) -> dict[str, Any]:
@@ -1258,3 +1262,28 @@ async def test_manifest_without_persona_is_rebuilt(
     reloaded = SegmentStore(hass, str(tmp_path))
     await reloaded.async_load(person, at(8))
     assert reloaded.get_fresh(person, "greeting", at(8)) is None
+
+
+async def test_fun_fact_uses_the_fact_of_the_day_and_remembers_it(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    person = make_person()
+    store = SegmentStore(hass, str(tmp_path))
+    now = at(8)
+    patches = _build_patches(
+        fun_fact_context=AsyncMock(return_value="Today's fun fact: TV dinners.")
+    )
+    with _Patched(patches) as mocks:
+        result = await async_build_segments(
+            hass,
+            store,
+            person,
+            ["fun_fact"],
+            {"platform": "gemini", "api_key": "k"},
+            now=now,
+        )
+    assert isinstance(result["fun_fact"], StoredSegment)
+    mocks["fun_fact_context"].assert_awaited_once_with(hass, now.date())
+    step = mocks["llm"].await_args.args[1]
+    assert step["context"] == "Today's fun fact: TV dinners."
+    mocks["remember_fun_fact"].assert_awaited_once_with(hass, "Some narration here.")

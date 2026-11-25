@@ -2212,6 +2212,8 @@ async def _async_compile_single_step(  # noqa: C901, PLR0912, PLR0913, PLR0915
         narration_script = _ensure_encouragement_signoff(
             str(narration_script), recipient
         )
+    # The segment builder remembers what was said (the fun fact history).
+    step_to_process["_narration"] = str(narration_script)
     if not narration_script:
         fallback_msg = (
             step_to_process.get("context")
