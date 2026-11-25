@@ -20,8 +20,10 @@ from custom_components.cast_studio.tts_client import (
     _synthesize_ha_tts,
     _synthesize_openai_tts,
     async_synthesize_speech,
+    gemini_style,
     map_voice_for_openai,
     track_voice_fallback,
+    uses_speech_metadata,
 )
 
 TTS = "custom_components.cast_studio.tts_client"
@@ -258,6 +260,7 @@ async def test_synthesize_gemini_tts_direct_api(tmp_path: Path) -> None:
         output_wav_path=output_wav,
         api_key="api_key_123",
         session=mock_session,
+        model="gemini-2.5-flash-preview-tts",
     )
 
     assert result == output_wav
@@ -829,7 +832,7 @@ async def test_synthesize_speech_reuses_clientsession(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_synthesize_gemini_tts_structured_director_prompt(tmp_path: Path) -> None:
-    """Test Gemini TTS uses structured # AUDIO PROFILE and #### TRANSCRIPT blocks."""
+    """A pre-3.8 voice model gets # AUDIO PROFILE and #### TRANSCRIPT blocks."""
     output_wav = str(tmp_path / "structured_gemini.wav")
     b64_audio = base64.b64encode(b"RIFFfake_wav_bytes").decode("ascii")
     mock_resp_json = {
@@ -859,6 +862,7 @@ async def test_synthesize_gemini_tts_structured_director_prompt(tmp_path: Path) 
         output_wav_path=output_wav,
         api_key="test_key",
         session=mock_session,
+        model="gemini-2.5-flash-preview-tts",
     )
 
     payload = mock_session.post.call_args[1]["json"]
@@ -1088,3 +1092,104 @@ async def test_gemini_voice_defaults_to_flash_lite_tts(tmp_path: Path) -> None:
     with patch(f"{TTS}._synthesize_gemini_tts", return_value=wav) as gemini:
         await _speak(tmp_path, {"platform": "gemini", "api_key": "k"})
     assert gemini.call_args.kwargs["model"] == "gemini-3.8-flash-lite-tts"
+
+
+def _gemini_session() -> MagicMock:
+    """Return a session whose POST answers with a tiny Gemini WAV response."""
+    b64_audio = base64.b64encode(b"RIFFfake_wav_bytes").decode("ascii")
+    resp = AsyncMock()
+    resp.status = 200
+    resp.json = AsyncMock(
+        return_value={
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"inlineData": {"mimeType": "audio/wav", "data": b64_audio}}
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock()
+    session.post.return_value = ctx
+    return session
+
+
+COLE_PROFILE = (
+    "# AUDIO PROFILE: Cultured Brooklyn Host\n"
+    "### DIRECTOR'S NOTES\n"
+    "Style: Deep, warm baritone.\n"
+    "Pacing: Smooth and assured."
+)
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("gemini-3.8-flash-lite-tts", True),
+        ("gemini-3.8-flash-tts", True),
+        ("gemini-4.0-flash-tts", True),
+        ("gemini-2.5-flash-preview-tts", False),
+        ("gemini-2.5-pro-preview-tts", False),
+        ("gemini-3.1-flash-tts-preview", False),
+    ],
+)
+def test_uses_speech_metadata(model: str, expected: bool) -> None:  # noqa: FBT001
+    """Only voice models from 3.8 on take style as speech metadata."""
+    assert uses_speech_metadata(model) is expected
+
+
+def test_gemini_style_drops_profile_headers() -> None:
+    """The style is the profile's direction without its markdown headers."""
+    assert gemini_style("ignored", COLE_PROFILE) == (
+        "Style: Deep, warm baritone. Pacing: Smooth and assured."
+    )
+    built_in = gemini_style("news_anchor", None)
+    assert "#" not in built_in
+    assert built_in.startswith("Style: Crisp, articulate")
+
+
+async def test_gemini_38_sends_transcript_with_style_metadata(tmp_path: Path) -> None:
+    """A 3.8 voice model gets the script alone, with direction as metadata."""
+    session = _gemini_session()
+    await _synthesize_gemini_tts(
+        script="Today is National Parfait Day.",
+        voice="Charon",
+        personality="calm",
+        output_wav_path=str(tmp_path / "out.wav"),
+        api_key="k",
+        session=session,
+        model="gemini-3.8-flash-lite-tts",
+        profile=COLE_PROFILE,
+    )
+    part = session.post.call_args.kwargs["json"]["contents"][0]["parts"][0]
+    assert part == {
+        "text": "Today is National Parfait Day.",
+        "speech_metadata": {
+            "style": "Style: Deep, warm baritone. Pacing: Smooth and assured."
+        },
+    }
+
+
+async def test_gemini_25_keeps_director_prompt(tmp_path: Path) -> None:
+    """Older voice models reject speech metadata: they keep the director prompt."""
+    session = _gemini_session()
+    await _synthesize_gemini_tts(
+        script="Today is National Parfait Day.",
+        voice="Charon",
+        personality="calm",
+        output_wav_path=str(tmp_path / "out.wav"),
+        api_key="k",
+        session=session,
+        model="gemini-2.5-flash-preview-tts",
+        profile=COLE_PROFILE,
+    )
+    part = session.post.call_args.kwargs["json"]["contents"][0]["parts"][0]
+    assert "speech_metadata" not in part
+    assert part["text"].startswith(COLE_PROFILE)
+    assert part["text"].endswith("#### TRANSCRIPT\nToday is National Parfait Day.")
