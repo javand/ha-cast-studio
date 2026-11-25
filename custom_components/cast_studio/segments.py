@@ -738,13 +738,17 @@ async def _async_build_one(  # noqa: PLR0913
     if _is_unconfigured_optional_step(hass, step):
         msg = f"Segment '{key}' has no configured or available entity"
         raise GeneratorError(msg)
+    # Instructions for the writer only: unlike the context, a writer brief is
+    # never spoken when the writer returns no narration.
     if segment_type_of(key) == "fun_fact":
-        step["context"] = await async_fun_fact_context(hass, briefing_day(person, now))
+        step["writer_brief"] = await async_fun_fact_context(
+            hass, briefing_day(person, now)
+        )
     if segment_type_of(key) == "national_day" and (
         events := await async_checkiday_events(hass, briefing_day(person, now))
     ):
         step["checkiday_events"] = events
-        step["context"] = national_day_context(events)
+        step["writer_brief"] = national_day_context(events)
     if context := await async_extract_entity_context(hass, step):
         step["context"] = context
 

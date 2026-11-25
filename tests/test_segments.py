@@ -1287,7 +1287,7 @@ async def test_fun_fact_uses_the_fact_of_the_day_and_remembers_it(
     assert isinstance(result["fun_fact"], StoredSegment)
     mocks["fun_fact_context"].assert_awaited_once_with(hass, now.date())
     step = mocks["llm"].await_args.args[1]
-    assert step["context"] == "Today's fun fact: TV dinners."
+    assert step["writer_brief"] == "Today's fun fact: TV dinners."
     mocks["remember_fun_fact"].assert_awaited_once_with(hass, "Some narration here.")
 
 
@@ -1314,6 +1314,42 @@ async def test_national_day_picks_from_checkidays_list(
     mocks["checkiday_events"].assert_awaited_once_with(hass, now.date())
     step = mocks["llm"].await_args.args[1]
     assert step["checkiday_events"] == events
-    assert step["context"] == (
+    assert step["writer_brief"] == (
         "Today's national days (choose only from this list): National Parfait Day"
     )
+
+
+@pytest.mark.parametrize("key", ["fun_fact", "national_day"])
+async def test_writer_instructions_are_never_spoken(
+    hass: HomeAssistant, tmp_path: Path, key: str
+) -> None:
+    """When the writer returns nothing, its instructions are not read aloud."""
+    from custom_components.cast_studio.daily_sources import CheckidayEvent
+
+    patches = _build_patches(
+        llm=AsyncMock(
+            return_value={
+                "visual_card": {"title": "Fun Fact", "bullet_points": []},
+                "narration_script": "",
+            }
+        ),
+        fun_fact_context=AsyncMock(
+            return_value="Do not use any of these recent facts: octopus"
+        ),
+        checkiday_events=AsyncMock(
+            return_value=[CheckidayEvent("National Parfait Day", "u")]
+        ),
+    )
+    with _Patched(patches) as mocks:
+        await async_build_segments(
+            hass,
+            SegmentStore(hass, str(tmp_path)),
+            make_person(),
+            [key],
+            {"platform": "gemini", "api_key": "k"},
+            now=at(8),
+            build_all_heard=False,
+        )
+    spoken = mocks["tts"].await_args.args[1]
+    assert "recent facts" not in spoken
+    assert "choose only from this list" not in spoken

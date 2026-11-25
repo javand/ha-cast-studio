@@ -219,7 +219,11 @@ def _build_prompt(
         or step_config.get("personality")
         or "informative and clear"
     )
-    context = step_config.get("context", "")
+    context = "\n".join(
+        str(part).strip()
+        for part in (step_config.get("context"), step_config.get("writer_brief"))
+        if part and str(part).strip()
+    )
     now_str = datetime.now().astimezone().strftime("%A, %B %-d, %Y")
 
     step_key = str(step_type or step_name or "").strip().lower()
