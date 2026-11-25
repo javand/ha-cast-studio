@@ -1193,3 +1193,82 @@ async def test_gemini_25_keeps_director_prompt(tmp_path: Path) -> None:
     assert "speech_metadata" not in part
     assert part["text"].startswith(COLE_PROFILE)
     assert part["text"].endswith("#### TRANSCRIPT\nToday is National Parfait Day.")
+
+
+@pytest.fixture(autouse=True)
+def no_transcriber() -> Any:
+    """Tests that do not check speech get no transcript: the audio is kept."""
+    with patch(
+        f"{TTS}.async_transcribe",
+        new=AsyncMock(side_effect=RuntimeError("no transcriber in tests")),
+    ) as transcribe:
+        yield transcribe
+
+
+SCRIPT = "Good morning, it is a lovely day for a walk in the park today."
+
+
+def _voicings(tmp_path: Path) -> AsyncMock:
+    """A Gemini voice that writes RIFF1, RIFF2, ... on successive calls."""
+    calls = {"n": 0}
+
+    async def _voice(*args: Any, **_kwargs: Any) -> str:
+        calls["n"] += 1
+        Path(args[3]).write_bytes(f"RIFF{calls['n']}".encode())
+        return args[3]
+
+    return AsyncMock(side_effect=_voice)
+
+
+async def _speak_checked(tmp_path: Path) -> tuple[Path, bool]:
+    out = tmp_path / "checked.wav"
+    with track_voice_fallback() as voice:
+        await async_synthesize_speech(
+            hass=MagicMock(),
+            script=SCRIPT,
+            voice="Charon",
+            personality="calm",
+            output_wav_path=str(out),
+            creds={"platform": "gemini", "api_key": "k", "text_model": "text-x"},
+        )
+    return out, voice.used
+
+
+async def test_gemini_revoices_when_the_speech_repeats(
+    tmp_path: Path, no_transcriber: AsyncMock
+) -> None:
+    """Speech that reads the script twice is voiced again."""
+    no_transcriber.side_effect = [f"{SCRIPT} {SCRIPT}", SCRIPT]
+    with patch(f"{TTS}._synthesize_gemini_tts", new=_voicings(tmp_path)) as gemini:
+        out, fell_back = await _speak_checked(tmp_path)
+    assert gemini.await_count == 2
+    assert out.read_bytes() == b"RIFF2"
+    assert not fell_back
+    assert no_transcriber.await_args.args[1:3] == ("k", "text-x")
+
+
+async def test_gemini_keeps_the_closest_speech_after_three_misses(
+    tmp_path: Path, no_transcriber: AsyncMock
+) -> None:
+    """When no voicing matches, the one closest to the script is kept."""
+    no_transcriber.side_effect = [
+        f"{SCRIPT} {SCRIPT}",
+        f"{SCRIPT} And do not forget your umbrella later.",
+        "Something else entirely.",
+    ]
+    with patch(f"{TTS}._synthesize_gemini_tts", new=_voicings(tmp_path)) as gemini:
+        out, _ = await _speak_checked(tmp_path)
+    assert gemini.await_count == 3
+    assert out.read_bytes() == b"RIFF2"
+
+
+async def test_gemini_speech_is_kept_when_it_cannot_be_checked(
+    tmp_path: Path, no_transcriber: AsyncMock
+) -> None:
+    """A transcription failure never costs the briefing its voice."""
+    with patch(f"{TTS}._synthesize_gemini_tts", new=_voicings(tmp_path)) as gemini:
+        out, fell_back = await _speak_checked(tmp_path)
+    assert gemini.await_count == 1
+    assert no_transcriber.await_count == 1
+    assert out.read_bytes() == b"RIFF1"
+    assert not fell_back

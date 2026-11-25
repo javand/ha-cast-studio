@@ -21,10 +21,18 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from . import ffmpeg_runner
 from .ai_health import async_report_ai_failure, async_report_ai_success
 from .const import (
+    CONF_TEXT_MODEL,
     CONF_VOICE_MODEL,
     DEFAULT_HOST_VOICE,
+    DEFAULT_TEXT_MODEL,
     DEFAULT_VOICE_MODEL,
     LOGGER,
+)
+from .speech_check import (
+    MATCH_THRESHOLD,
+    SPEECH_CHECK_ATTEMPTS,
+    async_transcribe,
+    speech_match_score,
 )
 
 if TYPE_CHECKING:
@@ -625,6 +633,51 @@ async def _synthesize_ha_tts(  # noqa: PLR0913
     return output_wav_path
 
 
+async def _async_check_speech(  # noqa: PLR0913
+    session: aiohttp.ClientSession,
+    script: str,
+    wav_path: str,
+    synthesize: Callable[[], Awaitable[str]],
+    api_key: str,
+    text_model: str,
+) -> None:
+    """
+    Voice ``script`` again while the speech at ``wav_path`` does not match it.
+
+    After SPEECH_CHECK_ATTEMPTS voicings the closest one is kept. Speech that
+    cannot be checked, or a voicing that fails, keeps what is already there.
+    """
+    path = Path(wav_path)
+    best: tuple[float, bytes] | None = None
+    for attempt in range(1, SPEECH_CHECK_ATTEMPTS + 1):
+        try:
+            transcript = await async_transcribe(session, api_key, text_model, wav_path)
+        except Exception as err:  # noqa: BLE001 - a check must never cost the voice
+            LOGGER.debug("Could not check the speech in %s: %s", wav_path, err)
+            return
+        score = speech_match_score(script, transcript)
+        if score >= MATCH_THRESHOLD:
+            return
+        LOGGER.warning(
+            "Voiced speech did not match its script (match %.2f, try %d of %d): %s",
+            score,
+            attempt,
+            SPEECH_CHECK_ATTEMPTS,
+            transcript,
+        )
+        if best is None or score > best[0]:
+            best = (score, await asyncio.to_thread(path.read_bytes))
+        if attempt == SPEECH_CHECK_ATTEMPTS:
+            break
+        try:
+            await synthesize()
+        except (TTSClientError, TimeoutError, aiohttp.ClientError, OSError) as err:
+            LOGGER.warning("Voicing the speech again failed: %s", err)
+            break
+    if best is not None:
+        await asyncio.to_thread(path.write_bytes, best[1])
+
+
 async def async_synthesize_speech(  # noqa: PLR0913
     hass: HomeAssistant,
     script: str,
@@ -701,6 +754,15 @@ async def async_synthesize_speech(  # noqa: PLR0913
             _mark_voice_fallback()
         else:
             async_report_ai_success(hass, "voice")
+            if name == "Gemini":
+                await _async_check_speech(
+                    session,
+                    script,
+                    wav_path,
+                    synthesize,
+                    api_key,
+                    safe_creds.get(CONF_TEXT_MODEL) or DEFAULT_TEXT_MODEL,
+                )
             return wav_path
 
     return await _synthesize_ha_tts(
