@@ -223,3 +223,33 @@ async def test_download_image_saves_only_images(
     ):
         assert await async_download_image(hass, PARFAIT.image_url, target) is saved
     assert target.exists() is saved
+
+
+async def test_an_unreadable_page_counts_as_no_page(hass: HomeAssistant) -> None:
+    session = _session("")
+    session.get.return_value.__aenter__.return_value.text = AsyncMock(
+        side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+    )
+    with patch(
+        f"{daily_sources.__name__}.async_get_clientsession", return_value=session
+    ):
+        assert await async_fun_fact_of_the_day(hass, NOV_25) is None
+        assert await async_checkiday_events(hass, NOV_25) == []
+
+
+async def test_a_broken_fact_history_never_fails_the_segment(
+    hass: HomeAssistant,
+) -> None:
+    broken = MagicMock()
+    broken.async_recent = AsyncMock(side_effect=ValueError("corrupt store"))
+    broken.async_add = AsyncMock(side_effect=OSError("disk full"))
+    with (
+        patch(f"{daily_sources.__name__}._history", return_value=broken),
+        patch(
+            f"{daily_sources.__name__}.async_fun_fact_of_the_day",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        context = await async_fun_fact_context(hass, NOV_25)
+        await async_remember_fun_fact(hass, "Octopuses have three hearts.")
+    assert "fun fact about" in context

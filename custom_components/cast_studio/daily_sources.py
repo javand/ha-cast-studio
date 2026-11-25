@@ -98,7 +98,7 @@ async def _async_fetch_text(hass: HomeAssistant, url: str) -> str | None:
                 LOGGER.warning("Could not read %s: status %s", url, resp.status)
                 return None
             return await resp.text()
-    except (TimeoutError, aiohttp.ClientError) as err:
+    except Exception as err:  # noqa: BLE001 - a source must never fail a build
         LOGGER.warning("Could not read %s: %s", url, err)
         return None
 
@@ -164,13 +164,21 @@ def _history(hass: HomeAssistant) -> FactHistory:
 async def async_fun_fact_context(hass: HomeAssistant, day: date) -> str:
     """Return the fun fact segment's context for ``day``."""
     fact = await async_fun_fact_of_the_day(hass, day)
-    return fun_fact_context(fact, await _history(hass).async_recent(), day)
+    try:
+        recent = await _history(hass).async_recent()
+    except Exception as err:  # noqa: BLE001 - a source must never fail a build
+        LOGGER.warning("Could not read the fun fact history: %s", err)
+        recent = []
+    return fun_fact_context(fact, recent, day)
 
 
 async def async_remember_fun_fact(hass: HomeAssistant, fact: str | None) -> None:
     """Remember a fun fact that was told, so the AI does not repeat it."""
     if fact and fact.strip():
-        await _history(hass).async_add(fact.strip())
+        try:
+            await _history(hass).async_add(fact.strip())
+        except Exception as err:  # noqa: BLE001 - a source must never fail a build
+            LOGGER.warning("Could not remember the fun fact: %s", err)
 
 
 @dataclass(frozen=True)
